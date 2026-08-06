@@ -245,6 +245,54 @@ export const MAX_COST = SLOTS.reduce((a, s) => a + Math.max(...s.options.map(o =
 // question of WHICH row deserves the precision.
 export const DEFAULT_BUDGET = 17;
 
+// ── Counterfactual prompts (the garage's ghost-preview card) ──────────────────
+// The debrief shows the child what the SAME visit would have produced from a
+// different prompt. Both helpers return real, legal selections — never an
+// invented outcome — so the ghost card can be scored by the same scorePrompt()
+// that scored the real one.
+
+/** The vaguest legal version of this prompt: every scored row at its lowest specificity. */
+export function vaguestSelection(selection = {}) {
+  const out = { ...selection };
+  for (const s of SLOTS) {
+    if (!s.scored) continue;
+    out[s.key] = s.options.reduce((a, b) => (b.specificity < a.specificity ? b : a)).id;
+  }
+  return out;
+}
+
+/**
+ * The sharpest prompt the SAME token budget could actually have bought.
+ * Upgrades one row at a time, always taking the best score gain per token, and
+ * never exceeding `budget` — so the card is an achievable invitation, not a
+ * fantasy the child could not have afforded.
+ *
+ * `scoreOf(selection) -> number` is injected so this file stays free of any
+ * scoring import (scoring.js already imports from here).
+ */
+export function bestAffordable(selection, budget, scoreOf) {
+  let cur = { ...vaguestSelection(selection) };
+  for (let guard = 0; guard < 12; guard++) {
+    let best = null;
+    for (const s of SLOTS) {
+      if (!s.scored) continue;
+      const now = optionById(s.key, cur[s.key]);
+      for (const o of s.options) {
+        if (now && o.specificity <= now.specificity) continue;
+        const next = { ...cur, [s.key]: o.id };
+        if (costOf(next) > budget) continue;
+        const gain = scoreOf(next) - scoreOf(cur);
+        if (gain <= 0) continue;
+        const rate = gain / Math.max(1, o.cost - (now ? now.cost : 0));
+        if (!best || rate > best.rate) best = { next, rate };
+      }
+    }
+    if (!best) break;
+    cur = best.next;
+  }
+  return cur;
+}
+
 // ── The assembled sentence ────────────────────────────────────────────────────
 // Returns an array of parts so the UI can render unfilled slots as tappable
 // blanks inside the sentence itself:  [{slot, text, filled}]
@@ -310,15 +358,15 @@ const FLAVOUR = {
   he: {
     'garage.flavour.engine.0': 'סיימתי! הוא באמת מהיר. הוא גם מתנתק אחרי שני סיבובים, אבל מהר מאוד.',
     'garage.flavour.engine.1': 'הנה. חזק, רועש, ושותה דלק כמו גמל אחרי חופשה.',
-    'garage.flavour.engine.2': 'זה כבר מנוע רציני. כיילתי אותו בדיוק לפי הבקשה.',
-    'garage.flavour.engine.3': 'זה המנוע הכי מדויק שבניתי. ידעתי בדיוק מה למדוד — כי זה היה כתוב בבקשה.',
+    'garage.flavour.engine.2': 'זה כבר מנוע רציני. כיילתי אותו בדיוק לפי הפרומפט.',
+    'garage.flavour.engine.3': 'זה המנוע הכי מדויק שבניתי. ידעתי בדיוק מה למדוד — כי זה היה כתוב בפרומפט.',
     'garage.flavour.tires.0': 'צמיגים! עגולים! אחד מהם קצת יותר עגול, אבל זה בטח בסדר.',
     'garage.flavour.tires.1': 'אוחזים יפה. בחול קצת פחות, אז עדיף לא לנסוע בחול.',
     'garage.flavour.tires.2': 'תערובת דביקה, בדיוק לפי התיאור. אפשר להרגיש את זה כבר בסיבוב הראשון.',
-    'garage.flavour.tires.3': 'חריצים בזווית מדויקת ליציאה מסיבוב. זה מה שהיה בבקשה, וזה מה שיצא.',
+    'garage.flavour.tires.3': 'חריצים בזווית מדויקת ליציאה מסיבוב. זה מה שהיה בפרומפט, וזה מה שיצא.',
     'garage.flavour.wing.0': 'כנף! היא לא ממש עושה כלום, אבל היא נראית מהירה כשעומדים.',
     'garage.flavour.wing.1': 'לוחצת אותך לכביש. גם מאטה קצת בישר. ככה זה.',
-    'garage.flavour.wing.2': 'כיוונתי את הזווית לפי המהירות שהופיעה בבקשה. הרבה יותר יציב.',
+    'garage.flavour.wing.2': 'כיוונתי את הזווית לפי המהירות שהופיעה בפרומפט. הרבה יותר יציב.',
     'garage.flavour.wing.3': 'שני שלבים: לוחצת בסיבוב, משתטחת בישר. בלי לוותר על כלום.',
     'garage.flavour.chassis.0': 'קלה מאוד! כי חסרים בה כמה חלקים. אבל קלה, כמו שכתוב.',
     'garage.flavour.chassis.1': 'הורדתי משקל איפה שיכולתי. עדיין קצת מתפתלת.',
@@ -328,15 +376,15 @@ const FLAVOUR = {
   en: {
     'garage.flavour.engine.0': 'Done! It really is fast. It also detaches after two laps, but very fast.',
     'garage.flavour.engine.1': 'There. Strong, loud, and drinks fuel like a camel after a holiday.',
-    'garage.flavour.engine.2': 'Now that is a serious engine. Tuned exactly to the ask.',
-    'garage.flavour.engine.3': 'The most precise engine I have built. I knew what to measure — the ask said so.',
+    'garage.flavour.engine.2': 'Now that is a serious engine. Tuned exactly to the prompt.',
+    'garage.flavour.engine.3': 'The most precise engine I have built. I knew what to measure — the prompt said so.',
     'garage.flavour.tires.0': 'Tires! Round! One of them is rounder, but that is probably fine.',
     'garage.flavour.tires.1': 'Decent grip. Less so on sand, so best not to drive on sand.',
     'garage.flavour.tires.2': 'Sticky compound, exactly as described. You feel it in corner one.',
-    'garage.flavour.tires.3': 'Grooves angled for corner exit. It was in the ask, so it is in the part.',
+    'garage.flavour.tires.3': 'Grooves angled for corner exit. It was in the prompt, so it is in the part.',
     'garage.flavour.wing.0': 'A wing! It does not really do anything, but it looks fast while parked.',
     'garage.flavour.wing.1': 'Pushes you into the road. Also slows you slightly on the straight. That is the deal.',
-    'garage.flavour.wing.2': 'Angle set for the speed the ask mentioned. Much more stable.',
+    'garage.flavour.wing.2': 'Angle set for the speed the prompt mentioned. Much more stable.',
     'garage.flavour.wing.3': 'Two stages: presses in the corner, flattens on the straight. Giving nothing up.',
     'garage.flavour.chassis.0': 'Very light! Because several parts are missing. But light, as written.',
     'garage.flavour.chassis.1': 'Took weight out where I could. Still flexes a bit.',

@@ -9,10 +9,18 @@ import { bus } from './core/bus.js';
 import { installDebug } from './core/harness.js';
 import { applyDir } from './ui/i18n.js';
 import { injectStyles } from './ui/style.js';
+// PRODUCTION IMPORT — do not remove. audio.js self-wires to the bus and is not
+// referenced by name anywhere, so without an explicit import esbuild tree-shakes the
+// entire synth engine out of the bundle and the game ships completely silent. That
+// exact bug shipped once (dist contained zero `createOscillator` calls). It briefly
+// survived only because the debug capture harness imported it, which a stripped
+// release build would have removed again.
+import { audio } from './audio/audio.js';
 import { SCENES } from './scenes.js';
 
 export function boot(mountEl, opts = {}) {
   injectStyles();
+  audio.init();
   applyDir();
   engine.init(mountEl);
   for (const [name, factory] of Object.entries(SCENES)) engine.register(name, factory);

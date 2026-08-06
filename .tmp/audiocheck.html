@@ -5779,6 +5779,16 @@
   var lerp2 = (a, b, x) => a + (b - a) * x;
   var mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
   var EPS = 1e-4;
+  var UNLOCK_EVENTS = [
+    "pointerdown",
+    "pointerup",
+    "mousedown",
+    "mouseup",
+    "click",
+    "touchstart",
+    "touchend",
+    "keydown"
+  ];
   var MAX_VOICES = 56;
   var MUSIC_HEADROOM = 20;
   function softClipCurve(knee = 0.55, ceil = 0.97) {
@@ -5798,6 +5808,34 @@
       c[i] = y * (1 - 0.18 * Math.max(0, -x));
     }
     return c;
+  }
+  function grainBuffer(ctx, rng, ratePerSec, ring) {
+    const sr = ctx.sampleRate, len = Math.floor(sr * 2), buf = ctx.createBuffer(1, len, sr);
+    const d = buf.getChannelData(0);
+    const step = sr / ratePerSec;
+    const w = 2 * Math.PI * ring / sr;
+    for (let g = 0; g * step < len; g++) {
+      const start = Math.floor(g * step + (rng() - 0.5) * step * 0.9);
+      if (start < 0) continue;
+      const amp = 0.3 + rng() * 0.7;
+      const decay = Math.exp(-1 / (sr * (8e-4 + rng() * 28e-4)));
+      const w2 = w * (0.55 + rng() * 1.7);
+      let env = amp, ph = rng() * 6.2832;
+      for (let i = start; i < len && env > 15e-4; i++) {
+        d[i] += Math.sin(ph) * env;
+        ph += w2;
+        env *= decay;
+      }
+    }
+    let m = 0;
+    for (let i = 0; i < len; i++) m = Math.max(m, Math.abs(d[i]));
+    if (m > 0) for (let i = 0; i < len; i++) d[i] /= m;
+    const fade = 128;
+    for (let i = 0; i < fade; i++) {
+      d[i] *= i / fade;
+      d[len - 1 - i] *= i / fade;
+    }
+    return buf;
   }
   var SCALES = {
     minor: [0, 2, 3, 5, 7, 8, 10],
@@ -6013,9 +6051,13 @@
       const load2 = clamp2(s.load ?? 0.5, 0, 1);
       const boost = !!s.boosting;
       const surf = s.surface || "road";
+      const strain = clamp2((load2 - rpm) * 1.35, 0, 1);
+      const coast = clamp2(1 - load2 * 2.4, 0, 1);
       let f = lerp2(36, 205, Math.pow(rpm, 1.08));
+      f *= lerp2(1, 0.945, strain);
+      f *= lerp2(1, 1.012, coast);
       if (boost) f *= 1.055;
-      const det = this.pitchOffset + (boost ? 88 : 0);
+      const det = this.pitchOffset + (boost ? 88 : 0) - strain * 26;
       const sq = (p, v) => {
         try {
           p.setTargetAtTime(v, time, tau);
@@ -6028,21 +6070,22 @@
       sq(this.sub.o.frequency, f * 0.5);
       sq(this.whine.o.frequency, f * 6);
       for (const v of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) sq(v.o.detune, det);
-      sq(this.lp.frequency, clamp2(280 + Math.pow(rpm, 1.4) * 4200 * (boost ? 1.5 : 1) * (0.7 + 0.5 * load2), 120, 12e3));
-      sq(this.lp.Q, boost ? 6.5 : lerp2(2.2, 4.6, rpm));
-      sq(this.drive.gain, lerp2(0.42, 0.78, load2) * (boost ? 1.22 : 1));
+      sq(this.lp.frequency, clamp2((280 + Math.pow(rpm, 1.4) * 4200 * (boost ? 1.5 : 1) * (0.7 + 0.5 * load2) + 950 * strain) * lerp2(1, 0.5, coast), 120, 12e3));
+      sq(this.lp.Q, (boost ? 6.5 : lerp2(2.2, 4.6, rpm)) + 1.6 * strain);
+      sq(this.drive.gain, (lerp2(0.42, 0.78, load2) + 0.28 * strain) * (boost ? 1.22 : 1) * lerp2(1, 0.72, coast));
+      sq(this.sqr.g.gain, 0.1 + 0.17 * strain - 0.05 * coast);
       sq(this.bp.frequency, 420 + rpm * 2600);
-      sq(this.nzg.gain, lerp2(0.03, 0.115, rpm) * lerp2(0.6, 1.25, load2));
+      sq(this.nzg.gain, lerp2(0.03, 0.115, rpm) * lerp2(0.6, 1.25, load2) * lerp2(1, 0.45, coast));
       sq(this.whine.g.gain, boost ? 0.045 : 0);
-      sq(this.lfoA.frequency, lerp2(4.1, 23, rpm));
+      sq(this.lfoA.frequency, lerp2(4.1, 23, rpm) * lerp2(1, 0.68, strain));
       sq(this.lfoB.frequency, lerp2(9.3, 47, rpm));
-      sq(this.ampA.gain, lerp2(0.26, 0.05, rpm));
-      sq(this.jitA.gain, lerp2(22, 5, rpm));
+      sq(this.ampA.gain, lerp2(0.26, 0.05, rpm) + 0.14 * strain + 0.05 * coast);
+      sq(this.jitA.gain, lerp2(22, 5, rpm) + 10 * strain);
       sq(this.jitB.gain, lerp2(9, 2.5, rpm));
       const rum = surf === "grass" ? 0.22 : surf === "sand" ? 0.19 : surf === "dirt" ? 0.16 : 0;
       sq(this.rlp.frequency, surf === "sand" ? 420 : 240);
       sq(this.rzg.gain, rum * lerp2(0.35, 1, rpm));
-      if (this.enabled) sq(this.out.gain, this.level * lerp2(0.72, 1, load2));
+      if (this.enabled) sq(this.out.gain, this.level * lerp2(0.72, 1, load2) * lerp2(1, 0.62, coast));
     }
     enable(time, fade = 0.25) {
       if (this.enabled) return;
@@ -6097,7 +6140,10 @@
       this.bp.type = "bandpass";
       this.bp.frequency.value = 1200;
       this.bp.Q.value = 2.6;
-      this.bp.connect(this.out);
+      this.hiss = c.createGain();
+      this.hiss.gain.value = 0.5;
+      this.bp.connect(this.hiss);
+      this.hiss.connect(this.out);
       this.hp = c.createBiquadFilter();
       this.hp.type = "highpass";
       this.hp.frequency.value = 600;
@@ -6141,6 +6187,27 @@
       this.lfo.connect(this.lg);
       this.lg.connect(this.bp.frequency);
       this.lfo.start(0);
+      this.grainBus = c.createGain();
+      this.grainBus.gain.value = 0;
+      this.gbp = c.createBiquadFilter();
+      this.gbp.type = "bandpass";
+      this.gbp.frequency.value = 1800;
+      this.gbp.Q.value = 0.85;
+      this.grainBus.connect(this.gbp);
+      this.gbp.connect(this.out);
+      const mkg = (buffer, gain) => {
+        const s = c.createBufferSource();
+        s.buffer = buffer;
+        s.loop = true;
+        const gg = c.createGain();
+        gg.gain.value = gain;
+        s.connect(gg);
+        gg.connect(this.grainBus);
+        s.start(0);
+        return { s, g: gg };
+      };
+      this.gSlow = mkg(A._grainSlow, 1);
+      this.gFast = mkg(A._grainFast, 0);
     }
     setAt(time, charge, tau = 0.08) {
       const ch = clamp2(charge, 0, 1);
@@ -6159,7 +6226,15 @@
       sq(this.sq2.frequency, (1250 + ch * 900) * 1.51);
       sq(this.sg1.gain, this.active ? 0.05 + ch * 0.13 : 0);
       sq(this.sg2.gain, this.active ? 0.03 + ch * 0.09 : 0);
-      if (this.active) sq(this.out.gain, 0.17 + ch * 0.28);
+      sq(this.gSlow.g.gain, 1 - ch * 0.85);
+      sq(this.gFast.g.gain, 0.12 + ch * 0.95);
+      sq(this.gSlow.s.playbackRate, 0.88 + ch * 0.5);
+      sq(this.gFast.s.playbackRate, 0.92 + ch * 0.55);
+      sq(this.gbp.frequency, 1500 + ch * 2100);
+      sq(this.gbp.Q, 0.8 + ch * 1.5);
+      sq(this.grainBus.gain, this.active ? 0.22 + ch * 0.3 : 0);
+      sq(this.hiss.gain, 0.4 - ch * 0.17);
+      if (this.active) sq(this.out.gain, 0.075 + ch * 0.12);
     }
     start(time) {
       this.active = true;
@@ -6167,13 +6242,20 @@
       try {
         g.cancelScheduledValues(time);
         g.setValueAtTime(g.value, time);
-        g.linearRampToValueAtTime(0.18, time + 0.06);
+        g.linearRampToValueAtTime(0.11, time + 0.06);
+      } catch {
+      }
+      const gg = this.grainBus.gain;
+      try {
+        gg.cancelScheduledValues(time);
+        gg.setValueAtTime(gg.value, time);
+        gg.linearRampToValueAtTime(0.22, time + 0.05);
       } catch {
       }
     }
     stop(time, fade = 0.12) {
       this.active = false;
-      for (const g of [this.out.gain, this.sg1.gain, this.sg2.gain, this.tg.gain]) {
+      for (const g of [this.out.gain, this.sg1.gain, this.sg2.gain, this.tg.gain, this.grainBus.gain]) {
         try {
           g.cancelScheduledValues(time);
           g.setValueAtTime(g.value, time);
@@ -6183,7 +6265,7 @@
       }
     }
     dispose() {
-      for (const n of [this.n, this.tone, this.lfo]) {
+      for (const n of [this.n, this.tone, this.lfo, this.gSlow.s, this.gFast.s]) {
         try {
           n.stop();
         } catch {
@@ -6202,7 +6284,7 @@
       this.broken = false;
       this._ownsCtx = true;
       this.muted = !!save.read("muted");
-      this.vol = { master: 0.9, music: 0.85, sfx: 1, engine: 0.55 };
+      this.vol = { master: 0.9, music: 0.85, sfx: 1, engine: 0.32 };
       this.sounds = /* @__PURE__ */ new Map();
       this._pending = [];
       this._nodes = /* @__PURE__ */ new Set();
@@ -6252,6 +6334,8 @@
       const d = buf.getChannelData(0);
       for (let i = 0; i < d.length; i++) d[i] = rng() * 2 - 1;
       this._noiseBuf = buf;
+      this._grainSlow = grainBuffer(c, makeRng(6048414), 46, 1900);
+      this._grainFast = grainBuffer(c, makeRng(8299537), 190, 2900);
       this._driveCurve = driveCurve(6);
       this.master = c.createGain();
       this.master.gain.value = this.muted ? 0 : this.vol.master;
@@ -6287,40 +6371,89 @@
       this.drift = new DriftVoice(this);
       this.music = new MusicEngine(this);
     }
+    // ── autoplay unlock ────────────────────────────────────────────────────────
+    // Rules learned the hard way, all of them load-bearing:
+    //  * NEVER `{once:true}`. A synthetic or stray event would spend the listener
+    //    and the real gesture would then never resume anything.
+    //  * CAPTURE phase, on BOTH window and document. Every menu button in this
+    //    game lives in a DOM overlay above the canvas; a handler that calls
+    //    stopPropagation() on the way up would otherwise eat the only gesture.
+    //  * Every gesture type, including `click` and `pointerup` — some embedded
+    //    webviews only treat the completed tap as activation.
+    //  * Re-check AFTER resume() settles (it is a promise; the state is still
+    //    'suspended' on the next line), and stay armed until it really is running.
+    //  * Re-resume on visibilitychange: coming back to a backgrounded tab can find
+    //    the context suspended again with no further gesture coming.
     _installUnlock() {
       if (typeof document === "undefined" || this._unlockBound) return;
       const go = () => {
-        this.unlock();
+        this.unlock(true);
       };
       this._unlockBound = go;
-      for (const ev of ["pointerdown", "touchstart", "keydown", "mousedown"]) {
-        try {
-          document.addEventListener(ev, go, { passive: true });
-        } catch {
+      this._visBound = () => {
+        if (typeof document !== "undefined" && document.visibilityState === "visible" && this.ok && this.ctx && this.ctx.state === "suspended" && this._gestured) this.unlock();
+      };
+      for (const ev of UNLOCK_EVENTS) {
+        for (const tgt of [window, document]) {
+          try {
+            tgt.addEventListener(ev, go, { passive: true, capture: true });
+          } catch {
+          }
         }
+      }
+      try {
+        document.addEventListener("visibilitychange", this._visBound);
+      } catch {
       }
     }
     _removeUnlock() {
-      if (!this._unlockBound || typeof document === "undefined") return;
-      for (const ev of ["pointerdown", "touchstart", "keydown", "mousedown"]) {
-        try {
-          document.removeEventListener(ev, this._unlockBound);
-        } catch {
+      if (typeof document === "undefined") return;
+      if (this._unlockBound) {
+        for (const ev of UNLOCK_EVENTS) {
+          for (const tgt of [window, document]) {
+            try {
+              tgt.removeEventListener(ev, this._unlockBound, { capture: true });
+            } catch {
+            }
+          }
         }
+        this._unlockBound = null;
       }
-      this._unlockBound = null;
     }
-    /** Create/resume the context. Safe to call any number of times. */
-    unlock() {
+    /**
+     * Create/resume the context. Safe to call any number of times, and safe to
+     * call outside a gesture (it just will not succeed until one arrives).
+     */
+    unlock(fromGesture = false) {
       if (this.broken) return false;
       if (!this.ok) this.init();
       if (!this.ok) return false;
+      if (fromGesture) this._gestured = true;
       try {
-        if (this.ctx.state === "suspended" && this.ctx.resume) this.ctx.resume().catch(() => {
-        });
+        if (this.ctx.state === "suspended" && this.ctx.resume) {
+          this.ctx.resume().then(() => {
+            if (this.ok && this.ctx && this.ctx.state === "running") this._removeUnlock();
+          }).catch(() => {
+          });
+        }
       } catch {
       }
-      if (this.ctx.state === "running") this._removeUnlock();
+      if (this.ctx.state === "running") {
+        this._removeUnlock();
+        return true;
+      }
+      if (fromGesture && !this._blockedTimer && typeof setTimeout === "function") {
+        this._blockedTimer = setTimeout(() => {
+          this._blockedTimer = 0;
+          if (this.ok && this.ctx && this.ctx.state !== "running") {
+            console.warn('[audio] AudioContext is still "' + this.ctx.state + '" after a user gesture \u2014 the game will be SILENT. Check for an autoplay/permissions policy on this page, or call audio.unlock() from inside your own click handler.');
+            try {
+              bus.emit("audio:blocked", { state: this.ctx.state });
+            } catch {
+            }
+          }
+        }, 1500);
+      }
       return true;
     }
     get ready() {
@@ -6358,6 +6491,25 @@
       }
       if (!this.muted) this.unlock();
     }
+    /**
+     * duck(on) — pull the race bed down under a modal (pause menu, quiz card) so
+     * the child can think. Never a hard cut: the world is still there, quieter.
+     */
+    duck(on = true) {
+      this._ducked = !!on;
+      if (!this.ready) return;
+      const tN = this.now;
+      const set = (node, v) => {
+        try {
+          node.gain.setTargetAtTime(v, tN, 0.08);
+        } catch {
+          node.gain.value = v;
+        }
+      };
+      set(this.musicBus, this.vol.music * (on ? 0.42 : 1));
+      set(this.engineBus, this.vol.engine * (on ? 0.2 : 1));
+      set(this.sfxBus, this.vol.sfx * (on ? 0.72 : 1));
+    }
     setVolume(p = {}) {
       Object.assign(this.vol, p);
       if (!this.ready) return;
@@ -6373,6 +6525,7 @@
       if (p.sfx !== void 0) set(this.sfxBus, this.vol.sfx);
       if (p.engine !== void 0) set(this.engineBus, this.vol.engine);
       if (p.master !== void 0) this._applyMute(0.03);
+      if (this._ducked) this.duck(true);
     }
     // ── voice budget ───────────────────────────────────────────────────────────
     // Uses the *scheduler* clock, not wall time, so it behaves identically when a
@@ -6740,6 +6893,10 @@
         this._tone(t2, { type: "sawtooth", f: mtof(38), dur: 0.9, peak: 0.1, attack: 0.02, filter: 400, filter2: 1400, q: 3 });
         this._noise(t2 + 0.66, { type: "bandpass", f: 900, f2: 4200, q: 1.6, dur: 0.45, peak: 0.06, attack: 0.1 });
       }, true);
+      S("lap.best", "race", 0.8, "Personal best lap", function(t2) {
+        [88, 92, 95].forEach((m, i) => this._blip(t2 + i * 0.055, m, { peak: 0.11, dur: 0.35, type: "sine" }));
+        this._noise(t2 + 0.02, { type: "highpass", f: 7e3, f2: 13e3, dur: 0.35, peak: 0.028, attack: 0.04 });
+      });
       S("position.up", "race", 0.45, "Position gained", function(t2) {
         [72, 76, 79, 84].forEach((m, i) => this._blip(t2 + i * 0.05, m, { peak: 0.12, dur: 0.14, type: "triangle" }));
       });
@@ -6799,6 +6956,12 @@
         D.setAt(t2 + 1.3, 1, 0.15);
         D.stop(t2 + 1.65, 0.18);
         this._reserve(t2, 1.9);
+      });
+      S("drift.tier", "drive", 0.3, "Drift charge tier up", function(t2, o = {}) {
+        const tier = clamp2(Math.round(o.tier ?? 1), 1, 3);
+        this._tone(t2, { type: "triangle", f: mtof(70 + tier * 5), dur: 0.13, peak: 0.09 + 0.02 * tier, attack: 2e-3, filter: 6e3 });
+        this._tone(t2, { type: "sine", f: mtof(82 + tier * 5), dur: 0.09, peak: 0.045, attack: 2e-3 });
+        this._noise(t2, { type: "highpass", f: 6500, dur: 0.03, peak: 0.03, attack: 1e-3 });
       });
       S("boost.release", "drive", 1, "Mini-boost release", function(t2) {
         this._noise(t2, { type: "bandpass", f: 500, f2: 5200, q: 1.1, dur: 0.3, peak: 0.2, attack: 0.05 });
@@ -6893,6 +7056,39 @@
         }
         if (tier === 2) this._noise(t2 + 0.15, { type: "highpass", f: 4e3, f2: 9e3, dur: 0.5, peak: 0.03, attack: 0.1 });
       });
+      S("quiz.correct", "quiz", 1.1, "Quiz: correct", function(t2) {
+        const root = 72;
+        [0, 4, 7, 12].forEach((iv, i) => {
+          this._tone(t2 + i * 0.055, {
+            type: "triangle",
+            f: mtof(root + iv),
+            dur: 0.5,
+            peak: 0.13 - i * 0.012,
+            attack: 3e-3,
+            filter: 7e3
+          });
+          this._tone(t2 + i * 0.055, { type: "sine", f: mtof(root + iv + 12), dur: 0.3, peak: 0.05, attack: 3e-3 });
+        });
+        this._tone(t2 + 0.24, { type: "sine", f: mtof(root + 19), dur: 0.75, peak: 0.09, attack: 6e-3, hold: 0.05 });
+        this._noise(t2 + 0.06, { type: "highpass", f: 6e3, f2: 13e3, dur: 0.45, peak: 0.03, attack: 0.05 });
+        this._hand(t2, true, 0.45);
+      });
+      S("quiz.wrong", "quiz", 0.85, "Quiz: not that one", function(t2) {
+        this._tone(t2, { type: "triangle", f: mtof(69), dur: 0.34, peak: 0.1, attack: 0.02, filter: 2400 });
+        this._tone(t2 + 0.16, { type: "triangle", f: mtof(65), dur: 0.5, peak: 0.095, attack: 0.025, filter: 2e3 });
+        this._tone(t2 + 0.16, { type: "sine", f: mtof(53), dur: 0.55, peak: 0.055, attack: 0.03 });
+        this._noise(t2, { type: "lowpass", f: 900, dur: 0.18, peak: 0.025, attack: 0.03 });
+      });
+      S("quiz.timeout", "quiz", 0.95, "Quiz: time up", function(t2) {
+        [76, 72, 69].forEach((m, i) => this._tone(t2 + i * 0.15, {
+          type: "sine",
+          f: mtof(m),
+          dur: 0.28 + i * 0.13,
+          peak: 0.085 - i * 5e-3,
+          attack: 0.012
+        }));
+        this._noise(t2 + 0.3, { type: "lowpass", f: 1200, f2: 400, dur: 0.4, peak: 0.02, attack: 0.06 });
+      });
       S("engine.sweep", "engine", 4.6, "Engine: idle \u2192 rev \u2192 boost", function(t2) {
         const E = this.engine;
         E.enable(t2, 0.12);
@@ -6962,8 +7158,11 @@
       for (const e of ["kart:engine:stop", "race:ended"]) on(e, () => this.stopEngine());
       for (const e of ["drift:start", "kart:drift:start"]) on(e, () => this.driftStart());
       for (const e of ["drift:charge", "kart:drift:charge"]) on(e, (p) => this.setDrift(typeof p === "number" ? p : p && p.charge || 0));
-      for (const e of ["drift:end", "kart:drift:end"]) on(e, (p) => this.driftEnd(p === true || p && (p.released || p.boost)));
-      simple(["drift:release", "boost:mini", "kart:boost"], "boost.release");
+      for (const e of ["drift:end", "kart:drift:end"]) on(e, () => this.driftEnd(false));
+      for (const e of ["drift:tier", "kart:drift:tier"]) {
+        on(e, (p) => this.play("drift.tier", { tier: (typeof p === "number" ? p : p && p.tier) || 1 }));
+      }
+      simple(["drift:boost", "drift:release", "boost:mini", "kart:boost"], "boost.release");
       for (const e of ["token:pickup", "pickup:token", "token:collect"]) {
         on(e, (p) => {
           const now = this.now;
@@ -6984,29 +7183,34 @@
       simple(["collide:wall", "kart:hitWall"], "collide.wall");
       simple(["collide:kart", "kart:hitKart"], "collide.kart");
       simple(["collide:scrape", "kart:scrape"], "collide.scrape");
-      for (const e of ["kart:surface", "surface:changed"]) {
+      for (const e of ["surface:change", "kart:surface", "surface:changed"]) {
         on(e, (p) => {
           const s = typeof p === "string" ? p : p && p.surface;
           if (s === "grass") this.play("surface.grass");
-          else if (s === "sand" || s === "dirt") this.play("surface.sand");
+          else if (s === "sand" || s === "dirt" || s === "cloud") this.play("surface.sand");
         });
       }
+      on("race:begin", (p) => {
+        const id = typeof p === "string" ? p : p && (p.track || p.trackId);
+        this._raceTheme = THEMES[id] ? id : null;
+        if (this.ready && this.music && this.music.track === "race") this.playMusic("race", { theme: this._raceTheme || void 0 });
+      });
       on("race:countdown", (p) => {
         const n = typeof p === "number" ? p : p && p.n;
-        if (n === 0 || n === "go") {
-          this.play("countdown.go");
-          this.play("race.fanfare", { at: this.now + 0.12 });
-        } else this.play("countdown.beep");
+        if (n === 0 || n === "go") this.play("countdown.go");
+        else this.play("countdown.beep");
       });
       simple(["race:go", "race:start"], "race.fanfare");
       simple(["race:lap", "lap:complete"], "lap.complete");
-      on("race:finalLap", () => {
-        this.play("lap.final");
-        this.setMusicIntensity(1);
-      });
-      on("race:lastLap", () => {
-        this.play("lap.final");
-        this.setMusicIntensity(1);
+      simple(["race:bestlap", "race:bestLap"], "lap.best");
+      for (const e of ["race:finallap", "race:finalLap", "race:lastLap"]) {
+        on(e, () => {
+          this.play("lap.final");
+          this.setMusicIntensity(1);
+        });
+      }
+      on("race:wrongway", (p) => {
+        if (p && p.on) this.play("ui.error");
       });
       on("race:position", (p) => {
         const d = typeof p === "number" ? p : p && (p.delta ?? p.from - p.to);
@@ -7016,22 +7220,43 @@
       simple(["race:finish", "race:results"], "results.sting");
       simple("podium:show", "results.sting");
       simple(["ui:hover", "menu:hover"], "ui.hover");
-      simple(["ui:select", "menu:select"], "ui.select");
-      simple(["ui:confirm", "menu:confirm"], "ui.confirm");
-      simple(["ui:back", "menu:back"], "ui.back");
+      simple(["ui:select", "menu:select", "menu:racer", "menu:goto"], "ui.select");
+      simple(["ui:confirm", "menu:confirm", "menu:start"], "ui.confirm");
+      simple(["ui:back", "menu:back", "race:quit"], "ui.back");
+      on("race:pause", () => {
+        this.play("ui.back");
+        this.duck(true);
+      });
+      on("input:pause", () => this.duck(true));
+      on("race:resume", () => {
+        this.play("ui.select");
+        this.duck(false);
+      });
       simple(["ui:error", "menu:error"], "ui.error");
+      simple("quiz:open", "ui.select");
+      simple(["quiz:correct", "quiz:right"], "quiz.correct");
+      simple(["quiz:wrong", "quiz:incorrect"], "quiz.wrong");
+      simple(["quiz:timeout", "quiz:timeUp"], "quiz.timeout");
+      on("quiz:answer", (p) => this.play(p && (p.correct === true || p.ok === true) ? "quiz.correct" : "quiz.wrong"));
       simple(["garage:build", "garage:assemble"], "garage.build");
       on("garage:reveal", (p) => this.play("garage.reveal", { tier: tierOf(p) }));
       on("garage:part", (p) => this.play("garage.reveal", { tier: tierOf(p) }));
       on("scene:entered", (name) => {
         if (!this.ready) return;
-        if (name === "menu" || name === "title") this.playMusic("menu");
+        if (name === "menu" || name === "title" || name === "select") this.playMusic("menu");
         else if (name === "garage") this.playMusic("garage");
-        else if (name === "race") this.playMusic("race");
+        else if (name === "race") this.playMusic("race", { theme: this._raceTheme || void 0 });
         else if (name === "results" || name === "podium") this.stopMusic(0.8);
       });
       on("scene:leaving", () => {
         this._combo = 0;
+        this.duck(false);
+        this.stopEngine();
+        if (this.ok) {
+          this.drift.stop(this.now, 0.1);
+          this.setAiEngines([]);
+        }
+        this.setMusicIntensity(0);
       });
     }
   };
@@ -7262,6 +7487,13 @@
     }
   };
   var audio = new AudioSystem();
+  try {
+    if (typeof window !== "undefined") {
+      audio.bus = bus;
+      window.__AUDIO = audio;
+    }
+  } catch {
+  }
   registerStrings({
     he: {
       "audio.title": "\u05DE\u05E2\u05E8\u05DB\u05EA \u05E9\u05DE\u05E2 \u05E4\u05E8\u05D5\u05E6\u05D3\u05D5\u05E8\u05DC\u05D9\u05EA",
@@ -7280,6 +7512,7 @@
       "audio.group.impact": "\u05D4\u05EA\u05E0\u05D2\u05E9\u05D5\u05D9\u05D5\u05EA",
       "audio.group.garage": "\u05DE\u05D5\u05E1\u05DA",
       "audio.group.engine": "\u05DE\u05E0\u05D5\u05E2",
+      "audio.group.quiz": "\u05D7\u05D9\u05D3\u05D5\u05DF",
       "audio.group.music": "\u05DE\u05D5\u05D6\u05D9\u05E7\u05D4",
       "audio.state": "\u05DE\u05E6\u05D1 \u05D4\u05E7\u05E9\u05E8",
       "audio.voices": "\u05E7\u05D5\u05DC\u05D5\u05EA \u05E4\u05E2\u05D9\u05DC\u05D9\u05DD",
@@ -7298,6 +7531,11 @@
       "audio.s.position.down": "\u05D9\u05E8\u05D9\u05D3\u05D4 \u05D1\u05DE\u05D9\u05E7\u05D5\u05DD",
       "audio.s.results.sting": "\u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05D5\u05E4\u05D5\u05D3\u05D9\u05D5\u05DD",
       "audio.s.token.pickup": "\u05D0\u05D9\u05E1\u05D5\u05E3 \u05D8\u05D5\u05E7\u05DF (\u05E7\u05D5\u05DE\u05D1\u05D5)",
+      "audio.s.lap.best": "\u05D4\u05E7\u05E4\u05D4 \u05D4\u05DB\u05D9 \u05DE\u05D4\u05D9\u05E8\u05D4",
+      "audio.s.quiz.correct": "\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4",
+      "audio.s.quiz.wrong": "\u05DC\u05D0 \u05D4\u05E4\u05E2\u05DD",
+      "audio.s.quiz.timeout": "\u05E0\u05D2\u05DE\u05E8 \u05D4\u05D6\u05DE\u05DF",
+      "audio.s.drift.tier": "\u05D3\u05E8\u05D9\u05E4\u05D8 \u2014 \u05E2\u05DC\u05D9\u05D9\u05D4 \u05D1\u05D3\u05E8\u05D2\u05D4",
       "audio.s.drift.start": "\u05EA\u05D7\u05D9\u05DC\u05EA \u05D3\u05E8\u05D9\u05E4\u05D8",
       "audio.s.drift.sustain": "\u05D3\u05E8\u05D9\u05E4\u05D8 \u2014 \u05D8\u05E2\u05D9\u05E0\u05D4",
       "audio.s.boost.release": "\u05E9\u05D7\u05E8\u05D5\u05E8 \u05D1\u05D5\u05E1\u05D8",
@@ -7338,6 +7576,7 @@
       "audio.group.impact": "Impacts",
       "audio.group.garage": "Garage",
       "audio.group.engine": "Engine",
+      "audio.group.quiz": "Quiz",
       "audio.group.music": "Music"
     }
   });

@@ -1,294 +1,269 @@
-// Offline audio verification. Renders every registered sound through an
-// OfflineAudioContext inside headless Chrome (same puppeteer-core setup as
-// tools/preview.mjs) and measures peak / RMS / silence / clipping / spectral
-// centroid. Also simulates 60 seconds of race events to prove the voice cap
-// holds and the master never clips.
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDIO INTEGRATION GATE — runs against the REAL built game.
 //
-//   node .tmp/audiocheck.mjs            # all sounds + 60s race sim
-//   node .tmp/audiocheck.mjs --only ui  # filter by group or name substring
-import * as esbuild from 'esbuild';
+// Why this file exists: the audio module was verified in isolation (offline
+// render, every sound measured non-silent) and the shipped game was still
+// COMPLETELY SILENT, because src/audio/audio.js was never imported by any file
+// that reaches the bundle. Isolation tests cannot see that class of bug. Neither
+// can a "does the graph exist" check — so this one measures actual samples
+// leaving the master bus of the real dist/index.html, after a real user gesture.
+//
+// It asserts:
+//   1. the audio module is present in the bundle at all
+//   2. the AudioContext reaches 'running' after ONE real click (autoplay policy)
+//   3. the game is not silently muted from a previous session
+//   4. simulated racing produces output that is non-silent AND non-clipping
+//   5. engine / drift / token / UI / music each measurably produce output
+//   6. every bus event the game actually emits reaches a listener (a renamed or
+//      near-miss event name is silent, and silence looks like "works fine")
+//
+//   node tests/audio.test.mjs                  # gates dist/index.html
+//   AUDIO_TEST_TARGET=/abs/path.html node …    # gate another build
+// ─────────────────────────────────────────────────────────────────────────────
 import puppeteer from 'puppeteer-core';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { mkdirSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const tmp = resolve(root, '.tmp');
-mkdirSync(tmp, { recursive: true });
+const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const target = process.env.AUDIO_TEST_TARGET || resolve(root, 'dist/index.html');
 
-const a = {};
-for (let i = 2; i < process.argv.length; i++) {
-  const k = process.argv[i];
-  if (k.startsWith('--')) a[k.slice(2)] = (process.argv[i + 1] === undefined || process.argv[i + 1].startsWith('--')) ? true : process.argv[++i];
+// Non-silent floor and clip ceiling for the master bus. The soft-clip stage
+// asymptotes at 0.97, so anything at/above ~0.98 means the curve was bypassed.
+const RMS_FLOOR = 0.004;
+const RMS_RACE_FLOOR = 0.012;
+const PEAK_CEIL = 0.98;
+
+let failed = 0;
+const ok = (name, pass, detail = '') => {
+  if (!pass) failed++;
+  console.log(`  ${pass ? '\x1b[32m✓\x1b[0m' : '\x1b[31m✗\x1b[0m'} ${name.padEnd(52)} ${detail ? '\x1b[2m' + detail + '\x1b[0m' : ''}`);
+};
+const die = msg => { console.error('\n\x1b[31m' + msg + '\x1b[0m\n'); process.exit(1); };
+
+if (!existsSync(target)) die(`build missing: ${target}\n  run: npm run build`);
+
+console.log('\n  AUDIO — real built game, real gesture, measured output\n  ' + '─'.repeat(72));
+
+// ── 0. is the module even in the bundle? ─────────────────────────────────────
+// This is the check that would have caught the original P0 in one second.
+const html = readFileSync(target, 'utf8');
+const bundled = /createOscillator/.test(html) && /__AUDIO/.test(html);
+ok('audio module is present in the bundle', bundled,
+  bundled ? '' : 'NOT BUNDLED — nothing imports src/audio/audio.js');
+if (!bundled) {
+  die('P0: the audio module never reaches the bundle, so the game is silent by construction.\n'
+    + '    FIX (lead-owned file): add to src/main.js, before the SCENES import:\n'
+    + "        import './audio/audio.js';\n"
+    + '    The module self-wires to the bus and unlocks itself on the first gesture.');
 }
-
-const entry = resolve(tmp, 'audiocheck-entry.js');
-writeFileSync(entry, `
-import { audio } from ${JSON.stringify(resolve(root, 'src/audio/audio.js'))};
-import { bus } from ${JSON.stringify(resolve(root, 'src/core/bus.js'))};
-const SR = 44100;
-
-// ---- analysis --------------------------------------------------------------
-function fft(re, im) {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
-    for (let i = 0; i < n; i += len) {
-      let cr = 1, ci = 0;
-      for (let k = 0; k < len / 2; k++) {
-        const ur = re[i + k], ui = im[i + k];
-        const vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
-        const vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
-        re[i + k] = ur + vr; im[i + k] = ui + vi;
-        re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
-        const nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr;
-      }
-    }
-  }
-}
-
-function measure(d, sr) {
-  let peak = 0, sum = 0, clipped = 0, nz = 0;
-  for (let i = 0; i < d.length; i++) {
-    const v = d[i], av = Math.abs(v);
-    if (av > peak) peak = av;
-    if (av > 1.0) clipped++;
-    if (av > 0.0005) nz++;
-    sum += v * v;
-  }
-  const rms = Math.sqrt(sum / d.length);
-  // spectral centroid: energy-weighted average over 2048-sample Hann windows
-  const N = 2048;
-  let cenNum = 0, cenDen = 0;
-  for (let off = 0; off + N <= d.length; off += N) {
-    const re = new Float64Array(N), im = new Float64Array(N);
-    let e = 0;
-    for (let i = 0; i < N; i++) {
-      const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
-      re[i] = d[off + i] * w; e += d[off + i] * d[off + i];
-    }
-    if (e < 1e-8) continue;
-    fft(re, im);
-    let mn = 0, md = 0;
-    for (let k = 1; k < N / 2; k++) {
-      const m = Math.hypot(re[k], im[k]);
-      mn += m * (k * sr / N); md += m;
-    }
-    if (md > 0) { cenNum += (mn / md) * e; cenDen += e; }
-  }
-  return {
-    peak: +peak.toFixed(4),
-    rms: +rms.toFixed(5),
-    rmsDb: +(20 * Math.log10(Math.max(rms, 1e-9))).toFixed(1),
-    nonSilent: peak > 0.002 && rms > 0.00015,
-    clips: clipped > 0,
-    clippedSamples: clipped,
-    activeRatio: +(nz / d.length).toFixed(3),
-    centroid: cenDen > 0 ? Math.round(cenNum / cenDen) : 0,
-  };
-}
-
-function fresh(seconds) {
-  audio.dispose();
-  const ctx = new OfflineAudioContext(1, Math.ceil(SR * seconds), SR);
-  audio.init({ context: ctx, muted: false });
-  return ctx;
-}
-
-window.__list = () => audio.list();
-
-window.__render = async (name, opts = {}) => {
-  const info = audio.sounds.get(name);
-  const seconds = opts.seconds || (info.dur + 0.6);
-  const ctx = fresh(seconds);
-  audio.play(name, Object.assign({ at: 0.05 }, opts));
-  const buf = await ctx.startRendering();
-  const m = measure(buf.getChannelData(0), SR);
-  m.peakVoices = audio.peakVoices;
-  m.dropped = audio.stats.dropped;
-  return m;
-};
-
-// Engine sweep rendered through the *real* per-frame API path (setEngineState
-// is realtime-only, so offline we drive the same automation entry point).
-window.__engineDetail = async () => {
-  const secs = 5.2;
-  const ctx = fresh(secs);
-  const E = audio.engine;
-  E.enable(0.02, 0.1);
-  const pts = [[0.05,0.05,0.15,0],[0.9,0.09,0.2,0],[1.5,0.4,0.8,0],[2.3,0.7,0.9,0],
-               [3.0,0.95,1.0,0],[3.6,0.98,1.0,1],[4.4,0.5,0.4,0]];
-  for (const [t, r, l, b] of pts) E.setAt(t, { rpm01: r, load: l, boosting: !!b, surface: 'road' }, 0.12);
-  const buf = await ctx.startRendering();
-  const d = buf.getChannelData(0);
-  const seg = (t0, t1) => measure(d.slice(Math.floor(t0 * SR), Math.floor(t1 * SR)), SR);
-  return { idle: seg(0.3, 0.85), mid: seg(1.8, 2.2), full: seg(3.1, 3.5), boost: seg(3.7, 4.3), whole: measure(d, SR) };
-};
-
-// 60 seconds of a plausible race: engine every 100ms, drift cycles, tokens,
-// collisions, laps, music with a final-lap intensity lift.
-window.__race = async (seconds = 60) => {
-  const ctx = fresh(seconds + 1);
-  audio.playMusic('race', { theme: 'circuit', at: 0, offline: seconds });
-  audio.engine.enable(0.02, 0.2);
-  const ai = [];
-  for (let i = 0; i < 3; i++) ai.push(new (audio.engine.constructor)(audio, { level: 0.12, detune: [-72, 58, 121][i] }));
-  for (const v of ai) v.enable(0.05, 0.2);
-
-  let events = 0;
-  for (let t = 0; t < seconds; t += 0.1) {
-    const rpm = 0.45 + 0.45 * Math.sin(t * 1.7) * Math.cos(t * 0.31);
-    audio.engine.setAt(t, { rpm01: Math.abs(rpm), load: 0.7, boosting: (t % 9) < 0.6, surface: (t % 13) < 1 ? 'grass' : 'road' }, 0.08);
-    ai.forEach((v, i) => v.setAt(t, { rpm01: Math.abs(rpm) * (0.8 + i * 0.07), load: 0.7 }, 0.12));
-  }
-  const at = t => ({ at: t });
-  for (let t = 0.5; t < seconds; t += 0.55) { audio.play('token.pickup', { at: t, combo: Math.floor(t) % 10 }); events++; }
-  for (let t = 1.2; t < seconds; t += 3.1) { audio.play('drift.start', at(t)); audio.play('boost.release', at(t + 1.4)); events += 2; }
-  for (let t = 2.7; t < seconds; t += 4.3) { audio.play('collide.wall', { at: t, speed: 0.8 }); events++; }
-  for (let t = 3.9; t < seconds; t += 5.7) { audio.play('collide.kart', at(t)); audio.play('collide.scrape', at(t + 0.2)); events += 2; }
-  for (let t = 6.0; t < seconds; t += 7.0) { audio.play('surface.grass', at(t)); events++; }
-  for (let t = 15; t < seconds; t += 15) { audio.play('lap.complete', at(t)); events++; }
-  audio.play('lap.final', at(45)); events++;
-  audio.music.setIntensity(1);
-  audio.play('results.sting', at(seconds - 3)); events++;
-  for (let t = 0.3; t < seconds; t += 1.9) { audio.play('ui.hover', at(t)); events++; }
-
-  const buf = await ctx.startRendering();
-  const m = measure(buf.getChannelData(0), SR);
-  m.peakVoices = audio.peakVoices;
-  m.dropped = audio.stats.dropped;
-  m.played = audio.stats.played;
-  m.events = events;
-  return m;
-};
-
-// Bus wiring: emit game events and confirm each produces a scheduled sound.
-window.__buswire = async () => {
-  const ctx = fresh(6);
-  const before = audio.stats.played;
-  const evs = [
-    ['ui:hover'], ['ui:select'], ['ui:confirm'], ['ui:back'], ['ui:error'],
-    ['race:countdown', 3], ['race:countdown', 0], ['race:lap'], ['race:finalLap'],
-    ['race:position', 1], ['race:position', -1], ['race:finish'],
-    ['token:pickup', {}], ['token:pickup', {}],
-    ['kart:collide', { kind: 'wall', speed: 0.8 }], ['kart:collide', { kind: 'kart' }], ['kart:collide', { kind: 'scrape' }],
-    ['kart:surface', 'grass'], ['kart:surface', 'sand'],
-    ['drift:start'], ['drift:charge', 0.6], ['drift:end', { released: true }],
-    ['garage:build'], ['garage:reveal', { tier: 0 }], ['garage:reveal', { score: 92 }],
-    ['kart:engine', { rpm01: 0.5, load: 0.8 }],
-    ['audio:play', { name: 'lap.final' }],
-  ];
-  for (const [e, p] of evs) bus.emit(e, p);
-  const buf = await ctx.startRendering();
-  const m = measure(buf.getChannelData(0), SR);
-  m.emitted = evs.length;
-  m.played = audio.stats.played - before;
-  return m;
-};
-
-window.__muteCheck = async () => {
-  const ctx = fresh(1.5);
-  audio.setMuted(true, false);
-  audio.play('race.fanfare', { at: 0.05 });
-  audio.playMusic('race', { at: 0, offline: 1.2 });
-  const buf = await ctx.startRendering();
-  audio.setMuted(false, false);
-  return measure(buf.getChannelData(0), SR);
-};
-
-window.__ready = true;
-`);
-
-const built = await esbuild.build({
-  entryPoints: [entry], bundle: true, format: 'iife', write: false,
-  alias: { three: resolve(root, 'vendor/three.module.js') },
-  target: ['chrome100'], logLevel: 'warning',
-});
-
-const htmlPath = resolve(tmp, 'audiocheck.html');
-writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8"></head><body>
-<script>${built.outputFiles[0].text}</script></body></html>`);
 
 const browser = await puppeteer.launch({
-  executablePath: CHROME, headless: true,
-  args: ['--no-sandbox', '--disable-dev-shm-usage', '--mute-audio', '--autoplay-policy=no-user-gesture-required'],
+  executablePath: CHROME,
+  headless: true,
+  // Deliberately NO --mute-audio and NO --autoplay-policy override: the point is
+  // to exercise the same autoplay policy a child's laptop applies.
+  args: ['--no-sandbox', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader',
+    '--enable-unsafe-swiftshader', '--force-device-scale-factor=1', '--hide-scrollbars'],
 });
-const page = await browser.newPage();
-const errs = [];
-page.on('pageerror', e => errs.push('PAGEERROR: ' + e.message));
-page.on('console', m => { if (m.type() === 'error') errs.push('CONSOLE: ' + m.text()); });
-await page.goto('file://' + htmlPath, { waitUntil: 'load' });
-await page.waitForFunction('window.__ready === true', { timeout: 30000 });
 
-const pad = (s, n) => String(s).padEnd(n);
-const lpad = (s, n) => String(s).padStart(n);
-let fails = 0;
+const pageErrors = [];
+try {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1366, height: 768 });
+  page.on('pageerror', e => pageErrors.push(e.message));
+  page.on('console', m => { if (m.type() === 'error') pageErrors.push(m.text()); });
 
-const list = await page.evaluate(() => window.__list());
-const filter = typeof a.only === 'string' ? a.only : null;
-const rows = [];
+  await page.goto('file://' + target, { waitUntil: 'load', timeout: 60000 });
+  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-console.log('\n── per-sound offline render (mono 44.1k) ' + '─'.repeat(46));
-console.log(pad('sound', 24) + pad('grp', 8) + lpad('peak', 7) + lpad('rms', 9) + lpad('dBFS', 8) +
-            lpad('cent.Hz', 9) + lpad('act%', 7) + lpad('voices', 8) + '  verdict');
-for (const s of list) {
-  if (filter && !s.name.includes(filter) && s.group !== filter) continue;
-  const m = await page.evaluate(n => window.__render(n), s.name);
-  const bad = [];
-  if (!m.nonSilent) bad.push('SILENT');
-  if (m.clips) bad.push('CLIPS(' + m.clippedSamples + ')');
-  if (m.peak > 0.985) bad.push('HOT');
-  if (bad.length) fails++;
-  rows.push({ ...m, name: s.name, group: s.group });
-  console.log(pad(s.name, 24) + pad(s.group, 8) + lpad(m.peak.toFixed(3), 7) + lpad(m.rms.toFixed(5), 9) +
-    lpad(m.rmsDb, 8) + lpad(m.centroid, 9) + lpad((m.activeRatio * 100).toFixed(0), 7) +
-    lpad(m.peakVoices, 8) + '  ' + (bad.length ? '✗ ' + bad.join(' ') : '✓'));
+  ok('audio singleton reachable in the running game', await page.evaluate(() => !!window.__AUDIO));
+
+  // ── 1. autoplay policy ─────────────────────────────────────────────────────
+  const pre = await page.evaluate(() => {
+    const a = window.__AUDIO;
+    return { muted: a.muted, state: a.ctx ? a.ctx.state : 'no-context' };
+  });
+  ok('not muted from a previous session', pre.muted === false, `muted=${pre.muted}`);
+
+  // ONE real click, on whatever is under the cursor — exactly what a player does.
+  const t0 = Date.now();
+  await page.mouse.click(683, 400);
+  // resume() is a promise: poll rather than assume it has settled. Still a hard
+  // assertion — no further gesture is sent, so only that one click can do it.
+  let post = null;
+  for (let i = 0; i < 30; i++) {
+    post = await page.evaluate(() => {
+      const a = window.__AUDIO;
+      return { state: a.ctx.state, master: a.master.gain.value, ok: a.ok };
+    });
+    if (post.state === 'running') break;
+    await sleep(100);
+  }
+  ok('AudioContext reaches "running" after one click', post.state === 'running',
+    `${pre.state} → ${post.state} in ${Date.now() - t0}ms`);
+  ok('master gain is open', post.master > 0.1, post.master.toFixed(2));
+
+  // ── metering rig: an analyser on the real master bus ───────────────────────
+  await page.evaluate(() => {
+    const a = window.__AUDIO;
+    const an = a.ctx.createAnalyser();
+    an.fftSize = 2048;
+    an.smoothingTimeConstant = 0;
+    a.master.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    // Measure over `ms` of REAL time: peak + mean RMS of the actual samples.
+    window.__measure = ms => new Promise(res => {
+      let sum = 0, n = 0, peak = 0;
+      const iv = setInterval(() => {
+        an.getFloatTimeDomainData(buf);
+        let s = 0, p = 0;
+        for (let i = 0; i < buf.length; i++) { const v = buf[i]; s += v * v; if (Math.abs(v) > p) p = Math.abs(v); }
+        sum += Math.sqrt(s / buf.length); n++; if (p > peak) peak = p;
+      }, 20);
+      setTimeout(() => { clearInterval(iv); res({ rms: sum / Math.max(1, n), peak }); }, ms);
+    });
+    // Silence every persistent voice so a single source can be measured alone.
+    window.__hush = async () => {
+      a.stopMusic(0.05); a.stopEngine(); a.drift.stop(a.now, 0.05); a.setAiEngines([]);
+      await new Promise(r => setTimeout(r, 450));
+    };
+  });
+
+  // ── 2. silence floor: with nothing playing, the bus must be quiet ──────────
+  await page.evaluate(() => window.__hush());
+  const quiet = await page.evaluate(() => window.__measure(400));
+  ok('idle bus is quiet (proves the meter is honest)', quiet.rms < RMS_FLOOR, `rms ${quiet.rms.toFixed(5)}`);
+
+  // ── 3. per-source: each family must measurably reach the destination ───────
+  const measureSource = async (label, setup, ms = 900) => {
+    await page.evaluate(() => window.__hush());
+    const m = await page.evaluate(async ({ src, ms }) => {
+      // eslint-disable-next-line no-new-func
+      await new Function('a', 'bus', src)(window.__AUDIO, window.__AUDIO.bus);
+      return window.__measure(ms);
+    }, { src: setup, ms });
+    ok(`${label} produces output`, m.rms > RMS_FLOOR && m.peak < PEAK_CEIL,
+      `rms ${m.rms.toFixed(4)}  peak ${m.peak.toFixed(3)}`);
+    return m;
+  };
+
+  await measureSource('engine (kart:engine bus events)', `
+    let r = 0;
+    const iv = setInterval(() => {
+      r = Math.min(1, r + 0.05);
+      bus.emit('kart:engine', { rpm01: r, load: 1, boosting: r > 0.8, surface: 'asphalt' });
+    }, 30);
+    setTimeout(() => clearInterval(iv), 1200);
+  `);
+
+  await measureSource('drift scrape (drift:start / drift:charge)', `
+    bus.emit('drift:start');
+    let c = 0;
+    const iv = setInterval(() => { c = Math.min(1, c + 0.06); bus.emit('drift:charge', { charge: c }); }, 40);
+    setTimeout(() => { clearInterval(iv); bus.emit('drift:end', { tier: 2 }); }, 1000);
+  `);
+
+  await measureSource('token pickup (token:pickup)', `
+    let i = 0;
+    const iv = setInterval(() => { bus.emit('token:pickup', { combo: ++i }); if (i > 4) clearInterval(iv); }, 160);
+  `);
+
+  await measureSource('UI (ui:confirm / ui:select)', `
+    bus.emit('ui:confirm');
+    setTimeout(() => bus.emit('ui:select'), 300);
+  `);
+
+  await measureSource('quiz stingers (quiz:correct / quiz:wrong)', `
+    bus.emit('quiz:correct');
+    setTimeout(() => bus.emit('quiz:wrong'), 700);
+  `, 1500);
+
+  for (const theme of ['oasis', 'circuit', 'cloud']) {
+    await measureSource(`music — ${theme}`, `a.playMusic('race', { theme: ${JSON.stringify(theme)} });`, 1600);
+  }
+  const themeOk = await page.evaluate(() => window.__AUDIO.music.themeId);
+  ok('music theme switches per track', themeOk === 'cloud', `themeId=${themeOk}`);
+  await page.evaluate(() => window.__hush());
+
+  // ── 4. every event the game really emits must be heard ────────────────────
+  // A near-miss name (surface:changed vs surface:change) is silent, and silence
+  // is indistinguishable from "no event happened". Assert each one lands.
+  const EVENTS = [
+    ['race:countdown', { n: 2 }], ['race:start', {}], ['race:lap', { lap: 1 }],
+    ['race:bestlap', { ms: 41000 }], ['race:finallap', {}], ['race:position', { from: 3, to: 2 }],
+    ['race:finish', { position: 1 }], ['token:pickup', { combo: 1 }],
+    ['kart:collide', { kind: 'wall', speed: 0.8 }], ['kart:collide', { kind: 'kart', speed: 0.6 }],
+    ['surface:change', { surface: 'grass' }], ['surface:change', { surface: 'sand' }],
+    ['drift:start', {}], ['drift:tier', { tier: 2 }], ['drift:boost', { tier: 2 }],
+    ['quiz:correct', {}], ['quiz:wrong', {}], ['quiz:timeout', {}],
+    ['ui:hover', {}], ['ui:select', {}], ['ui:confirm', {}], ['ui:back', {}],
+    ['garage:build', {}], ['garage:reveal', { tier: 3 }],
+  ];
+  const deaf = await page.evaluate(async evts => {
+    const a = window.__AUDIO, bus = a.bus, missed = [];
+    for (const [name, payload] of evts) {
+      const before = a.stats.played;
+      bus.emit(name, payload);
+      if (a.stats.played === before) missed.push(name + (payload && payload.kind ? ':' + payload.kind : '')
+        + (payload && payload.surface ? ':' + payload.surface : ''));
+      await new Promise(r => setTimeout(r, 120));
+    }
+    return missed;
+  }, EVENTS);
+  ok('every emitted game event reaches a sound', deaf.length === 0,
+    deaf.length ? 'SILENT: ' + deaf.join(', ') : `${EVENTS.length} events heard`);
+  await page.evaluate(() => window.__hush());
+
+  // ── 5. an actual race must be audible and must not clip ───────────────────
+  await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find(x => /אליפות|Championship/.test(x.textContent));
+    if (b) b.click();
+  });
+  await sleep(900);
+  await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find(x => /לזינוק|Start|התחל/.test(x.textContent));
+    if (b) b.click();
+  });
+  await sleep(1500);
+  const scene = await page.evaluate(() => window.__DEBUG.state().scene);
+  ok('reaches the race scene', scene === 'race', scene);
+
+  // Drive the sim forward in small slices, letting real time pass between them
+  // so the audio clock actually renders what the race schedules.
+  const raceMeter = page.evaluate(() => window.__measure(6000));
+  for (let i = 0; i < 24; i++) {
+    await page.evaluate(() => {
+      window.__DEBUG.engine._headless = true;      // sim only; skip the GPU draw
+      window.__DEBUG.advance(0.75);
+    });
+    await sleep(240);
+  }
+  const race = await raceMeter;
+  const after = await page.evaluate(() => ({
+    state: __AUDIO.ctx.state, played: __AUDIO.stats.played, dropped: __AUDIO.stats.dropped,
+    peakVoices: __AUDIO.peakVoices, voices: __AUDIO.activeVoices,
+    engine: __AUDIO.engine.enabled, music: __AUDIO.music.track + '/' + __AUDIO.music.themeId,
+  }));
+
+  ok('race audio is non-silent', race.rms > RMS_RACE_FLOOR, `rms ${race.rms.toFixed(4)}`);
+  ok('race audio does not clip', race.peak < PEAK_CEIL, `peak ${race.peak.toFixed(3)}`);
+  ok('engine voice is live during the race', after.engine === true);
+  ok('race music is playing in the track theme', /^race\//.test(after.music), after.music);
+  ok('context still running after the race', after.state === 'running', after.state);
+  ok('no runaway voice growth', after.peakVoices <= 64, `peak ${after.peakVoices} voices, ${after.dropped} dropped`);
+  console.log(`  \x1b[2mplayed ${after.played} sounds, ${after.voices} voices live at the end\x1b[0m`);
+
+  ok('no page errors while the audio ran', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
+} catch (e) {
+  failed++;
+  console.error('\n\x1b[31m  harness error:\x1b[0m', e && (e.stack || e.message));
+} finally {
+  await browser.close();
 }
 
-console.log('\n── engine sweep, per-phase ' + '─'.repeat(60));
-const ed = await page.evaluate(() => window.__engineDetail());
-for (const k of ['idle', 'mid', 'full', 'boost', 'whole']) {
-  const m = ed[k];
-  console.log(pad(k, 24) + lpad(m.peak.toFixed(3), 7) + lpad(m.rms.toFixed(5), 9) + lpad(m.rmsDb, 8) +
-    lpad(m.centroid, 9) + '  ' + (m.nonSilent && !m.clips ? '✓' : '✗'));
-  if (!m.nonSilent || m.clips) fails++;
-}
-if (!(ed.boost.centroid > ed.idle.centroid && ed.full.centroid > ed.idle.centroid)) {
-  console.log('  ! centroid does not rise with rpm — engine is not tracking'); fails++;
-} else {
-  console.log(`  centroid idle ${ed.idle.centroid}Hz → full ${ed.full.centroid}Hz → boost ${ed.boost.centroid}Hz  ✓ rises with rpm`);
-}
-
-console.log('\n── bus wiring ' + '─'.repeat(73));
-const bw = await page.evaluate(() => window.__buswire());
-console.log(`  ${bw.played}/${bw.emitted} emitted events produced a sound; peak ${bw.peak.toFixed(3)} rms ${bw.rms.toFixed(5)} ` +
-  (bw.nonSilent && !bw.clips ? '✓' : '✗'));
-if (!bw.nonSilent || bw.clips || bw.played < bw.emitted - 2) fails++;
-
-console.log('\n── mute ' + '─'.repeat(79));
-const mu = await page.evaluate(() => window.__muteCheck());
-console.log(`  muted output peak=${mu.peak} rms=${mu.rms} ` + (mu.peak < 0.001 ? '✓ silent' : '✗ LEAKS'));
-if (mu.peak >= 0.001) fails++;
-
-console.log('\n── 60s race simulation ' + '─'.repeat(64));
-const r = await page.evaluate(() => window.__race(60));
-console.log(`  events=${r.events} scheduled=${r.played} dropped=${r.dropped} peakVoices=${r.peakVoices}`);
-console.log(`  peak=${r.peak.toFixed(4)} rms=${r.rms.toFixed(5)} (${r.rmsDb} dBFS) centroid=${r.centroid}Hz active=${(r.activeRatio * 100).toFixed(1)}%`);
-const raceBad = [];
-if (r.clips) raceBad.push('CLIPS(' + r.clippedSamples + ')');
-if (!r.nonSilent) raceBad.push('SILENT');
-if (r.peakVoices > 80) raceBad.push('RUNAWAY VOICES');
-console.log('  ' + (raceBad.length ? '✗ ' + raceBad.join(' ') : '✓ no clipping, voice count bounded'));
-if (raceBad.length) fails++;
-
-if (errs.length) { console.log('\npage errors:\n' + errs.slice(0, 10).join('\n')); fails++; }
-console.log(`\n${fails === 0 ? '✓ ALL CHECKS PASSED' : '✗ ' + fails + ' CHECK(S) FAILED'}  (${rows.length} sounds rendered)\n`);
-await browser.close();
-process.exit(fails === 0 ? 0 : 1);
+console.log('  ' + '─'.repeat(72));
+if (failed) { console.log(`\n  \x1b[31m${failed} audio check(s) failed\x1b[0m\n`); process.exit(1); }
+console.log('\n  \x1b[32maudio OK — measured, in the real game\x1b[0m\n');

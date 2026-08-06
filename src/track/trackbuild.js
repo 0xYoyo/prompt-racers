@@ -220,22 +220,29 @@ export function brandTexture(index, size = 256) {
 }
 
 /** The start gantry face: track name + a couple of brand strips. */
-function gantryTexture(nameHe, size = 512) {
+const GANTRY_SKIN = {
+  oasis: { a: '#3a2418', b: '#5c3a22', c: '#2c1a11', rule: '#ffc247', text: '#ffd98a', lamp: ['rgba(255,246,214,0.95)', 'rgba(255,200,110,0)'] },
+  circuit: { a: '#0b1030', b: '#241a4d', c: '#080b22', rule: '#39e6ff', text: '#c9f6ff', lamp: ['rgba(180,246,255,0.95)', 'rgba(255,95,174,0)'] },
+  cloud: { a: '#e8dfd4', b: '#fbf3e6', c: '#d8cec2', rule: '#ffc247', text: '#7a5a2a', lamp: ['rgba(255,246,220,0.95)', 'rgba(255,214,150,0)'] },
+};
+
+function gantryTexture(nameHe, size = 512, theme = 'oasis') {
+  const K = GANTRY_SKIN[theme] || GANTRY_SKIN.oasis;
   return canvasTexture('gantry:' + nameHe, size, (ctx, S) => {
     const H = S / 4;                       // the beam is 4:1
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#3a2418'); g.addColorStop(0.5, '#5c3a22'); g.addColorStop(1, '#2c1a11');
-    ctx.fillStyle = '#1a1410'; ctx.fillRect(0, 0, S, S);
+    g.addColorStop(0, K.a); g.addColorStop(0.5, K.b); g.addColorStop(1, K.c);
+    ctx.fillStyle = K.c; ctx.fillRect(0, 0, S, S);
     ctx.fillStyle = g; ctx.fillRect(0, 0, S, H);
-    // gold rule lines
-    ctx.fillStyle = '#ffc247';
+    // accent rule lines
+    ctx.fillStyle = K.rule;
     ctx.fillRect(0, H * 0.06, S, H * 0.035);
     ctx.fillRect(0, H * 0.90, S, H * 0.035);
     ctx.direction = 'rtl'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = `bold ${Math.round(H * 0.48)}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
     ctx.fillText(nameHe, S / 2, H * 0.53 + H * 0.02);
-    ctx.fillStyle = '#ffd98a';
+    ctx.fillStyle = K.text;
     ctx.fillText(nameHe, S / 2, H * 0.51);
     // lamp strip along the bottom
     const lamps = 26;
@@ -243,7 +250,7 @@ function gantryTexture(nameHe, size = 512) {
       const x = (i + 0.5) / lamps * S;
       const r = H * 0.045;
       const rg = ctx.createRadialGradient(x, H * 0.965, 0, x, H * 0.965, r * 2.6);
-      rg.addColorStop(0, 'rgba(255,246,214,0.95)'); rg.addColorStop(1, 'rgba(255,200,110,0)');
+      rg.addColorStop(0, K.lamp[0]); rg.addColorStop(1, K.lamp[1]);
       ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(x, H * 0.965, r * 2.6, 0, 7); ctx.fill();
     }
   });
@@ -308,7 +315,9 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       kerbA: 0xbe2b58, kerbB: 0xe8e4ee, paint: 0xdfe6f2,
     },
     cloud: {
-      asphalt: 0x585b63, sandTint: 0xc9c6cf, dustTint: 0xb9b6c2,
+      // warm ivory, not lavender: at dawn the plateau catches the gold, and a
+      // cool grey run-off next to a warm sky reads as a rendering mistake
+      asphalt: 0x585b63, sandTint: 0xd9d1c5, dustTint: 0xcdc5b8,
       wall: 0xd7d2dd, wallMortar: 0xa39fae, rock: 0x8e8c9e,
       kerbA: 0xc44a6e, kerbB: 0xf6f2f6, paint: 0xf2eee6,
     },
@@ -492,20 +501,30 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     return a * 30 + b * 6.5 + c * 1.4;
   };
   const FLAT = RUNOFF + 1.2, BLEND = 46;
+  // פסגת הענן is not a plain: the circuit runs along the top of a stone plateau
+  // that simply STOPS. Past ~58 m the ground falls 130 m into the cloud sea,
+  // which is what makes the track read as floating rather than as a pale desert.
+  const SKY_TRACK = def.theme === 'cloud';
+  const reliefK = SKY_TRACK ? 0.22 : 1;
+  // The edge has to be visible FROM THE ROAD or the track is just a pale plain:
+  // flat for ~20 m past the barrier, then a sheer 60 m fall, then away into the
+  // cloud sea. 
+  const dropAt = (d, w) => (SKY_TRACK
+    ? sstep(w + 21, w + 34, d) * 62 + sstep(w + 34, w + 150, d) * 260 : 0);
   const heightAt = (x, z) => {
     const s = spline.closestT(new THREE.Vector3(x, 0, z));
     const d = Math.abs(s.lateral);
     const w = spline.widthAt(s.t);
     const k = sstep(w + FLAT, w + BLEND, d);
     const base = s.pos.y - 0.55;
-    return base + k * (relief(x, z) + 3.2 * k);
+    return base + k * (relief(x, z) * reliefK + 3.2 * k) - dropAt(d, w);
   };
   {
     const b = spline.bounds;
     const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2;
     const pad = 340;
     const sx = (b.maxX - b.minX) + pad * 2, sz = (b.maxZ - b.minZ) + pad * 2;
-    const N = q.propDensity >= 0.9 ? 168 : q.propDensity >= 0.6 ? 120 : 76;
+    const N = (q.propDensity >= 0.9 ? 168 : q.propDensity >= 0.6 ? 120 : 76) * (SKY_TRACK ? 1.5 : 1) | 0;
     const geo = new THREE.PlaneGeometry(sx, sz, N, N);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
@@ -518,13 +537,23 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       const d = Math.abs(s.lateral);
       const w = spline.widthAt(s.t);
       const k = sstep(w + FLAT, w + BLEND, d);
-      const y = s.pos.y - 0.55 + k * (relief(x, z) + 3.2 * k);
+      const y = s.pos.y - 0.55 + k * (relief(x, z) * reliefK + 3.2 * k) - dropAt(d, w);
       pos.setXYZ(i, pos.getX(i), y, pos.getZ(i));
       // tonal variation: ochre flats, redder on the rises, pale in the hollows
       const n = fbm(noise, x * 0.009 + 3, z * 0.009 - 2, 3);
       const rise = clamp01((y - s.pos.y) / 22);
       const r = lerp(0.86, 1.14, n) * lerp(1.0, 1.10, rise);
-      col[i * 3] = r * 1.02; col[i * 3 + 1] = r * 0.94; col[i * 3 + 2] = r * 0.84;
+      if (SKY_TRACK) {
+        // pale stone, going cooler and darker as the plateau falls away
+        const fall = clamp01(-(y - s.pos.y) / 70);
+        col[i * 3] = r * lerp(1.06, 0.62, fall);
+        col[i * 3 + 1] = r * lerp(1.00, 0.62, fall);
+        col[i * 3 + 2] = r * lerp(0.93, 0.78, fall);
+      } else if (def.theme === 'circuit') {
+        col[i * 3] = r * 0.94; col[i * 3 + 1] = r * 0.96; col[i * 3 + 2] = r * 1.06;
+      } else {
+        col[i * 3] = r * 1.02; col[i * 3 + 1] = r * 0.94; col[i * 3 + 2] = r * 0.84;
+      }
     }
     geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     geo.computeVertexNormals();
@@ -533,7 +562,9 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     // Terrain is mostly seen at 60-400 m, so it gets its own low-contrast sand
     // at a much coarser tile (36 m): a road-scale tile out here turns into a
     // shimmering moire carpet, which is the other classic procedural tell.
-    const groundMaps = tileable(sandTexture({ size: S, tint: P.dustTint, ripple: 0.25, seed: 91 }));
+    const groundMaps = tileable(SKY_TRACK
+      ? rockTexture({ size: S, tint: P.dustTint, bands: 7, contrast: 0.22 })
+      : sandTexture({ size: S, tint: P.dustTint, ripple: 0.25, seed: 91 }));
     const TILE = 36;
     const gmat = keep(new THREE.MeshStandardMaterial({
       map: groundMaps.map, roughness: 1, metalness: 0, vertexColors: true,
@@ -581,6 +612,40 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     wall.castShadow = !!q.shadows; wall.receiveShadow = !!q.shadows;
     wall.name = 'barrier';
     group.add(wall);
+  }
+
+  // A lit coping strip running the whole lap along the top of the barrier. On
+  // the night circuit this single unbroken line of neon is what draws the shape
+  // of the corner ahead out of the dark; on Cloud Peak it is a warm guide light.
+  // One sweep, one unlit material, one draw call.
+  if (def.theme === 'circuit' || def.theme === 'cloud') {
+    const hot = def.theme === 'circuit' ? 0x36e0ff : 0xffd68a;
+    const cool = def.theme === 'circuit' ? 0xff5fae : 0xffb0d0;
+    const mb = new MB(true);
+    const TH = 0.62;
+    for (const side of [-1, 1]) {
+      sweep(mb, spline, ts, (t, i) => {
+        const w = spline.widthAt(t);
+        const n1 = fbm(noise, t * 130 + (side > 0 ? 40 : 0), side * 7, 3);
+        const h = 1.02 + n1 * 0.42 + 0.09;
+        const b = w + RUNOFF;
+        // colour drifts slowly between the two neons around the lap
+        const mixk = 0.5 + 0.5 * Math.sin(t * Math.PI * 6 + (side > 0 ? 1.7 : 0));
+        const c1 = new THREE.Color(hot).lerp(new THREE.Color(cool), mixk);
+        const col = [c1.r, c1.g, c1.b];
+        return [
+          { l: side * (b - 0.04), h, u: 0, col },
+          { l: side * (b + TH * 0.5), h: h + 0.02, u: 0.5, col },
+          { l: side * (b + TH + 0.04), h, u: 1, col },
+        ];
+      }, { vScale: 4, swapUV: true, closed: true });
+    }
+    const g = mb.geometry(); geos.push(g);
+    const m = new THREE.Mesh(g, keep(new THREE.MeshBasicMaterial({
+      vertexColors: true, toneMapped: false, fog: true,
+    })));
+    m.name = 'neon-coping';
+    group.add(m);
   }
 
   // =========================================================================
@@ -678,16 +743,27 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
 
     // --- gantry ------------------------------------------------------------
     const fr = spline.frameAt(startT);
-    const woodMaps = tileable(woodTexture({ size: Math.min(S, 512), tint: 0xb9884f }));
-    const woodMat = keep(stdMat(woodMaps, { roughness: 0.92 }));
+    // The gantry is the first thing the player reads, so it wears the theme:
+    // desert timber, a night-city steel truss, or pale plateau stone.
+    const gantryMats = {
+      oasis: () => stdMat(tileable(woodTexture({ size: Math.min(S, 512), tint: 0xb9884f })), { roughness: 0.92 }),
+      circuit: () => stdMat(tileable(metalTexture({ size: Math.min(S, 512), tint: 0x7a828f })),
+        { roughness: 0.42, metalness: 0.65, color: 0x59606e, emissive: 0x101a33, emissiveIntensity: 0.6 }),
+      cloud: () => stdMat(tileable(stoneWallTexture({ size: Math.min(S, 512), tint: 0xece5dd, mortar: 0xc9c0b6, rows: 3, cols: 3 })),
+        { roughness: 0.85, color: 0xf2ece4 }),
+    };
+    const woodMat = keep((gantryMats[def.theme] || gantryMats.oasis)());
     // the artwork lives in the top quarter of the (square) canvas, so the board
     // samples only that band — full texel density on a 4:1 banner
-    const gTex = gantryTexture(def.nameHe, 1024);
+    const gTex = gantryTexture(def.nameHe, 1024, def.theme);
     gTex.repeat.set(1, 0.25); gTex.offset.set(0, 0.75);
     // FrontSide, one board per direction: a DoubleSide banner shows mirrored
     // Hebrew to anyone standing behind it.
     const gMat = keep(new THREE.MeshStandardMaterial({
-      map: gTex, roughness: 0.75, side: THREE.FrontSide, emissive: 0x2a1a0c, emissiveIntensity: 0.35,
+      map: gTex, roughness: 0.75, side: THREE.FrontSide,
+      emissiveMap: def.theme === 'oasis' ? null : gTex,
+      emissive: def.theme === 'circuit' ? 0xffffff : def.theme === 'cloud' ? 0xffffff : 0x2a1a0c,
+      emissiveIntensity: def.theme === 'circuit' ? 1.15 : def.theme === 'cloud' ? 0.5 : 0.35,
     }));
 
     const gan = new THREE.Group();
@@ -724,7 +800,9 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     }
     // pennants along the top of the beam, for silhouette
     {
-      const stripes = stripeTexture({ size: 128, colors: [0xd94f3d, 0xf5ead6], count: 3 });
+      const flagCols = { oasis: [0xd94f3d, 0xf5ead6], circuit: [0x39e6ff, 0x1b2140, 0xff5fae, 0x1b2140],
+        cloud: [0xffc247, 0xfdf4e6] }[def.theme] || [0xd94f3d, 0xf5ead6];
+      const stripes = stripeTexture({ size: 128, colors: flagCols, count: 3 });
       const fmb = new MB(false);
       const nF = 6;
       for (let i = 0; i < nF; i++) {
@@ -799,7 +877,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     dress = dressTrack(group, spline, def, engine, makeRng(7700 + def.points.length));
   }
 
-  void rockTexture; void metalMaps;
+  void metalMaps;
 
   const api = {
     group, spline, def, checkpoints, tokenSpots, heightAt, dress,
@@ -813,10 +891,182 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       group.clear();
     },
   };
+
+  // GUARD (see auditTrackClearance): sweep the finished lap and shout if any
+  // owned geometry stands in the drivable corridor. Nothing here has collision,
+  // so anything that does is a wall karts drive through. ~30 ms, build-time
+  // only, and it self-reports with the offending mesh's name.
+  if (opts.audit !== false) auditTrackClearance(api, { throwOnFail: !!opts.strictAudit });
+
   return api;
 }
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+// ===========================================================================
+// CLEARANCE AUDIT — the guard against "a wall lying across the track"
+// ===========================================================================
+//
+// The physics only models two things laterally: the track limit at `widthAt(t)`
+// and the barrier at `widthAt(t) + RUNOFF`. NOTHING else in the scene has
+// collision. So any scenery mesh that ends up standing inside the drivable
+// corridor is, by construction, a wall karts drive straight through — the exact
+// class of bug that shipped on oasis (see DECISIONS/report).
+//
+// This sweeps every TRIANGLE we own and reports anything occupying the corridor:
+//   |lateral| < widthAt(t) + MARGIN  AND  0.35 m < height above road < 4.6 m
+//
+// Triangles, not vertices: the mesa that shipped was a 7-sided prism with rings
+// of vertices at its base (-11 m) and its top (+40 m) and nothing in between, so
+// a vertex-only test walked straight past a 50 m wall standing on the road. Its
+// FACES crossed the corridor; none of its points did.
+//
+// Ground-level furniture (paint, kerbs, run-off, the chequer) is below the floor
+// of that volume and legitimately exempt; the gantry beam and the bunting are
+// above its ceiling. Everything else is a bug.
+const CORRIDOR = { floor: 0.35, ceil: 4.6, margin: 0.6, sample: 1.1 };
+const AUDIT_SKIP = new Set(['road', 'paint', 'kerbs', 'runoff', 'terrain', 'startline']);
+
+/**
+ * Sweep the lap and assert that nothing we built stands in the drivable
+ * corridor. Runs at build time on every track; O(triangles) thanks to a coarse
+ * occupancy grid that rejects the ~99% of scenery that is nowhere near the road.
+ *
+ * @param {{group:THREE.Group, spline}} track  a buildTrack() result
+ * @param {{throwOnFail?:boolean, log?:boolean}} opts
+ * @returns {Array<{mesh,count,x,y,z,t,lateral,height}>} one entry per offending mesh
+ */
+export function auditTrackClearance(track, opts = {}) {
+  const { group, spline } = track;
+  const byMesh = new Map();
+  const v = new THREE.Vector3();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const m4 = new THREE.Matrix4();
+  group.updateMatrixWorld(true);
+
+  // ---- coarse occupancy grid over the corridor ----------------------------
+  // Marks every 6 m cell the road passes through, so a triangle's AABB can be
+  // rejected with a handful of integer lookups instead of a closestT call.
+  const CELL = 6;
+  const bd = spline.bounds;
+  const gw = Math.max(1, Math.ceil((bd.maxX - bd.minX) / CELL));
+  const gh = Math.max(1, Math.ceil((bd.maxZ - bd.minZ) / CELL));
+  const occ = new Uint8Array(gw * gh);
+  const gx = x => Math.floor((x - bd.minX) / CELL);
+  const gz = z => Math.floor((z - bd.minZ) / CELL);
+  {
+    const steps = Math.max(200, Math.round(spline.length));
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps;
+      const w = spline.widthAt(t) + CORRIDOR.margin;
+      for (let l = -w; l <= w; l += CELL * 0.5) {
+        const p = spline.offsetPoint(t, l);
+        const cx = gx(p.x), cz = gz(p.z);
+        for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+          const ix = cx + dx, iz = cz + dz;
+          if (ix >= 0 && ix < gw && iz >= 0 && iz < gh) occ[iz * gw + ix] = 1;
+        }
+      }
+    }
+  }
+  const boxNearRoad = (x0, x1, z0, z1) => {
+    const i0 = Math.max(0, gx(x0)), i1 = Math.min(gw - 1, gx(x1));
+    const j0 = Math.max(0, gz(z0)), j1 = Math.min(gh - 1, gz(z1));
+    if (i1 < i0 || j1 < j0) return false;
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) if (occ[j * gw + i]) return true;
+    return false;
+  };
+
+  const test = (name, x, y, z) => {
+    v.set(x, 0, z);
+    const s = spline.closestT(v);
+    const lat = Math.abs(s.lateral);
+    if (lat > spline.widthAt(s.t) + CORRIDOR.margin) return false;
+    const h = y - s.pos.y;
+    if (h < CORRIDOR.floor || h > CORRIDOR.ceil) return false;
+    let rec = byMesh.get(name);
+    if (!rec) {
+      rec = { mesh: name, count: 0, worst: Infinity, x, y, z, t: s.t, lateral: s.lateral, height: h };
+      byMesh.set(name, rec);
+    }
+    rec.count++;
+    // "worst" = deepest inside the corridor, i.e. smallest |lateral|
+    if (lat < rec.worst) {
+      rec.worst = lat;
+      rec.x = x; rec.y = y; rec.z = z; rec.t = s.t; rec.lateral = s.lateral; rec.height = h;
+    }
+    return true;
+  };
+
+  /** Sample a world-space triangle densely enough that no 1 m gap slips past. */
+  const testTri = (name) => {
+    // vertical reject first: a triangle entirely above or below the corridor
+    // cannot cross it (the corridor floor/ceiling are measured from the road,
+    // which is within a few metres of the triangle's own y where it matters).
+    const minY = Math.min(a.y, b.y, c.y), maxY = Math.max(a.y, b.y, c.y);
+    const x0 = Math.min(a.x, b.x, c.x), x1 = Math.max(a.x, b.x, c.x);
+    const z0 = Math.min(a.z, b.z, c.z), z1 = Math.max(a.z, b.z, c.z);
+    if (!boxNearRoad(x0, x1, z0, z1)) return;
+    const n = Math.min(24, Math.max(2, Math.ceil(
+      Math.max(x1 - x0, z1 - z0, maxY - minY) / CORRIDOR.sample)));
+    for (let i = 0; i <= n; i++) {
+      for (let j = 0; i + j <= n; j++) {
+        const u = i / n, w2 = j / n, t2 = 1 - u - w2;
+        test(name,
+          a.x * t2 + b.x * u + c.x * w2,
+          a.y * t2 + b.y * u + c.y * w2,
+          a.z * t2 + b.z * u + c.z * w2);
+      }
+    }
+  };
+
+  group.traverse(o => {
+    if (!o.isMesh || AUDIT_SKIP.has(o.name)) return;
+    // Additive light cards that never write depth cannot read as an obstruction
+    // — a pool of neon lying on the wet tarmac is the point, not a bug.
+    const mm = Array.isArray(o.material) ? o.material[0] : o.material;
+    if (mm && mm.transparent && mm.depthWrite === false) return;
+    const geo = o.geometry;
+    const pos = geo?.attributes?.position;
+    if (!pos) return;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const label = o.name || 'unnamed:' + geo.uuid.slice(0, 6);
+    const idx = geo.index;
+    const triCount = idx ? idx.count / 3 : pos.count / 3;
+    const n = o.isInstancedMesh ? o.count : 1;
+    const bb = new THREE.Box3();
+    for (let k = 0; k < n; k++) {
+      if (o.isInstancedMesh) { o.getMatrixAt(k, m4); m4.premultiply(o.matrixWorld); }
+      else m4.copy(o.matrixWorld);
+      // whole-instance reject
+      bb.copy(geo.boundingBox).applyMatrix4(m4);
+      if (!boxNearRoad(bb.min.x, bb.max.x, bb.min.z, bb.max.z)) continue;
+      for (let f = 0; f < triCount; f++) {
+        const i0 = idx ? idx.getX(f * 3) : f * 3;
+        const i1 = idx ? idx.getX(f * 3 + 1) : f * 3 + 1;
+        const i2 = idx ? idx.getX(f * 3 + 2) : f * 3 + 2;
+        a.set(pos.getX(i0), pos.getY(i0), pos.getZ(i0)).applyMatrix4(m4);
+        b.set(pos.getX(i1), pos.getY(i1), pos.getZ(i1)).applyMatrix4(m4);
+        c.set(pos.getX(i2), pos.getY(i2), pos.getZ(i2)).applyMatrix4(m4);
+        testTri(label);
+      }
+    }
+  });
+
+  const hits = [...byMesh.values()];
+  if (opts.log !== false && hits.length && typeof console !== 'undefined') {
+    for (const h of hits) {
+      console.error(`[track ${track.def?.id}] CORRIDOR VIOLATION: mesh "${h.mesh}" (${h.count} samples), ` +
+        `deepest at (${h.x.toFixed(1)}, ${h.y.toFixed(1)}, ${h.z.toFixed(1)}) — t=${h.t.toFixed(4)} ` +
+        `lateral=${h.lateral.toFixed(2)} height=${h.height.toFixed(2)}`);
+    }
+  }
+  if (opts.throwOnFail && hits.length) {
+    throw new Error(`track ${track.def?.id}: ${hits.length} mesh(es) inside the drivable corridor: ` +
+      hits.map(h => h.mesh).join(', '));
+  }
+  return hits;
+}
 
 // ===========================================================================
 // PREVIEWS
@@ -856,8 +1106,14 @@ function wrap(engine, ctx, place) {
  * Driver's-eye view from just behind the start line, looking down the track —
  * the A/B frame against the reference art.
  */
-export function preview(engine) {
-  const ctx = baseScene(engine, 'oasis');
+export function preview(engine) { return previewFor(engine, 'oasis'); }
+/** Same framing on עיר המעגלים — the neon night city. */
+export function previewCircuit(engine) { return previewFor(engine, 'circuit'); }
+/** Same framing on פסגת הענן — dawn above the clouds. */
+export function previewCloud(engine) { return previewFor(engine, 'cloud'); }
+
+function previewFor(engine, id) {
+  const ctx = baseScene(engine, id);
   return wrap(engine, ctx, (camera, track, rig) => {
     const sp = track.spline, def = track.def;
     // Framed to match reference/image4.png: driver eye height, road filling the
@@ -887,8 +1143,12 @@ export function previewGrid(engine) {
 }
 
 /** High wide shot showing the whole circuit layout. */
-export function previewAerial(engine) {
-  const ctx = baseScene(engine, 'oasis');
+export function previewAerial(engine) { return previewAerialFor(engine, 'oasis'); }
+export function previewAerialCircuit(engine) { return previewAerialFor(engine, 'circuit'); }
+export function previewAerialCloud(engine) { return previewAerialFor(engine, 'cloud'); }
+
+function previewAerialFor(engine, id) {
+  const ctx = baseScene(engine, id);
   return wrap(engine, ctx, (camera, track, rig) => {
     const b = track.spline.bounds;
     const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2;
@@ -903,8 +1163,12 @@ export function previewAerial(engine) {
 }
 
 /** Three-quarter view of a dressed corner: kerbs, barrier, crowd. */
-export function previewCorner(engine) {
-  const ctx = baseScene(engine, 'oasis');
+export function previewCorner(engine) { return previewCornerFor(engine, 'oasis'); }
+export function previewCornerCircuit(engine) { return previewCornerFor(engine, 'circuit'); }
+export function previewCornerCloud(engine) { return previewCornerFor(engine, 'cloud'); }
+
+function previewCornerFor(engine, id) {
+  const ctx = baseScene(engine, id);
   return wrap(engine, ctx, (camera, track, rig) => {
     const sp = track.spline;
     // find the tightest corner

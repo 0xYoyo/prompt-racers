@@ -1,6 +1,8 @@
 // Shared boot + capture harness, used by both the real entry point and by the
 // isolated module previews that builders/critics screenshot.
 import { engine } from './engine.js';
+import { Raycaster, Vector3, Quaternion } from 'three';
+import { audio } from '../audio/audio.js';   // re-exported for the gates; main.js owns the real import
 import { save } from './save.js';
 import { applyDir, setLang } from '../ui/i18n.js';
 import { injectStyles } from '../ui/style.js';
@@ -28,6 +30,13 @@ export function installDebug() {
     state: () => ({ scene: engine.activeName, fps: engine.fps, quality: engine.q.name }),
   };
   window.__DEBUG = D;
+  // Handles the automated P0 gates need (tools/flowtest.mjs). Read-only; no game
+  // code depends on these, so they remain strippable.
+  // Only the classes the flow gates need. Materialising the whole THREE
+  // namespace retains FileLoader/ImageBitmapLoader, whose network calls trip the
+  // compliance scan for no runtime reason.
+  window.__THREE__ = { Raycaster, Vector3, Quaternion };
+  window.__AUDIO__ = audio;
   requestAnimationFrame(() => requestAnimationFrame(() => { D.ready = true; }));
   return D;
 }

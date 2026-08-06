@@ -138,8 +138,18 @@ export const THEMES = {
       ambient: 0.09, ambientColor: 0x9dc0ff,
       elevOverride: 13,
     },
-    fog: { density: 0.0038, near: 50, far: 700 },
-    ground: 0xf0dcc8,
+    // Fog: deliberately thinner than the other themes. `cloud` is a pale-on-pale
+    // palette, so at 0.0038 everything past ~200m collapsed to one peach value and
+    // the floating islands and light-falls that sell the concept lost their contrast
+    // exactly where they do the most work — the championship finale read as a
+    // generic pale circuit from the driver's seat. Halving it keeps the aerial
+    // perspective (the sky is still what distance converges to) while leaving the
+    // silhouettes enough separation to register.
+    fog: { density: 0.0019, near: 50, far: 700 },
+    // Cool, deeper plateau stone rather than near-white sand. This is the only
+    // large surface beside the road, so it carries the frame's value structure;
+    // pale ground against a pale sky left nothing for the eye to anchor on.
+    ground: 0x9fa8c4,
   },
 };
 

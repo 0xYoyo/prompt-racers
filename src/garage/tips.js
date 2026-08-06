@@ -30,15 +30,15 @@ export const TIPS = [
     titleHe: 'מה זה "טוב"?',
     titleEn: 'What does "good" mean?',
     bodyHe: 'בורג לא יודע מה זה "טוב", אז הוא ניחש לבד — והניחוש שלו הפעם היה {gain}. אולי בדיוק מה שהיה צריך, אולי לא. ברגע שכתוב מה בדיוק לשפר, זה מפסיק להיות הגרלה.',
-    bodyEn: 'Boreg has no idea what "good" means, so he guessed on his own — and this time the guess was {gain}. Maybe exactly right, maybe not. The moment the ask says what to improve, it stops being a lottery.',
+    bodyEn: 'Boreg has no idea what "good" means, so he guessed on his own — and this time the guess was {gain}. Maybe exactly right, maybe not. The moment the prompt says what to improve, it stops being a lottery.',
   },
   {
     id: 'spec.when-where', visit: 1,
     trigger: 'goal specificity >= 2 (the goal names a moment on the track)',
     titleHe: 'מתי ואיפה',
     titleEn: 'When and where',
-    bodyHe: 'בבקשה שלך היה רגע מדויק — "{goal}" — ולכן בורג ידע איזה חלק בדיוק לחזק. בקשה מדויקת, חלק מדויק.',
-    bodyEn: 'Your ask named an exact moment — "{goal}" — so Boreg knew exactly what to strengthen. Precise ask, precise part.',
+    bodyHe: 'בפרומפט שלך היה רגע מדויק — "{goal}" — ולכן בורג ידע איזה חלק בדיוק לחזק. פרומפט מדויק, חלק מדויק.',
+    bodyEn: 'Your prompt named an exact moment — "{goal}" — so Boreg knew exactly what to strengthen. Precise prompt, precise part.',
   },
   {
     id: 'budget.tradeoff', visit: 1,
@@ -53,8 +53,8 @@ export const TIPS = [
     trigger: 'player built a second part in the same visit (comparison moment)',
     titleHe: 'שווה להשוות',
     titleEn: 'Worth comparing',
-    bodyHe: 'אותו חלק, בקשה אחרת — ותוצאה אחרת לגמרי. בורג לא השתנה בין הבנייה הקודמת לזאת. הבקשה כן.',
-    bodyEn: 'Same part, different ask, completely different result. Boreg did not change between those two builds. The ask did.',
+    bodyHe: 'אותו חלק, פרומפט אחר — ותוצאה אחרת לגמרי. בורג לא השתנה בין הבנייה הקודמת לזאת. הפרומפט כן.',
+    bodyEn: 'Same part, different prompt, completely different result. Boreg did not change between those two builds. The prompt did.',
   },
 
   // ── VISIT 2 — constraints & trade-offs ──────────────────────────────────────
@@ -71,15 +71,15 @@ export const TIPS = [
     trigger: 'player picked a real constraint (specificity >= 2)',
     titleHe: 'הגבלה דווקא עוזרת',
     titleEn: 'A limit actually helps',
-    bodyHe: 'ההגבלה שנוספה לבקשה — "{limit}" — אילצה את בורג למצוא פתרון חכם יותר. הגבלה לא מקטינה את הבקשה, היא מחדדת אותה.',
-    bodyEn: 'The limit added to the ask — "{limit}" — forced Boreg into a cleverer answer. A limit does not shrink the ask, it sharpens it.',
+    bodyHe: 'ההגבלה שנוספה לפרומפט — "{limit}" — אילצה את בורג למצוא פתרון חכם יותר. הגבלה לא מקטינה את הפרומפט, היא מחדדת אותו.',
+    bodyEn: 'The limit added to the prompt — "{limit}" — forced Boreg into a cleverer answer. A limit does not shrink the prompt, it sharpens it.',
   },
   {
     id: 'constraint.coherent', visit: 2,
     trigger: 'goal and constraint pull on the same thing (coherence bonus earned)',
     titleHe: 'המטרה וההגבלה מסתדרות ביניהן',
     titleEn: 'The goal and the limit get along',
-    bodyHe: 'המטרה "{goal}" וההגבלה "{limit}" מושכות בדיוק לאותו כיוון, ולכן החלק יצא טוב יותר מסכום שתי הבקשות. כששני החצאים מדברים אותה שפה, התוצאה קופצת.',
+    bodyHe: 'המטרה "{goal}" וההגבלה "{limit}" מושכות בדיוק לאותו כיוון, ולכן החלק יצא טוב יותר מסכום שני החצאים. כששני החצאים מדברים אותה שפה, התוצאה קופצת.',
     bodyEn: 'The goal "{goal}" and the limit "{limit}" pull in exactly the same direction, so the part beat the sum of its two halves. When both halves speak the same language, the result jumps.',
   },
   {
@@ -97,8 +97,8 @@ export const TIPS = [
     trigger: 'player picked a style with specificity >= 2',
     titleHe: 'סגנון זה גם מידע',
     titleEn: 'Style is information too',
-    bodyHe: '"{style}" נתן לבורג תמונה בראש, אז החלק יצא אישי ולא סתם אפור. גם "איך זה נראה" הוא חלק מהבקשה.',
-    bodyEn: '"{style}" gave Boreg a picture in his head, so the part came out personal instead of generic grey. How it looks is part of the ask too.',
+    bodyHe: '"{style}" נתן לבורג תמונה בראש, אז החלק יצא אישי ולא סתם אפור. גם "איך זה נראה" הוא חלק מהפרומפט.',
+    bodyEn: '"{style}" gave Boreg a picture in his head, so the part came out personal instead of generic grey. How it looks is part of the prompt too.',
   },
   {
     id: 'style.default', visit: 3,
@@ -106,14 +106,14 @@ export const TIPS = [
     titleHe: 'מי שלא בוחר, בוחרים בשבילו',
     titleEn: 'Skip the choice and it gets made for you',
     bodyHe: 'בשורת הסגנון היה כתוב "לא משנה", אז בורג בחר לבד — והוא תמיד בוחר סגול. אם יש תמונה בראש, כדאי לכתוב אותה.',
-    bodyEn: 'The style row said "doesn\'t matter", so Boreg chose — and he always chooses purple. If there is a picture in your head, it is worth putting it in the ask.',
+    bodyEn: 'The style row said "doesn\'t matter", so Boreg chose — and he always chooses purple. If there is a picture in your head, it is worth putting it in the prompt.',
   },
   {
     id: 'combo.all', visit: 3,
     trigger: 'all three scored slots at specificity >= 2 (the full recipe)',
     titleHe: 'המתכון המלא',
     titleEn: 'The full recipe',
-    bodyHe: 'מה, מתי, מה אסור להרוס, ואיך זה נראה — ארבעה חלקים שהופכים בקשה מעורפלת לבקשה שאפשר לבנות ממנה.',
+    bodyHe: 'מה, מתי, מה אסור להרוס, ואיך זה נראה — ארבעה חלקים שהופכים פרומפט מעורפל לפרומפט שאפשר לבנות ממנו.',
     bodyEn: 'What, when, what must not break, and how it looks — four pieces that turn a fuzzy wish into something buildable.',
   },
   {
@@ -209,7 +209,7 @@ export function tipTitle(tip, lang = 'he') {
  *
  * @param sel   {part,goal,constraint,style} option ids
  * @param facts {goalSpec, constraintSpec, styleSpec, coherent, expert, lowFreeText, unspent}
- * @param ctx   {visit, seen:[tipId], buildsThisVisit}
+ * @param ctx   {visit, seen:[tipId], buildsThisVisit, scarce}
  * @returns tip ids, most relevant first, filtered to tips this visit has unlocked.
  *
  * Only ONE card is shown at a time in the UI (kids do not read walls of text);
@@ -250,7 +250,10 @@ export function pickTips(sel, facts, ctx = {}) {
   // Visit 1 lesson: specificity and where to spend.
   if (guided && facts.goalSpec === 0) add('spec.vague');
   if (guided && facts.goalSpec >= 2) add('spec.when-where');
-  if (guided && (facts.unspent || 0) >= 4) add('budget.tradeoff');
+  // `scarce !== false` so a caller that does not pass it keeps the old behaviour;
+  // the garage passes false when the wallet covers the most expensive prompt,
+  // in which case this card would be telling the child something untrue.
+  if (guided && ctx.scarce !== false && (facts.unspent || 0) >= 4) add('budget.tradeoff');
   if ((ctx.buildsThisVisit || 0) >= 1) add('spec.compare');
 
   // Prefer a card the player has not read yet; otherwise repeat the best match.

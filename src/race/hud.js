@@ -90,7 +90,7 @@ registerStrings({
     'hud.go': 'קדימה!',
     'hud.finalLap': 'הקפה אחרונה!',
     'hud.lapDone': 'סיימת הקפה {n}',
-    'hud.bestLap': 'ההקפה הכי מהירה שלך!',
+    'hud.bestLap': 'ההקפה הכי מהירה שלכם!',
     'hud.wrongWay': 'כיוון הפוך! מסתובבים',
     // Hebrew ordinals are words, so they need the "במקום ה…" frame to be
     // grammatical — and this is the same frame the results screen uses, so a

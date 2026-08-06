@@ -312,12 +312,43 @@ const paceForDifficulty = d01 => 0.815 + 0.150 * d01;
 //   * hold-back is larger, because keeping a runaway leader in sight is what
 //     saves a struggling 8-year-old, and driving slower can never make a race
 //     unwinnable for anybody.
+//
+// CEILING vs FLOOR, and why only one of them scales with difficulty
+// -----------------------------------------------------------------
+// The CEILING (catch-up) is scaled down as the championship escalates: a race-3
+// opponent is already running near its own flat-out, so there is very little
+// headroom left above it and handing out +7.5% there would push it past the
+// clean-lap cap the fairness argument rests on.
+//
+// The FLOOR (hold-back) used to be scaled down the same way — `BAND_HOLD *
+// (1 - 0.45 * d01)`, which left race 3 with 9.4% of authority instead of 17%.
+// That was the bug. The floor is the ONLY thing standing between a struggling
+// child and being lapped, and the need for it GROWS with difficulty, because
+// the base pace grows too (0.815 -> 0.965). Measured, 3-lap races, headless
+// autopilot player with top speed + accel scaled to `pace`, 3 seeds, laps
+// behind the winner at the moment the winner finishes:
+//
+//              race 1 (d1)   race 2 (d2)   race 3 (d3)
+//   70% pace   0.24 / 0.24   0.51 / 0.47   0.78 / 0.65      (before / after)
+//   60% pace   0.64 / 0.64   0.90 / 0.85   1.14 / 1.03
+//
+// i.e. at race 3 a 70%-pace child went from LAPPED (0.78 here, 1.04 in the
+// built game) to comfortably on the lead lap. Races 1 and 2 at 85% and 100%
+// are bit-identical, because at d01 = 0 this changes nothing at all.
+//
+// The DECLARED BOUND IS UNCHANGED: the band multiplier still lives inside
+// [1 - BAND_HOLD, 1 + BAND_CATCH] = [0.830, 1.075] and is still measured at
+// exactly 0.8300 .. 1.0750 over the 27-race sweep. All this does is let race 3
+// reach the same floor race 1 always could. Do not "fix" a future
+// never-lapped gap by widening these two constants — an unbounded band is the
+// thing kids notice and resent. tests/ai.test.mjs pins both the bound and the
+// guarantee.
 export const BAND_CATCH = 0.075;      // hard ceiling: +7.5% on target speed
 export const BAND_HOLD = 0.170;       // hard floor:   -17% on target speed
 const bandCatchMax = d01 => BAND_CATCH * (1 - 0.30 * d01);
-const bandHoldMax = d01 => BAND_HOLD * (1 - 0.45 * d01);
+const bandHoldMax = () => BAND_HOLD;               // difficulty-independent
 const packCatchMax = d01 => 0.026 * (1 - 0.30 * d01);
-const packHoldMax = d01 => 0.034 * (1 - 0.30 * d01);
+const packHoldMax = () => 0.034;                   // difficulty-independent
 // Seconds of gap at which each term is ~76% saturated. The pack is tight, so
 // its term has to react over a much shorter gap than the player's.
 const BAND_TAU = 6.0;
@@ -723,8 +754,11 @@ export class AIDriver {
     // Aim for our slot, not for the player's exact bumper.
     const rp = Math.tanh((gapSeconds + this.slotAhead * (1 - 0.35 * this.d01)) / BAND_TAU);
     const rk = Math.tanh(packGapSeconds / PACK_TAU);
-    const dPlayer = rp > 0 ? rp * bandCatchMax(this.d01) : rp * bandHoldMax(this.d01);
-    const dPack = rk > 0 ? rk * packCatchMax(this.d01) : rk * packHoldMax(this.d01);
+    // Catch-up (rp > 0, we are behind the human) is difficulty-scaled; hold-back
+    // (rp < 0, we are up the road and the human is struggling) is not. See the
+    // CEILING vs FLOOR note above the constants.
+    const dPlayer = rp > 0 ? rp * bandCatchMax(this.d01) : rp * bandHoldMax();
+    const dPack = rk > 0 ? rk * packCatchMax(this.d01) : rk * packHoldMax();
     const target = clamp(1 + dPlayer + dPack, 1 - BAND_HOLD, 1 + BAND_CATCH);
     // ~1.4s time constant: the band is a mood, never a gear change.
     this.band = damp(this.band, target, 0.7, dt);

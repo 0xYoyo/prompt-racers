@@ -87,3 +87,106 @@ currency of AI and that **every request to an AI costs tokens**; and (b) **after
 garage build**, Burg gives a short debrief connecting each filled slot to a prompting
 principle, with the ghost-preview card. Logged rather than asked, per the no-questions
 instruction.
+
+## D11 — Slow motion runs fewer fixed steps, never shorter ones
+The quiz needed slow motion. Scaling `dt` directly would have changed the physics timestep
+(kartphysics is tuned for exactly 1/60) and made lap times dishonest. The race loop is now
+split into `simulate(FIXED)` and `update(dtReal)`, with an accumulator: the quiz's time
+scale multiplies what goes *into* the accumulator, so slow motion emits fewer 1/60 steps
+per frame. Rendering, the camera and the HUD stay on real time so the world never stutters.
+Race and lap clocks only advance inside `simulate()`.
+
+## D12 — Held keys survive a pause
+Pausing used to call `input.reset()`, clearing the set of physically-held keys. Because
+`keydown` auto-repeats are deliberately ignored (they would make steering twitchy), a
+player holding accelerate through a pause or the first-token popup silently lost throttle
+and had to release and re-press. `Input` now tracks keys even while disabled and gates only
+`sample()`'s output; `reset()` is for teardown and `softReset()` (steering only) is for
+pause. Found by the flow gate, which stalled at exactly one token collected.
+
+## D13 — `window.__THREE__` exposes three classes, not the namespace
+The flow gates need `Raycaster` for the track-obstruction sweep. Re-exporting the whole
+THREE namespace from the capture harness retained `FileLoader`/`ImageBitmapLoader` — whose
+network calls tripped the compliance scan and added ~140KB. The harness now exposes only
+`{ Raycaster, Vector3, Quaternion }`. Bundle went 1.16 MB → 1.02 MB.
+
+## D14 — The compliance scan checks our source, not the vendored bundle
+Static scanning the built file for network APIs became a false positive once three's
+loaders were retained as unreachable dead code. The scan now covers `src/` strictly, and
+the real guarantee is the runtime check, which was strengthened to sweep all six scenes
+with request interception rather than only the boot screen.
+
+---
+
+# WAVE 2 — SMOOTHING PASS
+
+## D15 — One modal registry, in `ui/style.js`, because it is the only shared import
+Wave 2 shipped four things that can own the screen mid-race (first-token
+explainer, Boreg's introduction, quiz panel, pause menu) written by four agents,
+with no coordination. The bugs were real, not theoretical: the token explainer
+could land on a live quiz whose 20s timer kept running behind it; `1/2/3` still
+answered — and closed — that hidden question while the pause menu was up; and
+opening the pause menu over the token explainer let its resume call
+`scene.setPaused(false)`, restarting the race underneath a modal the child was
+still reading, with input disabled.
+
+The registry (`pushModal/popModal/modalOpen/modalHas`) lives in `ui/style.js`
+because it is the one module every UI subsystem in `race/`, `garage/` and `ui/`
+already imports, and it has no imports of its own — anywhere else creates a
+cycle. It is a Set of ids, nothing more.
+
+The policy it encodes, stated because it is a design choice and not an obvious one:
+- The quiz **defers** behind anything else (its beacon respawns, nothing is lost).
+- The one-time explainers **defer** behind anything else (`shouldShowFirstTokenPopup()`
+  answers false; the save flag is untouched, so the next token shows it).
+- The pause menu **may** open over a quiz — the quiz only slows the world, and a
+  child must never be unable to pause for twenty seconds. It refuses only over
+  the explainers, which already froze the sim and have their own dismissal.
+- Escape belongs to the topmost panel. The token explainer now takes it in the
+  capture phase, so it never reaches `input.js`.
+
+Pinned by `tools/modaltest.mjs` (13 checks against the real build).
+
+## D16 — Quiz pacing is fixed with the cooldown, not with the timer
+The brief's instruction was to tune `TIME_LIMIT` first. Measured first instead,
+on the built game: fraction of a three-lap race with a panel up, autopilot,
+comparing a player who answers against one who ignores every question.
+
+| | before | after |
+|---|---|---|
+| ignores every question | ~83% of the race slowed, 5–6 questions | **~40%, 3 questions** |
+| answers promptly | ~20%, 7 questions | **~20%, 7 questions** |
+
+`TIME_LIMIT` came down 24/22/20 → 20/18/16 and `READ_SCALE` 0.72 → 0.78, but the
+move that did the work was a **second cooldown**: `COOLDOWN_S` 10s after an
+answered question, `COOLDOWN_IGNORED_S` 24s after one that timed out. That is
+what separates the two columns above — it fixes the case that dragged without
+touching the case that was already fine, and it is a pacing rule rather than a
+punishment: the reward for engaging is *more* questions, not fewer. Cutting the
+timer alone would have hit the slow reader, who is the one person the timer was
+explicitly written not to hurt.
+
+## D15 — Token economy thinned at the source, and the garage rebate capped below the spend
+Measurement (not intuition) showed the garage's lesson had stopped being true: a race
+banked ~36 tokens against a 21-token maximum spend, and `tokenReward` refunded 18 against
+a ~13 spend, so every visit profited and the wallet compounded. Two fixes:
+
+1. **Thin the token spots in `race.js`, not the numbers downstream.** Capping the garage's
+   view, rescaling prices, or normalising in `scenes.js` would each have made one of the
+   three on-screen numbers (HUD counter, results "earned", garage budget) contradict the
+   other two — which in front of a child is worse than a generous budget.
+2. **Cap `tokenReward` below the spend** (8 guided / 12 expert). The prize for a good
+   prompt is the better part; the rebate is a bonus, not an income. A reward a player can
+   farm is an exploit with a friendly name.
+
+A winning run now banks ~20 against a 21 maximum, so even a strong player must choose.
+Pinned by a token-yield gate in `flowtest.mjs` that prints the full breakdown each run.
+
+## D16 — Modal traffic control lives in `ui/style.js`
+Three things can interrupt a race (token explainer, Boreg's intro, quiz panels) plus the
+pause overlay. Nothing coordinated them, and three real failures resulted — a token popup
+opening over a live quiz whose timer kept running, digit keys answering a hidden quiz
+through the pause menu, and pause-resume restarting the race underneath a modal the child
+was still reading. The registry lives in `style.js` because it is the only module every
+subsystem already imports; anywhere else would have created an import cycle. Pinned by
+`tools/modaltest.mjs`.

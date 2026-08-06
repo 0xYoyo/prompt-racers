@@ -16,6 +16,11 @@ import { save } from '../core/save.js';
 import { bus } from '../core/bus.js';
 import { makeRng } from '../core/rng.js';
 import { ROSTER as ROSTER_IMPORT } from '../kart/roster.js';
+// learn.js builds on overlayRoot() from this file, so these two modules import
+// each other. That is safe here and only here: every binding crossing the cycle
+// is a hoisted function declaration, and neither module calls into the other
+// while its top level is still running.
+import { howBuiltOverlay, certificateOverlay } from './learn.js';
 
 /* ══════════════════════════════════════════════════════════════════ roster ══ */
 
@@ -86,7 +91,9 @@ registerStrings({
     'menu.newChamp': 'אליפות חדשה',
     'menu.continue': 'ממשיכים באליפות',
     'menu.howto': 'איך משחקים',
+    'menu.freePlay': 'המוסך של בורג',
     'menu.settings': 'הגדרות',
+    'menu.back': 'חזרה',
     'menu.enterHint': 'לוחצים Enter כדי להתחיל',
     'menu.key.steer': 'היגוי',
     'menu.key.gas': 'גז',
@@ -99,7 +106,7 @@ registerStrings({
     'menu.select.sub': 'בוחרים דמות עם החצים ולוחצים Enter',
     'menu.select.go': 'לזינוק!',
     'menu.select.you': 'זה אני',
-    'menu.select.player': 'הדמות שלך',
+    'menu.select.player': 'הדמות שלכם',
     'menu.stat.speed': 'מהירות',
     'menu.stat.accel': 'תאוצה',
     'menu.stat.handling': 'אחיזה',
@@ -110,21 +117,21 @@ registerStrings({
     'menu.results.racer': 'דמות',
     'menu.results.time': 'זמן',
     'menu.results.gap': 'פער',
-    'menu.results.tokens': 'טוקנים שהרווחת',
-    'menu.results.bestlap': 'ההקפה המהירה שלך',
+    'menu.results.tokens': 'טוקנים שהרווחתם',
+    'menu.results.bestlap': 'ההקפה המהירה שלכם',
     'menu.results.garage': 'למוסך',
     'menu.results.next': 'המרוץ הבא',
     'menu.results.menu': 'לתפריט',
-    'menu.results.youPlaced': 'סיימת במקום ה{p}',
+    'menu.results.youPlaced': 'סיימתם במקום ה{p}',
     'menu.results.tokenHint': 'טוקנים הם הדלק של המוסך — קונים איתם שדרוגים',
 
     'menu.podium.champ': 'אלוף האליפות!',
     'menu.podium.done': 'סוף האליפות',
-    'menu.podium.congratsWin': 'כל הכבוד, {name}! לקחת את גביע מרוץ הפרומפטים.',
-    'menu.podium.congrats': 'סיימת את האליפות במקום ה{p}, {name}. מרוץ יפה!',
+    'menu.podium.congratsWin': 'כל הכבוד, {name}! לקחתם את גביע מרוץ הפרומפטים.',
+    'menu.podium.congrats': 'סיימתם את האליפות במקום ה{p}, {name}. מרוץ יפה!',
     'menu.podium.table': 'טבלת האליפות',
     'menu.podium.points': 'נק׳',
-    'menu.podium.total': 'סך הנקודות שלך',
+    'menu.podium.total': 'סך הנקודות שלכם',
     'menu.podium.again': 'אליפות חדשה',
     'menu.podium.menu': 'לתפריט הראשי',
 
@@ -144,10 +151,7 @@ registerStrings({
     'menu.set.resetDone': 'הכול אופס. מתחילים מחדש!',
     'menu.set.close': 'סגירה',
 
-    'menu.pause.title': 'הפסקה',
-    'menu.pause.resume': 'חזרה למרוץ',
-    'menu.pause.restart': 'מתחילים מחדש',
-    'menu.pause.quit': 'יציאה לתפריט',
+    // menu.pause.* is registered by ui/pause.js, which owns that screen.
 
     'menu.how.title': 'איך משחקים',
     'menu.how.driveT': 'נוהגים',
@@ -167,7 +171,9 @@ registerStrings({
     'menu.newChamp': 'New Championship',
     'menu.continue': 'Continue Championship',
     'menu.howto': 'How to Play',
+    'menu.freePlay': "Boreg's Garage",
     'menu.settings': 'Settings',
+    'menu.back': 'Back',
     'menu.enterHint': 'Press Enter to start',
     'menu.key.steer': 'Steer',
     'menu.key.gas': 'Accelerate',
@@ -225,11 +231,6 @@ registerStrings({
     'menu.set.resetDone': 'All reset. Fresh start!',
     'menu.set.close': 'Close',
 
-    'menu.pause.title': 'Paused',
-    'menu.pause.resume': 'Resume Race',
-    'menu.pause.restart': 'Restart Race',
-    'menu.pause.quit': 'Quit to Menu',
-
     'menu.how.title': 'How to Play',
     'menu.how.driveT': 'Drive',
     'menu.how.driveB': 'Left and right arrows steer, up arrow gives it gas.',
@@ -238,8 +239,8 @@ registerStrings({
     'menu.how.tokenT': 'Collect tokens',
     'menu.how.tokenB': 'Every race pays out tokens based on where you finish.',
     'menu.how.garageT': 'Upgrade in the garage',
-    'menu.how.garageB': 'Write Bolt a prompt and he builds you a part. Sharper prompt, stronger part.',
-    'menu.how.boreg': "I'm Bolt, nice to meet you!",
+    'menu.how.garageB': 'Write Boreg a prompt and he builds you a part. Sharper prompt, stronger part.',
+    'menu.how.boreg': "I'm Boreg, nice to meet you!",
     'menu.how.got': 'Got it, go!',
   },
 });
@@ -337,6 +338,18 @@ const MENU_CSS = `
     0 .055em 0 rgba(0,0,0,.45)}
 .mn-sub{font-size:clamp(12px,1.2vw,15px);font-weight:700;letter-spacing:.13em;color:rgba(244,241,234,.66)}
 .rtl .mn-sub{letter-spacing:.02em}
+
+/* ---------- shared back button ---------- */
+/* The head keeps its centred title; the back button floats at the inline start so
+   it never steals width from it, and falls back into the flow when there is none. */
+.mn-headrow{position:relative;width:100%;display:flex;justify-content:center;align-items:center;
+  gap:10px;flex-wrap:wrap}
+.mn-headrow .mn-head{flex:1 1 auto}
+.mn-back{display:inline-flex;align-items:center;gap:6px;font-size:14px;padding:9px 18px;flex:none}
+.mn-back span{font-size:15px;line-height:1;opacity:.8;direction:ltr;unicode-bidi:isolate}
+@media (min-width:900px){
+  .mn-back{position:absolute;inset-inline-start:0;inset-block-start:0}
+}
 
 /* ---------- racer select ---------- */
 .mn-grid{display:grid;gap:clamp(8px,min(1.1vw,1.6vh),16px);width:min(1360px,100%);margin:0 auto}
@@ -713,6 +726,14 @@ function makeBackdrop(engine) {
 
 let _engine = null;   // last engine seen — lets the standalone overlays reach setQuality
 
+// One level up from each screen. 'menu' is the root and deliberately absent.
+const BACK_TO = {
+  select: 'menu',
+  results: 'menu',
+  garage: 'menu',
+  podium: 'menu',
+};
+
 // Shared plumbing: backdrop, DOM root, keyboard, language rebuild, teardown.
 function baseScreen(engine, opts, build) {
   _engine = engine || _engine;
@@ -745,6 +766,15 @@ function baseScreen(engine, opts, build) {
       cleanups.push(bus.on('lang:changed', () => { stage.replaceChildren(); rebuild(); }));
     },
     go(name, o) { if (engine?.goto) engine.goto(name, o); else bus.emit('menu:goto', { name, opts: o }); },
+    // Back-navigation, one level up. There must be no screen a player can get
+    // stuck on, so every screen either has a parent here or is already the root.
+    back(from) {
+      const parent = BACK_TO[from] ?? BACK_TO[engine?.activeName];
+      if (parent) api.go(parent);
+    },
+    // True while any overlay is on top of this screen — the screen's own key
+    // handler must then keep its hands off the keyboard.
+    overlayOpen: () => !!document.querySelector('.mn-ov'),
   };
 
   const extra = build(api) || {};
@@ -765,6 +795,14 @@ function baseScreen(engine, opts, build) {
     },
     ...(extra.expose || {}),
   };
+}
+
+/**
+ * Just the golden-hour backdrop, no screen furniture. ui/pause.js previews the
+ * pause dialog over this, and the lead can use it as a loading/transition plate.
+ */
+export function backdropScene(engine, opts = {}) {
+  return baseScreen(engine, opts, () => ({}));
 }
 
 /* ═══════════════════════════════════════════════════════════ small pieces ══ */
@@ -886,7 +924,14 @@ export function titleScene(engine, opts = {}) {
         hasSave ? h('button.btn.ghost', {
           onclick: () => { save.set({ championshipRace: 0, results: [] }); api.go('select', { fresh: true }); },
         }, t('menu.newChamp')) : null,
+        // Free play: the garage with no race attached and no token pressure, so a
+        // child can practise writing asks without a championship riding on it.
+        // Routes to the registry's 'freeplay' scene (scenes.js → freePlayScene),
+        // and still passes freePlay:true so a garage reached any other way behaves
+        // the same.
+        h('button.btn.ghost', { onclick: () => api.go('freeplay', { freePlay: true }) }, t('menu.freePlay')),
         h('button.btn.ghost', { onclick: () => howToPlayOverlay() }, t('menu.howto')),
+        h('button.btn.ghost', { onclick: () => howBuiltOverlay() }, t('learn.built.title')),
         h('button.btn.ghost', { onclick: () => settingsOverlay({ engine }) }, t('menu.settings')));
 
       appendAll(api.stage,
@@ -903,10 +948,17 @@ export function titleScene(engine, opts = {}) {
     api.rebuildOnLang(build);
 
     api.onKey(e => {
-      if (document.querySelector('.mn-ov')) return;
+      if (api.overlayOpen()) return;
       if (e.key === 'Enter') { e.preventDefault(); api.go('select'); }
       else if (e.key === 'h' || e.key === '?') howToPlayOverlay();
+      else if (e.key === 'b') howBuiltOverlay();
       else if (e.key === 's') settingsOverlay({ engine });
+      // Escape on the title screen: this is the root, so there is nowhere to go
+      // back to. Put focus on the primary CTA instead of silently doing nothing.
+      else if (e.key === 'Escape') {
+        e.preventDefault();
+        api.stage.querySelector('.mn-btn-xl')?.focus({ preventScroll: true });
+      }
     });
   });
 }
@@ -1001,9 +1053,14 @@ export function racerSelectScene(engine, opts = {}) {
         h('button.btn.mn-btn-xl', { onclick: start }, t('menu.select.go')));
 
       appendAll(api.stage,
-        h('div.mn-head.fade-in', null,
-          h('div.mn-h1.display', null, t('menu.select.title')),
-          h('div.mn-sub', null, t('menu.select.sub'))),
+        // A visible way back, not only Escape: plenty of children play this with
+        // a mouse or a touchpad and never touch a key they were not told about.
+        h('div.mn-headrow', null,
+          h('button.btn.ghost.mn-back', { onclick: () => api.back('select') },
+            h('span', { 'aria-hidden': 'true' }, isRTL() ? '→' : '←'), t('menu.back')),
+          h('div.mn-head.fade-in', null,
+            h('div.mn-h1.display', null, t('menu.select.title')),
+            h('div.mn-sub', null, t('menu.select.sub')))),
         grid,
         go,
         h('div.mn-spacer'),
@@ -1012,20 +1069,31 @@ export function racerSelectScene(engine, opts = {}) {
           keyHint(['Enter'], 'menu.select.go'),
           keyHint(['Esc'], 'menu.key.back')));
 
-      applyCols(api.engine?.width || innerWidth);
+      applyColsSettled(api.engine?.width || innerWidth);
       select(index, false);
     };
 
+    // The width handed to resize() can be one frame stale (the engine reads
+    // clientWidth on the resize event, which in headless Chrome occasionally
+    // beats layout). A stale 800 leaves the grid at three columns on a 1600px
+    // screen, which is tall enough to push the "לזינוק!" CTA off the bottom —
+    // the exact class of bug the layout gate exists to catch, and it showed up
+    // as an intermittent failure. Re-apply from the authoritative innerWidth on
+    // the next frame so the column count can never be left behind.
     function applyCols(w) {
-      cols = colsFor(w);
+      cols = colsFor(Math.round(w || api.engine?.width || innerWidth));
       if (grid) grid.style.gridTemplateColumns = `repeat(${cols},minmax(0,1fr))`;
+    }
+    function applyColsSettled(w) {
+      applyCols(w);
+      requestAnimationFrame(() => applyCols(innerWidth));
     }
 
     build();
     api.rebuildOnLang(build);
 
     api.onKey(e => {
-      if (document.querySelector('.mn-ov')) return;
+      if (api.overlayOpen()) return;
       // Visual movement, not index movement: under RTL the grid runs right-to-left,
       // so pressing ← walks FORWARD through the array.
       const fwd = isRTL() ? 1 : -1;   // delta applied by ArrowLeft
@@ -1037,12 +1105,12 @@ export function racerSelectScene(engine, opts = {}) {
         case 'Home': e.preventDefault(); select(0); break;
         case 'End': e.preventDefault(); select(RACERS.length - 1); break;
         case 'Enter': case ' ': e.preventDefault(); start(); break;
-        case 'Escape': e.preventDefault(); api.go('menu'); break;
+        case 'Escape': e.preventDefault(); api.back('select'); break;
         default: break;
       }
     });
 
-    return { resize: w => applyCols(w) };
+    return { resize: w => applyColsSettled(w) };
   });
 }
 
@@ -1143,9 +1211,9 @@ export function resultsScene(engine, opts = {}) {
     api.onCleanup(() => stopCount());
 
     api.onKey(e => {
-      if (document.querySelector('.mn-ov')) return;
+      if (api.overlayOpen()) return;
       if (e.key === 'Enter') { e.preventDefault(); api.go('garage'); }
-      if (e.key === 'Escape') { e.preventDefault(); api.go('menu'); }
+      if (e.key === 'Escape') { e.preventDefault(); api.back('results'); }
     });
   });
 }
@@ -1359,6 +1427,23 @@ export function podiumScene(engine, opts = {}) {
     for (let i = 0; i < (REDUCED() ? 240 : 300); i++) stepConfetti(1 / 60);
 
     /* ---- DOM overlay ---- */
+    // The certificate is the pay-off for the whole championship, so the podium
+    // offers it as the primary action. The lead passes the run's best prompt in
+    // through opts.bestPrompt (see certificateOverlay in ui/learn.js).
+    function openCertificate() {
+      const meRacer = racerById(me?.racerId);
+      return certificateOverlay({
+        bestPrompt: opts.bestPrompt,
+        racerName: racerName(meRacer),
+        championship: opts.championship,
+        races: Array.isArray(opts.races) ? opts.races.filter(Boolean).length : undefined,
+        points: Number.isFinite(opts.totalPoints) ? opts.totalPoints
+          : (me?.points ?? pointsFor(me?.place || 1)),
+        place: me?.place || 1,
+        onMenu: () => api.go('menu'),
+      });
+    }
+
     const build = () => {
       const meRacer = racerById(me?.racerId);
       const won = (me?.place || 9) === 1;
@@ -1388,7 +1473,8 @@ export function podiumScene(engine, opts = {}) {
             h('b', null, t('menu.podium.total')),
             h('em.num', null, num(total)))),
         h('div.mn-bottom.pop-in', { style: { animationDelay: '.26s' } },
-          h('button.btn.mn-btn-xl', { onclick: () => api.go('menu') }, t('menu.podium.menu')),
+          h('button.btn.mn-btn-xl', { onclick: openCertificate }, t('learn.cert.title')),
+          h('button.btn.ghost', { onclick: () => api.go('menu') }, t('menu.podium.menu')),
           h('button.btn.ghost', {
             onclick: () => { save.set({ championshipRace: 0, results: [] }); api.go('select', { fresh: true }); },
           }, t('menu.podium.again'))));
@@ -1400,10 +1486,13 @@ export function podiumScene(engine, opts = {}) {
     };
     build();
     api.rebuildOnLang(rebuild);
+    // The lead can have the award appear by itself once the podium has settled.
+    if (opts.showCertificate) requestAnimationFrame(openCertificate);
 
     api.onKey(e => {
-      if (document.querySelector('.mn-ov')) return;
-      if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); api.go('menu'); }
+      if (api.overlayOpen()) return;
+      if (e.key === 'Enter') { e.preventDefault(); openCertificate(); }
+      else if (e.key === 'Escape') { e.preventDefault(); api.back('podium'); }
     });
 
     const podiumApi = {
@@ -1456,14 +1545,25 @@ export function podiumScene(engine, opts = {}) {
 /* ═══════════════════════════════════════════════════════════════ overlays ══ */
 
 // Element.append() would stringify a null child into the literal text "null".
-function appendAll(parent, ...kids) {
+export function appendAll(parent, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) parent.append(k);
   return parent;
 }
 
 let _dlgSeq = 0;
 
-function overlayRoot(dialogClass = '') {
+/**
+ * The one overlay mechanism in the game — ui/pause.js and ui/learn.js build on
+ * this rather than growing a second one. Handles: modal semantics, focus trap,
+ * focus restored to whatever opened it, Escape-to-close, backdrop click, and
+ * language rebuild.
+ *
+ * @param {string} [dialogClass] extra class on the dialog box
+ * @returns {{ov, dialog, titleId, close, focusFirst, watchLang, onClose, onEscape}}
+ *   `onClose` runs after teardown. `onEscape`, if set, REPLACES the default
+ *   close-on-Escape (a nested step can then step back instead of closing).
+ */
+export function overlayRoot(dialogClass = '') {
   injectMenuCSS();
   const host = document.getElementById('ui') || document.body;
   const opener = document.activeElement;   // restored on close, so Tab order survives
@@ -1480,6 +1580,7 @@ function overlayRoot(dialogClass = '') {
   const api = {
     ov, dialog, titleId,
     onClose: null,
+    onEscape: null,
     close() {
       if (closed) return;
       closed = true;
@@ -1495,7 +1596,15 @@ function overlayRoot(dialogClass = '') {
   };
 
   function onKey(e) {
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); api.close(); return; }
+    // Every open overlay listens on window in the capture phase, so without this
+    // guard one Escape closed the whole stack at once (settings opened from the
+    // pause menu took the pause menu down with it, unpausing the race).
+    if (!isTopOverlay(ov)) return;
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      if (api.onEscape) api.onEscape(); else api.close();
+      return;
+    }
     if (e.key === 'Tab') {
       const f = focusables();
       if (!f.length) return;
@@ -1512,6 +1621,12 @@ function overlayRoot(dialogClass = '') {
   let offLang = () => {};
   api.watchLang = rebuild => { offLang = bus.on('lang:changed', rebuild); };
   return api;
+}
+
+// The last .mn-ov in document order is the one on top.
+function isTopOverlay(ov) {
+  const all = document.querySelectorAll('.mn-ov');
+  return !all.length || all[all.length - 1] === ov;
 }
 
 function segmented(options, current, onPick) {
@@ -1585,34 +1700,9 @@ export function settingsOverlay(opts = {}) {
   return o;
 }
 
-/** Reusable pause overlay. Emits on the bus so the race scene stays decoupled. */
-export function pauseOverlay(opts = {}) {
-  const engine = opts.engine || _engine;
-  const o = overlayRoot();
-  let leaving = false;
-  const act = (evt, fn) => () => { leaving = evt !== 'race:resume'; o.close(); bus.emit(evt); fn?.(); };
-
-  const build = () => {
-    o.dialog.replaceChildren();
-    appendAll(o.dialog,
-      h('h2.display-white', { id: o.titleId, style: { textAlign: 'center' } }, t('menu.pause.title')),
-      h('div.col', { style: { marginBlockStart: '18px', alignItems: 'stretch' } },
-        h('button.btn', { onclick: act('race:resume', opts.onResume) }, t('menu.pause.resume')),
-        h('button.btn.ghost', { onclick: act('race:restart', opts.onRestart) }, t('menu.pause.restart')),
-        h('button.btn.ghost', { onclick: () => settingsOverlay({ engine }) }, t('menu.settings')),
-        h('button.btn.ghost', {
-          onclick: () => { leaving = true; o.close(); bus.emit('race:quit'); opts.onQuit ? opts.onQuit() : engine?.goto?.('menu'); },
-        }, t('menu.pause.quit'))));
-    o.focusFirst();
-  };
-
-  build();
-  o.watchLang(build);
-  // Dismissing the overlay (Esc / backdrop click) resumes; an explicit
-  // restart/quit must not fire a stray resume on its way out.
-  o.onClose = () => { if (!leaving) { bus.emit('race:resume'); opts.onResume?.(); } };
-  return o;
-}
+// NOTE: the pause overlay now lives in ui/pause.js, together with the controller
+// that actually owns the paused state (see attachPauseControl there). It builds on
+// overlayRoot() above, so there is still exactly one overlay mechanism.
 
 /** Short, visual, kid-facing explainer. */
 export function howToPlayOverlay(opts = {}) {

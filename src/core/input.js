@@ -37,7 +37,10 @@ export class Input {
       // Never swallow browser chrome shortcuts or accessibility keys.
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (KEYS.pause.includes(e.code)) { bus.emit('input:pause'); e.preventDefault(); return; }
-      if (!this.enabled) return;
+      // Track even while disabled. Gating the key SET (rather than just the output)
+      // means a key held across a pause or a modal is forgotten on resume — and
+      // because keydown auto-repeats are ignored above, the player has to release
+      // and re-press to get throttle back. Only `sample()` respects `enabled`.
       if (isGameKey(e.code)) { this.down.add(e.code); e.preventDefault(); }
     };
     this._ku = e => { this.down.delete(e.code); };
@@ -79,7 +82,11 @@ export class Input {
     };
   }
 
+  /** Full clear. Use on scene teardown — NOT on pause (see the keydown note). */
   reset() { this.down.clear(); this._steer = 0; }
+
+  /** Zero the smoothed steering without forgetting which keys are physically held. */
+  softReset() { this._steer = 0; }
 
   dispose() {
     removeEventListener('keydown', this._kd);

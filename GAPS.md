@@ -107,6 +107,37 @@ Tier-3 "hero" parts use emissive materials, but without a bloom pass emissive re
 lighter-coloured plastic rather than as glow. The hero tier compensates with geometry
 (chrome swan-necks) instead. A bloom pass is a renderer-level change for Wave 2.
 
+### Cloud Peak does not read as "above the clouds" from the driver's seat
+The championship finale's whole concept — floating stone islands over a cloud sea — lands
+in the aerial view and on the wide corners, but not from the seated chase camera, because
+the plateau's own edge sits behind the barrier and crowd. Wave 2 improved the value
+structure (fog density 0.0038 → 0.0019 so distant silhouettes stop collapsing into the
+sky, and a cooler/darker plateau stone `0xf0dcc8` → `0x9fa8c4` to give the frame an
+anchor), which helped but did not solve it. The real fix is structural: drop or lower the
+barrier on the outside of the two widest corners so the drop-off is visible from a seated
+camera, or bring an island into the near band on the player's side. Track 3 is the
+finale — it should be the most spectacular of the three and is currently the least.
+
+### Token economy — fixed, but worth watching in playtest
+Wave 2 measurement found the garage's central lesson ("precision costs, so choose where
+it is worth spending") had quietly stopped being true. Two independent causes:
+- One race banked ~36–45 tokens against a max garage spend of 21 and a budget of 17, so
+  the budget never bound for anyone who raced competently.
+- `tokenReward` refunded **more than the spend** (score 84 → 18 tokens back on a ~13
+  spend), so every garage visit turned a profit and the wallet compounded.
+
+Now: token spots thinned at the source (a winning run banks ~20), and the rebate capped
+below the spend (8 guided / 12 expert). Pinned by a token-yield assertion in
+`tools/flowtest.mjs` that prints the pickups/quiz/finish breakdown every run. The band is
+6–28; if playtesting shows children finishing races unable to afford a specific prompt,
+raise the floor rather than the ceiling.
+
+### Quiz pacing when questions are ignored
+A player who ignores every quiz panel still spends ~40% of a race in slow motion (down
+from ~83%). Fixed with an asymmetric cooldown — 10s after an answered question, 24s after
+a timeout — rather than by shortening the timer, which would have punished slow readers,
+the people the generous timer exists for. Watch whether 40% still feels draggy.
+
 ## Fixed during integration (recorded because each would have shipped silently)
 - **Garage upgrades never reached the physics.** Three subsystems named the same four
   slots differently (`tires`/`wing`/`chassis` vs `tyres`/`frame`/`turbo`), so every
@@ -128,3 +159,50 @@ lighter-coloured plastic rather than as glow. The hero tier compensates with geo
 - Juice pass: richer particles, screen-shake tuning, crowd animation.
 - Performance pass on the `low` tier against real mid-range hardware.
 - Final cross-game smoothing of difficulty curve and copy tone.
+
+## Wave 2 — found by the smoothing pass, left for the owning file
+
+### The token economy is ~2–3× too generous, and the fix is in `race/race.js`
+Measured on the built game, autopilot, oasis, answering quizzes: **45 tokens
+banked from one race** (31 collected on track — pickups plus quiz rewards — plus
+a 14-token win bonus). A player who finishes 8th banks ~14. The garage's most
+expensive possible prompt costs **21**, against an authored budget of 17.
+
+So the central trade-off ("you cannot buy precision in all four rows") survives
+only for a child who is losing. A child who is winning can buy everything, every
+visit, and the leftover carries forward — visit 3 opens with well over 60.
+
+The single-point fix is the pickup value in `race.js`:
+`S.tokens += 1 + Math.floor(S.combo / 3)` over ~28 pickups a lap, plus
+`FINISH_TOKENS = [14,12,11,10,9,8,7,6]`. Roughly a third of both lands the
+budget in the intended 15–25 band. It was not done here because `race.js` was
+outside this pass's scope, and because every workaround available inside the
+scope (capping the garage's view of the wallet, rescaling prices, normalising in
+`scenes.js`) makes one of the three on-screen numbers — HUD counter, results
+"tokens earned", garage budget — contradict the other two, which is worse in
+front of a child than a generous budget.
+
+**What was fixed here instead: the two places the screen asserted the scarcity as
+fact.** `garage.budget.note` ("לא מספיק לכול") now only shows while the budget is
+genuinely below `MAX_COST`, and the `budget.tradeoff` tip card is gated on the
+same condition. A teaching screen that says something a child can see is false
+stops being believed about anything else on it.
+
+### `race.js` does not expose its quiz system on the scene API
+`scene.player`, `.field`, `.hud`, `.input`, `.chase` are all exposed for the
+harness; `quiz` is not, so no gate can open or inspect a question directly.
+`tools/modaltest.mjs` works around it by driving an autopilot lap until a beacon
+fires, which costs ~40s per check. One line in `race.js`'s returned object.
+
+### The menu backdrop leaves a second `.quiz-root` in the DOM
+The title screen's backdrop is a real `raceScene`, so it builds a full quiz
+system (correctly disabled). Its overlay element is mounted into `engine.ui` and
+is only removed when the backdrop disposes. Harmless — it is always hidden and never
+armed — but any test that does `document.querySelector('.quiz-root')` silently
+inspects the wrong node. Test for `.show`, or query all of them.
+
+### CSS transitions do not settle under the screenshot harness
+`advance()` steps the sim without presenting frames, so a property mid-transition
+(`.quiz-root`'s `visibility`) reads as its old value indefinitely under
+`getComputedStyle`. A first pass at the pacing measurement above reported 93%
+slowed because of this. Measure class membership, not computed style.

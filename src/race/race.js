@@ -29,6 +29,9 @@ import { createKart, createKartLOD } from '../kart/kartmodel.js';
 import { createAIField } from '../kart/ai.js';
 import { ROSTER, nameKey } from '../kart/roster.js';
 import { createHUD } from './hud.js';
+import { createQuizSystem } from './quiz.js';
+import { createEffects } from '../gfx/particles.js';
+import { firstTokenPopup, shouldShowFirstTokenPopup } from '../garage/garage.js';
 import { registerStrings, t } from '../ui/i18n.js';
 
 registerStrings({
@@ -93,7 +96,10 @@ export function toVisualParts(parts = {}) {
 // Last place still funds a real ask (the cheapest complete ask costs 4, the most
 // precise one 21), so the garage is always playable and precision is always the
 // thing you have to choose between.
-const FINISH_TOKENS = [14, 12, 11, 10, 9, 8, 7, 6];
+// Finishing bonus, 1st→8th. Deliberately shallow: the spread between winning and
+// coming last is 3 tokens, because the garage budget is the game's teaching device
+// and a child who is losing must still be able to afford a specific prompt.
+const FINISH_TOKENS = [6, 5, 5, 4, 4, 3, 3, 3];
 
 const COUNTDOWN_S = 3.4;      // 3 · 2 · 1 · GO
 const TOKEN_RADIUS = 2.6;     // generous — kids should not have to thread a needle
@@ -149,7 +155,16 @@ export function raceScene(engine, opts = {}) {
   }
 
   // ---- tokens --------------------------------------------------------------
-  const tokens = buildTokens(track.tokenSpots, engine, rng);
+  // Thin the spots the track offers. A full lap of them banked ~30 tokens over three
+  // laps against a garage budget of ~17 and a max spend of ~21 — so the budget never
+  // bound and the garage's lesson ("precision costs, choose where it is worth it")
+  // stopped being true for anyone who raced competently. Thinning at the SOURCE keeps
+  // the three on-screen numbers honest with each other: fewer tokens visible on track,
+  // fewer collected in the HUD, a smaller wallet in the garage. Capping downstream
+  // would have made one of them contradict the others in front of a child.
+  const TOKEN_KEEP = 0.42;
+  const spots = (track.tokenSpots || []).filter((_, i) => (i * TOKEN_KEEP) % 1 < TOKEN_KEEP);
+  const tokens = buildTokens(spots, engine, rng);
   if (tokens) scene.add(tokens.group);
 
   // ---- HUD -----------------------------------------------------------------
@@ -159,6 +174,24 @@ export function raceScene(engine, opts = {}) {
   const backdrop = !!opts.backdrop;
   const hud = backdrop ? null : createHUD(engine, { spline, maxSpeedKmh: 140 });
   hud?.setSpline?.(spline, def.startT ?? 0);
+
+  // ---- quiz boxes ----------------------------------------------------------
+  // Educational pickups: driving into one slows time and asks one AI question.
+  // Backdrops render the beacons but never open a panel.
+  const quiz = createQuizSystem(engine, {
+    spline, def, difficulty, rng, mount: engine.ui, enabled: !backdrop,
+  });
+  if (quiz?.group) scene.add(quiz.group);
+
+  // ---- particles / juice ---------------------------------------------------
+  // tokenAuto:false because `token:pickup` carries no position — the auto fallback
+  // bursts at the kart's nose, but the sparkle belongs at the token we just took.
+  const fx = createEffects(engine, {
+    camera, rng, ui: engine.ui,
+    screen: !backdrop,          // no vignette/flash behind a menu
+    tokenAuto: false,
+  });
+  if (fx?.group) scene.add(fx.group);
 
   // ---- race state ----------------------------------------------------------
   const input = backdrop ? null : new Input();
@@ -170,6 +203,7 @@ export function raceScene(engine, opts = {}) {
     lap: 1,
     bestLap: null,
     tokens: 0,
+    quizTokens: 0,
     combo: 0,
     comboT: 0,
     position: 1,
@@ -178,6 +212,7 @@ export function raceScene(engine, opts = {}) {
     wrongWay: false,
     wrongWayT: 0,
     lastCountdownBeat: -1,
+    paused: false,
     progress: 0,          // laps + fraction, monotonic
     prevT: player.lapT,
     cp: 0,                // next checkpoint index
@@ -192,8 +227,37 @@ export function raceScene(engine, opts = {}) {
 
   if (!backdrop) bus.emit('race:begin', { track: def.id, laps, racer: racer.id });
 
+  // A correct quiz answer pays tokens; the quiz applies the boost itself.
+  const offQuiz = backdrop ? null : bus.on('quiz:correct', ({ tokens: n }) => { S.tokens += n || 0; S.quizTokens += n || 0; });
+  // Pause: freeze the sim entirely. Input is disabled too so a held key does not
+  // accumulate while the overlay is up.
+  const offPause = backdrop ? null : bus.on('race:pause', () => setPaused(true));
+  const offResume = backdrop ? null : bus.on('race:resume', () => setPaused(false));
+  // Mounted mid-race, so the sim must hold while a child reads it.
+  function showFirstTokenPopup() {
+    setPaused(true);
+    const el = firstTokenPopup({ onClose: () => setPaused(false) });
+    engine.ui.appendChild(el);
+    el.focusButton?.();
+  }
+
+  function setPaused(p) {
+    S.paused = !!p;
+    simAcc = 0;                       // never bank time across a pause
+    if (input) input.enabled = !p;
+    if (p && input) input.softReset();   // keep held keys; see input.js
+  }
+
   // ══════════════════════════════════════════════════════════════════════ loop
-  function update(dt) {
+  // ── LOOP ───────────────────────────────────────────────────────────────
+  // Split into simulate() and update() so the quiz's slow-motion can run FEWER
+  // fixed steps per frame rather than shorter ones. Shortening dt would change
+  // the physics timestep (kartphysics is tuned for exactly 1/60) and would make
+  // lap times dishonest. Race time only advances inside simulate().
+  const FIXED = 1 / 60;
+  let simAcc = 0;
+
+  function simulate(dt) {
     S.clock += dt;
 
     if (S.phase === 'countdown') {
@@ -207,13 +271,7 @@ export function raceScene(engine, opts = {}) {
         S.clock = 0;
         if (!backdrop) bus.emit('race:start');
       }
-      // Karts sit still but the world (crowd, flags) keeps living.
-      track.update(S.clock);
-      rig.update?.(dt, camera);
-      chase.update(dt, player);
-      tokens?.update(dt);
-      pushHud();
-      return;
+      return;                       // karts sit still; the world still animates in update()
     }
 
     const racing = S.phase === 'racing';
@@ -257,29 +315,54 @@ export function raceScene(engine, opts = {}) {
     if (tokens && racing && !S.finished) {
       const got = tokens.collect(player.position, TOKEN_RADIUS);
       if (got) {
+        fx?.spawn('token', got);
         S.combo = S.comboT > 0 ? S.combo + 1 : 1;
         S.comboT = COMBO_WINDOW;
-        S.tokens += 1 + Math.floor(S.combo / 3);   // small chain bonus
-        if (!backdrop) bus.emit('token:pickup', { tokens: S.tokens, combo: S.combo });
+        // Flat 1 per token. The combo still drives the HUD counter and the rising
+        // pickup arpeggio — it is juice, not currency. A chain bonus here compounded
+        // into a wallet several times the garage's maximum spend, which quietly
+        // destroyed the garage's whole lesson ("precision costs — choose where it is
+        // worth it") for any child who raced well. See GAPS: token economy.
+        S.tokens += 1;
+        if (!backdrop) {
+          bus.emit('token:pickup', { tokens: S.tokens, combo: S.combo });
+          // The very first token a player ever collects explains what tokens are —
+          // the moment the idea is most concrete, because they just picked one up.
+          if (shouldShowFirstTokenPopup()) showFirstTokenPopup();
+        }
       }
       S.comboT = Math.max(0, S.comboT - dt);
       if (S.comboT === 0) S.combo = 0;
     }
 
-    // ---- positions -----------------------------------------------------
     updatePositions();
-
-    // ---- drift / boost / collision → audio + camera ---------------------
     driveFeedback(dt);
+  }
 
-    // ---- visuals --------------------------------------------------------
-    syncMesh(playerMesh, player, dt);
-    for (const k of aiKarts) syncMesh(k.mesh, k.body, dt);
-    track.update(S.raceTime);
-    rig.update?.(dt, camera);
-    tokens?.update(dt);
-    if (backdrop) cinematic(dt); else chase.update(dt, player);
+  function update(dtReal) {
+    // Quiz runs ONCE per frame on unscaled time — it owns the slow-motion factor
+    // and its own countdown must not slow down along with the world.
+    const scale = quiz
+      ? quiz.update(dtReal, player, { racing: S.phase === 'racing' && !S.finished })
+      : 1;
 
+    if (!S.paused) {
+      simAcc += dtReal * scale;
+      let guard = 0;
+      while (simAcc >= FIXED && guard++ < 4) { simAcc -= FIXED; simulate(FIXED); }
+    }
+
+    // ---- render-only, always on real time so the world never stutters ----
+    syncMesh(playerMesh, player, dtReal);
+    for (const k of aiKarts) syncMesh(k.mesh, k.body, dtReal);
+    track.update(S.phase === 'countdown' ? S.clock : S.raceTime);
+    rig.update?.(dtReal, camera);
+    tokens?.update(dtReal);
+    fx?.update(dtReal, player);
+    // Opponents get the continuous families (tyre smoke / surface spray) only.
+    for (const k of aiKarts) fx?.emitFor(k.body, dtReal, 0.5);
+
+    if (backdrop) cinematic(dtReal); else chase.update(dtReal, player);
     pushHud();
   }
 
@@ -372,9 +455,13 @@ export function raceScene(engine, opts = {}) {
       bestLapMs: S.bestLap,
       tokens: S.tokens + finishBonus,
       tokensCollected: S.tokens,
+      tokensFromQuiz: S.quizTokens,
+      tokensFromPickups: S.tokens - S.quizTokens,
+      tokensFinishBonus: finishBonus,
       finishBonus,
       standings,
     };
+    if (typeof window !== 'undefined') window.__LAST_RESULT__ = result;   // read by the economy gate
     setTimeout(() => {
       bus.emit('race:complete', result);
       opts.onComplete?.(result);
@@ -509,8 +596,12 @@ export function raceScene(engine, opts = {}) {
     // Exposed for the pause overlay and the debug harness.
     get state() { return S; },
     player, field, track, hud, input, chase,
-    setPaused(p) { if (input) input.enabled = !p; },
+    playerMesh, aiKarts,   // exposed for the automated P0 gates (orientation, steering)
+    setPaused,
     dispose() {
+      offQuiz?.(); offPause?.(); offResume?.();
+      quiz?.dispose();
+      fx?.dispose();
       input?.dispose();
       hud?.dispose();
       tokens?.dispose();
@@ -582,18 +673,21 @@ function buildTokens(spots, engine, rng) {
       }
       write();
     },
-    /** @returns {boolean} true if a token was taken this frame */
+    /** @returns {THREE.Vector3|null} the taken token's position, so the pickup
+     *  sparkle can be spawned where the token actually was rather than at the kart. */
     collect(p, radius) {
       const r2 = radius * radius;
       for (const it of items) {
         if (!it.alive) continue;
         const dx = p.x - it.pos.x, dy = p.y - it.pos.y, dz = p.z - it.pos.z;
         if (dx * dx + dy * dy * 0.4 + dz * dz < r2) {
-          it.alive = false; it.respawn = 6;   // respawn so later laps still pay
-          return true;
+          // Respawn slower than a lap, so a later lap pays again but a player cannot
+          // farm the same cluster by circling it.
+          it.alive = false; it.respawn = 26;
+          return it.pos;
         }
       }
-      return false;
+      return null;
     },
     dispose() { geo.dispose(); mat.dispose(); mesh.dispose(); },
   };

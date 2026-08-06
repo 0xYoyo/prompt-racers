@@ -387,6 +387,21 @@ export function scoreFreeText(text, slotKey = 'engine', ctx = {}) {
  * Tokens earned for a finished part. Expert mode pays ~60% more — that is the
  * incentive for older kids to leave the training wheels.
  */
+/**
+ * Bonus tokens for a well-built prompt.
+ *
+ * MUST STAY BELOW THE SPEND. At the previous rates (0.22 guided / 0.35 expert) a
+ * score of 84 refunded 18 tokens against a garage spend of ~13 — so every visit
+ * turned a profit, the wallet compounded, and the budget stopped binding after the
+ * first garage. That silently cancels the thing the garage exists to teach:
+ * "precision costs something, so choose where it is worth spending". A reward the
+ * player can farm is not a reward, it is an exploit with a friendly name.
+ *
+ * The real prize for a good prompt is the better part. This is a partial rebate on
+ * top — generous enough to feel earned, never enough to remove next visit's choice.
+ * Expert mode keeps a meaningfully larger rate, as specified.
+ */
 export function tokenReward(score, expert = false) {
-  return Math.round(score * (expert ? 0.35 : 0.22));
+  const raw = score * (expert ? 0.16 : 0.10);
+  return Math.min(expert ? 12 : 8, Math.round(raw));
 }

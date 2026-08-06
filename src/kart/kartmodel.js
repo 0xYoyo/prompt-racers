@@ -234,6 +234,17 @@ export function createKart(opts = {}) {
     rim: mat(0xefe2c4, { roughness: 0.28, metalness: 0.35, env: 0.9 }),
     hub: mat(col2, { roughness: 0.25, metalness: 0.45, env: 0.9 }),
     chrome: mat(0xbcc6d2, { roughness: 0.14, metalness: 0.9, env: 1.0 }),
+    // Hero-tier metal. With no bloom pass, "expensive" has to come from specular
+    // contrast and trim colour, not emissive: near-mirror chrome plus a gold
+    // anodised accent read as a premium part in a still frame.
+    chromeHi: mat(0xc4d0de, { roughness: 0.06, metalness: 1.0, env: 1.5 }),
+    // open-ended tubes (intake trumpets, megaphone tips) need both faces
+    chromeOpen: mat(0xc9d4e2, { roughness: 0.08, metalness: 1.0, env: 1.35, side: THREE.DoubleSide }),
+    gold: mat(0xffc247, { roughness: 0.16, metalness: 0.95, env: 1.3 }),
+    goldOpen: mat(0xffc247, { roughness: 0.16, metalness: 0.95, env: 1.3, side: THREE.DoubleSide }),
+    goldDark: mat(0xb8842a, { roughness: 0.3, metalness: 0.9, env: 1.0 }),
+    // tier-0 metal: dull, oxidised, obviously not chrome
+    rust: mat(0x7d6a52, { roughness: 0.95, metalness: 0.2, env: 0.2 }),
     seat: mat(0x3a3f4b, { roughness: 0.7, env: 0.45 }),
     visor: mat(0x141d29, { roughness: 0.05, metalness: 0.7, env: 1.0 }),
     cream: mat(0xf1e7d0, { roughness: 0.32, env: 0.8 }),
@@ -274,7 +285,11 @@ export function createKart(opts = {}) {
   for (const s of PART_SLOTS) { slotGrp[s] = new THREE.Group(); slotGrp[s].name = 'slot:' + s; bodyPivot.add(slotGrp[s]); }
 
   const driverPivot = new THREE.Group();    // leans into corners
-  driverPivot.position.set(0, 0.55, 0.26);
+  // 0.62, not 0.55: the rear wing sits at the driver's shoulder line by design, so
+  // at the old height the wing ate the shoulders and left only a dome of helmet
+  // above it. Seven centimetres lifts the shoulder pads clear of the wing's
+  // trailing edge from the chase camera at every tier. The seat is raised to match.
+  driverPivot.position.set(0, 0.62, 0.26);
   bodyPivot.add(driverPivot);
 
   /* ---------------- contact shadow ------------------------------- */
@@ -348,12 +363,12 @@ export function createKart(opts = {}) {
   }
 
   // seat
-  mesh(G(roundedBox(0.60, 0.13, 0.52, 0.06)), M.seat, chassisGrp, [0, 0.47, 0.30]);
-  const seatBack = mesh(G(roundedBox(0.50, 0.42, 0.15, 0.08)), M.seat, chassisGrp, [0, 0.70, 0.56]);
+  mesh(G(roundedBox(0.60, 0.13, 0.52, 0.06)), M.seat, chassisGrp, [0, 0.53, 0.30]);
+  const seatBack = mesh(G(roundedBox(0.50, 0.46, 0.15, 0.08)), M.seat, chassisGrp, [0, 0.78, 0.56]);
   seatBack.rotation.x = -0.14;
-  mesh(G(roundedBox(0.42, 0.08, 0.10, 0.035)), M.accent, chassisGrp, [0, 0.89, 0.58]);
+  mesh(G(roundedBox(0.42, 0.08, 0.10, 0.035)), M.accent, chassisGrp, [0, 0.99, 0.58]);
   // seat piping — mid-frequency detail that reads at chase distance
-  if (!LOW) for (const sx of [-1, 1]) mesh(G(roundedBox(0.03, 0.34, 0.10, 0.012)), M.accent, chassisGrp, [sx * 0.23, 0.70, 0.55], [-0.14, 0, 0]);
+  if (!LOW) for (const sx of [-1, 1]) mesh(G(roundedBox(0.03, 0.36, 0.10, 0.012)), M.accent, chassisGrp, [sx * 0.23, 0.78, 0.55], [-0.14, 0, 0]);
 
   // dash + steering column + steering wheel
   mesh(G(roundedBox(0.56, 0.18, 0.16, 0.06)), M.bodyDark, chassisGrp, [0, 0.50, -0.50]);
@@ -409,13 +424,21 @@ export function createKart(opts = {}) {
   function buildTyreVisual(w, tier) {
     if (w.visual) { w.spin.remove(w.visual); disposeSubtree(w.visual); }
     const g = new THREE.Group();
-    // tier changes tyre size + look: 0 skinny & worn, 3 huge & glowing
-    const fat = [0.80, 1.0, 1.14, 1.26][tier];
-    const grow = [0.94, 1.0, 1.05, 1.10][tier];
-    const r = w.r * grow, width = w.w * fat;
+    // Tier changes tyre size AND look. The rear pair dominates the chase-camera
+    // silhouette, so the width ramp is deliberately aggressive — but only up to a
+    // point: at 1.48 the tier-3 kart stopped reading as the same class of vehicle
+    // as tier 0 and started reading as a bulldozer. The top of the ramp is pulled
+    // back to 1.30 so the step stays legible while the kart stays a hot-rod.
+    const fat = [0.70, 1.0, 1.16, 1.30][tier];
+    const grow = [0.90, 1.0, 1.06, 1.14][tier];
+    // Tier 0 is a mismatched pair: the left corner runs a smaller, balder tyre
+    // than the right. The kart visibly sits crooked and hops as it rolls — the
+    // joke reads instantly and nothing about it looks like a bug.
+    const odd = tier === 0 && w.sx < 0 ? 0.88 : 1;
+    const r = w.r * grow * odd, width = w.w * fat * (tier === 0 && w.sx > 0 ? 1.18 : 1);
     w.scaleR = r;
     const seg = LOW ? 8 : 16;
-    const tyreMat = tier === 0 ? M.frame : M.tyre;
+    const tyreMat = tier === 0 ? (w.sx < 0 ? M.rust : M.frame) : M.tyre;
     const carc = new THREE.Mesh(G(new THREE.CylinderGeometry(r, r, width, seg)), tyreMat);
     carc.rotation.z = Math.PI / 2;
     meshOpts(carc); g.add(carc);
@@ -428,8 +451,8 @@ export function createKart(opts = {}) {
     }
     // tread blocks (one instanced draw call per wheel)
     if (!LOW && tier > 0) {
-      const n = tier >= 2 ? 16 : 12;
-      const bw = width * 0.86, bh = 0.05 * grow, bd = (2 * Math.PI * r / n) * 0.55;
+      const n = tier === 3 ? 20 : tier === 2 ? 16 : 12;
+      const bw = width * 0.86, bh = (tier === 3 ? 0.075 : tier === 2 ? 0.062 : 0.05) * grow, bd = (2 * Math.PI * r / n) * 0.55;
       const tg = G(roundedBox(bw, bh, bd, 0.018, 1));
       const im = new THREE.InstancedMesh(tg, M.tread, n);
       const mtx = new THREE.Matrix4(), qt = new THREE.Quaternion(), pos = new THREE.Vector3(), scl = new THREE.Vector3(1, 1, 1), e = new THREE.Euler();
@@ -444,22 +467,62 @@ export function createKart(opts = {}) {
       im.castShadow = shadows;
       g.add(im);
     }
+    // Tier-0 sidewalls are bare — no white ring, no shoulder highlight — which is
+    // most of why the junk tyre reads as a worn-out cast-off rather than a tyre.
+    // Tiers 2 and 3 gain a cream sidewall ring: a bright circle on a black tyre is
+    // the cheapest possible "these are proper tyres" signal at gameplay distance.
+    if (!LOW && tier >= 2) for (const s of [-1, 1]) {
+      const ring = new THREE.Mesh(G(new THREE.TorusGeometry(r * 0.74, tier === 3 ? 0.028 : 0.020, 4, seg)),
+        tier === 3 ? M.gold : M.cream);
+      ring.rotation.y = Math.PI / 2;
+      ring.position.x = s * width * 0.5;
+      meshOpts(ring); g.add(ring);
+    }
     // rim + hub
-    const rimR = r * (tier >= 2 ? 0.62 : 0.56);
+    const rimR = r * (tier === 3 ? 0.66 : tier === 2 ? 0.62 : 0.56);
+    const rimMat = tier === 0 ? M.dark : tier === 3 ? M.chromeHi : M.rim;
     for (const s of [-1, 1]) {
-      const rim = new THREE.Mesh(G(new THREE.CylinderGeometry(rimR, rimR, width * 0.62, LOW ? 8 : 14)), tier === 0 ? M.dark : M.rim);
+      const rim = new THREE.Mesh(G(new THREE.CylinderGeometry(rimR, rimR, width * 0.62, LOW ? 8 : 14)), rimMat);
       rim.rotation.z = Math.PI / 2;
       rim.position.x = s * width * 0.22;
       meshOpts(rim); g.add(rim);
-      const hub = new THREE.Mesh(G(new THREE.SphereGeometry(rimR * 0.42, LOW ? 6 : 10, LOW ? 4 : 8)), tier === 3 ? M.glow : M.hub);
+      const hub = new THREE.Mesh(G(new THREE.SphereGeometry(rimR * 0.42, LOW ? 6 : 10, LOW ? 4 : 8)),
+        tier === 0 ? M.cardboard : tier === 3 ? M.gold : M.hub);
       hub.position.x = s * (width * 0.5 + 0.005);
       meshOpts(hub); g.add(hub);
-      if (tier === 3 && !LOW) {
-        const ring = new THREE.Mesh(G(new THREE.TorusGeometry(rimR * 0.82, 0.022, 4, 14)), M.glow);
-        ring.position.x = s * (width * 0.48);
-        ring.rotation.y = Math.PI / 2;
-        g.add(ring);
+      // tier-2 gets flat spoke slots, tier-3 a deep multi-spoke chrome face:
+      // the two middle tiers have to differ from each other, not just from the ends
+      if (!LOW && tier === 2) for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        const sp = new THREE.Mesh(G(roundedBox(0.018, rimR * 0.95, 0.05, 0.007)), M.hub);
+        sp.position.set(s * (width * 0.5 - 0.01), Math.cos(a) * rimR * 0.44, Math.sin(a) * rimR * 0.44);
+        // radial, in the plane of the wheel face. The old `Math.PI/2` on Z swung
+        // the spoke's long axis onto the axle, so the "spokes" were 30cm rods
+        // sticking out sideways — a turbine fan bolted to the hub, and 0.3 m of
+        // phantom width on the tier-3 kart.
+        sp.rotation.set(a, 0, 0);
+        meshOpts(sp); g.add(sp);
       }
+      if (!LOW && tier === 3) {
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2;
+          const sp = new THREE.Mesh(G(roundedBox(0.028, rimR * 1.15, 0.055, 0.01)), M.chromeHi);
+          sp.position.set(s * (width * 0.5 + 0.006), Math.cos(a) * rimR * 0.5, Math.sin(a) * rimR * 0.5);
+          sp.rotation.set(a, 0, 0);   // radial, in the wheel face — see tier-2 note
+          meshOpts(sp); g.add(sp);
+        }
+        const lip = new THREE.Mesh(G(new THREE.TorusGeometry(rimR * 1.02, 0.028, 4, seg)), M.gold);
+        lip.rotation.y = Math.PI / 2;
+        lip.position.x = s * (width * 0.5 + 0.01);
+        meshOpts(lip); g.add(lip);
+      }
+    }
+    // tier-0: a bent coat-hanger "spare spoke" wired across one rim
+    if (!LOW && tier === 0 && w.sx > 0) {
+      const wire = new THREE.Mesh(G(new THREE.CylinderGeometry(0.016, 0.016, r * 1.7, 4)), M.rust);
+      wire.rotation.set(0.7, 0, 0);        // a diameter across the wheel face
+      wire.position.x = width * 0.55;
+      meshOpts(wire); g.add(wire);
     }
     w.visual = g;
     w.spin.add(g);
@@ -604,7 +667,7 @@ export function createKart(opts = {}) {
   }
   // knees peeking over the dash
   for (const sx of [-1, 1]) {
-    const k = mesh(G(new THREE.SphereGeometry(0.11, LOW ? 6 : 10, LOW ? 5 : 8)), M.skin, bodyPivot, [sx * 0.17, 0.56, -0.30]);
+    const k = mesh(G(new THREE.SphereGeometry(0.11, LOW ? 6 : 10, LOW ? 5 : 8)), M.skin, bodyPivot, [sx * 0.17, 0.60, -0.30]);
     k.scale.set(1, 0.8, 1.5);
   }
 
@@ -619,10 +682,17 @@ export function createKart(opts = {}) {
   }
 
   // --- rear wing ---------------------------------------------------
-  // The wing lives ABOVE helmet height on visible pylons. From the chase camera
-  // that is the only place a rear part can read: below ~1.15 it just merges with
-  // the driver and the seat back into one coloured slab.
-  const WING_Y = 1.62, WING_Z = 1.30;
+  // The old wing sat at 1.62 — above helmet height — on two long vertical pylons,
+  // and read as a dragster goalpost rather than a kart. A real kart wing sits at
+  // roughly the driver's shoulder line and is WIDE: width, not height, is what
+  // makes it legible from behind, and width is what keeps the toy proportions.
+  // So the tier ramp now spends its budget on span (1.06 → 1.30 → 1.56 m) and on
+  // element count (1 → 2 → 3) instead of on altitude.
+  // 1.04 is the highest the main element can sit before it starts eating the
+  // driver's helmet from the chase camera — and a visible helmet is worth more to
+  // the silhouette than another 6cm of wing.
+  const WING_Y = 1.04, WING_Z = 1.30;
+  const DECK_Y = 0.42;         // top of the rear tub, where the pylons are rooted
 
   // Per-racer wing tag: a rear-facing silhouette cue that survives at gameplay
   // distance, since the head and torso are hidden behind the seat from behind.
@@ -647,105 +717,242 @@ export function createKart(opts = {}) {
     }
   }
 
-  function wingPylons(g, topY, mat1, w = 0.42) {
+  // Short, slightly splayed pylons rooted on the rear deck. Splaying them outward
+  // (rather than running them vertically at the body's own width) is what stops
+  // the assembly reading as a goalpost: the pylons now trace the same widening
+  // fan as the rear tyres.
+  function wingPylons(g, topY, mat1, xTop, thick = 0.07) {
     for (const sx of [-1, 1]) {
-      const h = topY - 0.40;
-      mesh(G(roundedBox(0.065, h, 0.13, 0.03)), mat1, g, [sx * w, 0.40 + h / 2, WING_Z - 0.02]);
+      const h = topY - DECK_Y;
+      const p = mesh(G(roundedBox(thick, h * 1.03, 0.15, 0.03)), mat1, g,
+        [sx * (xTop * 0.72), DECK_Y + h / 2, WING_Z - 0.02]);
+      p.rotation.z = -sx * 0.20;      // lean outward toward the wing tips
+      p.castShadow = shadows;
     }
+  }
+
+  // One aerofoil element: a flat plank with a slight angle of attack, plus a
+  // contrasting leading-edge strip so the element separates from the one below it.
+  function wingElement(g, w, y, z, thick, tilt, m, trimMat) {
+    const el = mesh(G(roundedBox(w, thick, 0.30, thick * 0.42)), m, g, [0, y, z], [tilt, 0, 0]);
+    el.castShadow = shadows;
+    if (trimMat && !LOW) mesh(G(roundedBox(w * 0.98, thick * 0.55, 0.07, thick * 0.2)), trimMat, g,
+      [0, y + thick * 0.6, z - 0.13], [tilt, 0, 0]);
+    return el;
   }
 
   function buildWing(tier) {
     const g = slotGrp.wing;
     if (tier === 0) {
-      // A grey cardboard plank on a bent coat-hanger, taped on crooked. It is
-      // meant to look like something that fell off a shelf, not like paint.
-      const hangY = 1.06;
-      for (const sx of [-1, 1]) {
-        const p = mesh(G(new THREE.CylinderGeometry(0.018, 0.018, hangY - 0.5, 5)), M.frame, g,
-          [sx * 0.26, (hangY + 0.5) / 2, WING_Z], [0, 0, sx * 0.26]);
-        p.castShadow = shadows;
-      }
-      const plank = mesh(G(roundedBox(0.86, 0.05, 0.24, 0.015)), M.cardboard, g, [0.03, hangY, WING_Z], [0.10, 0.10, 0.30]);
+      // A grey cardboard plank wired onto one bent coat-hanger and taped to the
+      // seat back with the other end drooping. Deliberately asymmetric: the
+      // left-hand strut is missing entirely, so the whole thing hangs sideways.
+      const hangY = 1.00;
+      const p = mesh(G(new THREE.CylinderGeometry(0.018, 0.018, hangY - 0.42, 5)), M.rust, g,
+        [0.30, (hangY + 0.42) / 2, WING_Z], [0, 0, 0.30]);
+      p.castShadow = shadows;
+      // the "replacement" strut on the other side: a stub that does not reach
+      mesh(G(new THREE.CylinderGeometry(0.016, 0.016, 0.24, 5)), M.rust, g, [-0.30, 0.56, WING_Z], [0, 0, -0.5]);
+      const plank = mesh(G(roundedBox(0.92, 0.05, 0.26, 0.015)), M.cardboard, g, [0.03, hangY, WING_Z], [0.10, 0.10, 0.34]);
       wobblers.push(Object.assign(plank, { userData: { junk: true } }));
-      const droop = mesh(G(roundedBox(0.34, 0.04, 0.20, 0.012)), M.cardboard, g, [-0.42, hangY - 0.10, WING_Z], [0, 0.1, 0.55]);
+      const droop = mesh(G(roundedBox(0.36, 0.04, 0.22, 0.012)), M.cardboard, g, [-0.46, hangY - 0.14, WING_Z], [0, 0.1, 0.62]);
       wobblers.push(Object.assign(droop, { userData: { junk: true } }));
       // duct-tape X, the gag prop
-      for (const a of [0.7, -0.7]) mesh(G(roundedBox(0.22, 0.05, 0.03, 0.008)), M.tape, g, [0.26, hangY + 0.02, WING_Z - 0.13], [0, 0, a]);
+      for (const a of [0.7, -0.7]) mesh(G(roundedBox(0.24, 0.055, 0.03, 0.008)), M.tape, g, [0.26, hangY + 0.03, WING_Z - 0.14], [0, 0, a]);
     } else if (tier === 1) {
-      wingPylons(g, WING_Y - 0.14, M.frame, 0.44);
-      mesh(G(roundedBox(0.92, 0.06, 0.28, 0.026)), M.body, g, [0, WING_Y - 0.10, WING_Z], [0.16, 0, 0]);
-      for (const sx of [-1, 1]) mesh(G(roundedBox(0.05, 0.16, 0.26, 0.02)), M.accent, g, [sx * 0.44, WING_Y - 0.06, WING_Z]);
-      wingTag(g, WING_Y - 0.07, WING_Z, 0.92);
+      // one element, body-coloured, narrower than the rear track
+      const W = 1.06;
+      wingPylons(g, WING_Y - 0.06, M.frame, W / 2, 0.065);
+      wingElement(g, W, WING_Y - 0.04, WING_Z, 0.065, 0.16, M.body, null);
+      for (const sx of [-1, 1]) mesh(G(roundedBox(0.05, 0.20, 0.30, 0.02)), M.accent, g, [sx * (W / 2), WING_Y, WING_Z]);
+      wingTag(g, WING_Y - 0.01, WING_Z, W);
     } else if (tier === 2) {
-      wingPylons(g, WING_Y, M.bodyDark, 0.46);
-      mesh(G(roundedBox(0.92, 0.07, 0.30, 0.03)), M.body, g, [0, WING_Y, WING_Z], [0.18, 0, 0]);
-      mesh(G(roundedBox(0.90, 0.05, 0.18, 0.02)), M.accent, g, [0, WING_Y - 0.16, WING_Z + 0.06], [0.30, 0, 0]);
-      for (const sx of [-1, 1]) mesh(G(roundedBox(0.06, 0.30, 0.34, 0.04)), M.accent, g, [sx * 0.46, WING_Y - 0.09, WING_Z]);
-      wingTag(g, WING_Y + 0.03, WING_Z, 0.98);
-    } else {
-      // hero tier: real geometric drama — a swept bi-plane on chrome swan-necks
+      // two elements on a wider span, with tall accent endplates and a gurney
+      // strip — obviously a step up from tier 1 without changing kind
+      const W = 1.30;
+      wingPylons(g, WING_Y, M.frame, W / 2, 0.075);
+      wingElement(g, W, WING_Y, WING_Z, 0.075, 0.18, M.body, M.accent);
+      wingElement(g, W * 0.94, WING_Y - 0.20, WING_Z + 0.08, 0.055, 0.30, M.accent, null);
       for (const sx of [-1, 1]) {
-        const neck = mesh(G(new THREE.TorusGeometry(0.46, 0.04, 4, LOW ? 8 : 16, Math.PI * 0.60)), M.chrome, g,
-          [sx * 0.48, 1.02, WING_Z - 0.30], [0, Math.PI / 2, -0.75]);
-        neck.castShadow = shadows;
+        mesh(G(roundedBox(0.055, 0.36, 0.42, 0.035)), M.accent, g, [sx * (W / 2), WING_Y - 0.10, WING_Z]);
+        mesh(G(roundedBox(0.06, 0.05, 0.34, 0.02)), M.chrome, g, [sx * (W / 2), WING_Y + 0.06, WING_Z]);
       }
-      const main = mesh(G(roundedBox(1.04, 0.08, 0.34, 0.035)), M.body, g, [0, WING_Y + 0.10, WING_Z], [0.2, 0, 0]);
-      mesh(G(roundedBox(0.96, 0.05, 0.20, 0.022)), M.accent, g, [0, WING_Y - 0.10, WING_Z + 0.06], [0.32, 0, 0]);
-      const edge = mesh(G(roundedBox(1.06, 0.035, 0.06, 0.015)), M.glow, g, [0, WING_Y + 0.06, WING_Z - 0.15], [0.2, 0, 0]);
+      wingTag(g, WING_Y + 0.04, WING_Z, W);
+    } else {
+      // Hero tier: a three-element full-span wing on polished chrome swan-necks,
+      // with gold-anodised endplate trim and upswept winglets. The read is
+      // "wide, layered, jewelled" in a still frame — no bloom required.
+      const W = 1.56;
+      for (const sx of [-1, 1]) {
+        const neck = mesh(G(new THREE.TorusGeometry(0.40, 0.045, 4, LOW ? 8 : 16, Math.PI * 0.55)), M.chromeHi, g,
+          [sx * 0.50, 0.78, WING_Z - 0.26], [0, Math.PI / 2, -0.85]);
+        neck.castShadow = shadows;
+        // outer stay running from the deck out to the tip
+        const stay = mesh(G(new THREE.CylinderGeometry(0.026, 0.026, 0.86, LOW ? 5 : 8)), M.chromeHi, g,
+          [sx * 0.58, 0.82, WING_Z + 0.04]);
+        stay.rotation.z = -sx * 0.34;
+      }
+      // The main element sits only 2cm above WING_Y. At +0.10 its trailing edge cut
+      // straight across the driver's shoulder pads from the chase camera; the tier
+      // is carried by span, element count and chrome, so the altitude is free to
+      // give back to the driver.
+      wingElement(g, W, WING_Y + 0.02, WING_Z, 0.085, 0.20, M.body, M.gold);
+      wingElement(g, W * 0.96, WING_Y - 0.21, WING_Z + 0.07, 0.065, 0.32, M.accent, M.gold);
+      const edge = mesh(G(roundedBox(W * 1.01, 0.035, 0.06, 0.015)), M.glow, g, [0, WING_Y - 0.02, WING_Z - 0.15], [0.2, 0, 0]);
       coreGlow.push(edge);
       for (const sx of [-1, 1]) {
-        mesh(G(roundedBox(0.06, 0.52, 0.42, 0.05)), M.accent, g, [sx * 0.52, WING_Y - 0.10, WING_Z]);
-        mesh(G(roundedBox(0.045, 0.14, 0.30, 0.02)), M.glow, g, [sx * 0.552, WING_Y + 0.10, WING_Z]);
-        // upswept winglets
-        mesh(G(roundedBox(0.22, 0.04, 0.13, 0.02)), M.chrome, g, [sx * 0.62, WING_Y + 0.22, WING_Z], [0, 0, sx * 0.55]);
+        // big swept endplate, gold-rimmed
+        mesh(G(roundedBox(0.065, 0.60, 0.50, 0.05)), M.accent, g, [sx * (W / 2), WING_Y - 0.16, WING_Z]);
+        mesh(G(roundedBox(0.075, 0.055, 0.50, 0.025)), M.gold, g, [sx * (W / 2), WING_Y + 0.13, WING_Z]);
+        mesh(G(roundedBox(0.075, 0.30, 0.055, 0.02)), M.gold, g, [sx * (W / 2), WING_Y - 0.14, WING_Z - 0.23]);
+        // upswept winglets past the endplate — the widest point on the whole wing
+        mesh(G(roundedBox(0.26, 0.045, 0.15, 0.02)), M.chromeHi, g, [sx * (W / 2 + 0.11), WING_Y + 0.24, WING_Z], [0, 0, sx * 0.55]);
       }
-      wingTag(g, WING_Y + 0.13, WING_Z, 1.04);
-      main.castShadow = shadows;
+      wingTag(g, WING_Y + 0.07, WING_Z, W);
     }
   }
 
   // --- engine block -----------------------------------------------
-  // Engine sits high enough that its top clears the seat back (top ≈ 0.97) —
-  // otherwise the whole upgrade is invisible from the only camera the game uses.
+  // THE hard slot. The engine lives at z ≈ 0.86, directly behind the seat back and
+  // directly in front of the rear number plate and the wing pylons, so anything
+  // that stays inside the block's own footprint is occluded from the chase camera.
+  // The fix is not to move the base kart out of the way — it is to make the
+  // UPGRADE grow out of the occluded volume: every tier above 0 puts its added
+  // mass either ABOVE the deck line (y > 0.95, clear of the seat back and above
+  // the wing's leading edge) or OUTBOARD of |x| > 0.30 (clear of the number plate,
+  // silhouetted against the rear tyres). Intake stacks and a supercharger do this
+  // naturally, which is why the ramp is built out of them.
   const ENG_Y = 0.74;
+  const DECK_CLEAR = 0.98;    // anything above this is unoccluded from behind
   function buildEngine(tier) {
     const g = slotGrp.engine;
     const z = 0.86;
     // mounting posts down to the tub, so the raised block reads as bolted on
     for (const sx of [-1, 1]) mesh(G(roundedBox(0.08, 0.34, 0.12, 0.03)), M.frame, g, [sx * 0.16, 0.50, z]);
+
+    // An open-ended intake trumpet: chrome, above the deck, unmissable from behind.
+    // `tilt` rakes the stack backwards (toward the camera) and `lean` splays it
+    // outboard, so a bank of them fans away from the driver's head instead of
+    // standing up in front of it.
+    const trumpet = (x, y, zz, rTop, rBot, len, tilt = 0.1, lean = 0) => {
+      // the tip of a raked+splayed stack moves; place the tip ring where it lands
+      const ux = -Math.sin(lean), uy = Math.cos(lean) * Math.cos(tilt), uz = Math.cos(lean) * Math.sin(tilt);
+      const t = mesh(G(new THREE.CylinderGeometry(rTop, rBot, len, LOW ? 6 : 12, 1, true)), M.chromeOpen, g,
+        [x + ux * len / 2, y + uy * len / 2, zz + uz * len / 2], [tilt, 0, lean]);
+      t.castShadow = shadows;
+      if (!LOW) mesh(G(new THREE.TorusGeometry(rTop, rTop * 0.16, 4, LOW ? 6 : 12)), M.chromeHi, g,
+        [x + ux * len, y + uy * len, zz + uz * len], [Math.PI / 2 + tilt, 0, lean]);
+      return t;
+    };
+    // A ribbed blower drum lying across the kart (axis along X). It is placed by
+    // its CENTRE x so the tier-2/3 engines can run two short outboard drums with a
+    // clear central channel between them rather than one bar across the sightline.
+    const blower = (cx, y, r, len, drumMat, ribMat, ribs) => {
+      const d = mesh(G(new THREE.CylinderGeometry(r, r, len, LOW ? 8 : 16)), drumMat, g, [cx, y, z], [0, 0, Math.PI / 2]);
+      d.castShadow = shadows;
+      if (!LOW) for (let i = 0; i < ribs; i++) {
+        mesh(G(new THREE.TorusGeometry(r * 1.04, r * 0.075, 4, 14)), ribMat, g,
+          [cx + (-0.5 + (i + 0.5) / ribs) * len, y, z], [0, 0, Math.PI / 2]);
+      }
+      return d;
+    };
+    // Everything an upgraded engine adds above the deck must stay OUTSIDE this
+    // half-width: the driver's helmet is ~0.23 wide and the chase camera looks
+    // straight down the centre line. A kart with no visible person in it loses the
+    // toy charm the whole art direction rests on, so the sightline is inviolable.
+    const CHANNEL = 0.30;
+
     if (tier === 0) {
+      // A dented tin can strapped on with tape, with a coat-hanger throttle
+      // linkage flapping off the top. Small, low and crooked — the silhouette
+      // says "there is barely an engine here", which is the joke.
       const can = mesh(G(new THREE.CylinderGeometry(0.16, 0.18, 0.28, LOW ? 6 : 12)), M.cardboard, g, [0.03, ENG_Y - 0.06, z]);
       can.rotation.z = 0.14;
       wobblers.push(Object.assign(can, { userData: { junk: true } }));
       mesh(G(new THREE.TorusGeometry(0.16, 0.028, 4, LOW ? 6 : 12)), M.tape, g, [0.03, ENG_Y - 0.02, z], [Math.PI / 2, 0.1, 0]);
-      // bent coat-hanger sticking out of the top
-      mesh(G(new THREE.CylinderGeometry(0.02, 0.02, 0.34, 5)), M.frame, g, [0.14, ENG_Y + 0.16, z + 0.04], [0.5, 0, -0.5]);
+      // bent coat-hanger sticking out of the top, and a floppy rubber hose
+      mesh(G(new THREE.CylinderGeometry(0.02, 0.02, 0.34, 5)), M.rust, g, [0.14, ENG_Y + 0.16, z + 0.04], [0.5, 0, -0.5]);
+      const hose = mesh(G(capsule(0.035, 0.30, 6)), M.dark, g, [-0.22, ENG_Y + 0.02, z + 0.06], [0.4, 0, 1.15]);
+      wobblers.push(Object.assign(hose, { userData: { junk: true } }));
+      // a lonely cardboard funnel where a real intake would be
+      const fun = mesh(G(new THREE.CylinderGeometry(0.10, 0.045, 0.16, LOW ? 6 : 10, 1, true)), M.cardboard, g,
+        [0.03, ENG_Y + 0.18, z], [0.3, 0, 0.25]);
+      fun.material = M.cardboard;
+      wobblers.push(Object.assign(fun, { userData: { junk: true } }));
     } else if (tier === 1) {
+      // A real block with cooling fins and ONE upright chrome intake stack that
+      // clears the deck line. From behind this is a single bright vertical pip
+      // above the seat — small, but unambiguously present.
       mesh(G(roundedBox(0.42, 0.40, 0.42, 0.09)), M.dark, g, [0, ENG_Y, z]);
       for (let i = 0; i < 4; i++) mesh(G(roundedBox(0.46, 0.035, 0.40, 0.015)), M.frame, g, [0, ENG_Y - 0.13 + i * 0.09, z]);
-      mesh(G(new THREE.CylinderGeometry(0.085, 0.085, 0.12, LOW ? 6 : 12)), M.chrome, g, [0, ENG_Y + 0.24, z]);
+      mesh(G(roundedBox(0.30, 0.10, 0.34, 0.04)), M.frame, g, [0, ENG_Y + 0.24, z]);
+      // The stack has to clear this tier's own wing (top ≈ 1.09) with margin, or
+      // the whole upgrade is hidden by the part in front of it — which is exactly
+      // the failure the old engine slot had. It also sits outboard of CHANNEL and
+      // leans away, so it flanks the helmet instead of standing over it.
+      trumpet(CHANNEL + 0.06, DECK_CLEAR + 0.02, z, 0.105, 0.07, 0.34, 0.22, -0.20);   // tip ≈ 1.33
     } else if (tier === 2) {
-      mesh(G(roundedBox(0.44, 0.46, 0.48, 0.10)), M.dark, g, [0, ENG_Y + 0.02, z]);
-      for (let i = 0; i < 5; i++) mesh(G(roundedBox(0.48, 0.03, 0.46, 0.012)), M.chrome, g, [0, ENG_Y - 0.16 + i * 0.085, z]);
-      for (const sx of [-1, 1]) {
-        // intake trumpets
-        const tr = mesh(G(new THREE.CylinderGeometry(0.10, 0.06, 0.20, LOW ? 6 : 12, 1, true)), M.chrome, g, [sx * 0.13, ENG_Y + 0.34, z], [0.12, 0, 0]);
-        tr.material.side = THREE.DoubleSide;
+      // A supercharged block. The blower is SPLIT into two short ribbed drums, one
+      // outboard of each shoulder, and the FOUR stacks are two raked banks of two
+      // sitting on top of them. The cluster is still twice as wide and twice as
+      // tall as tier 1's single pipe, but the mass is now either side of the
+      // helmet instead of stacked in front of it.
+      mesh(G(roundedBox(0.46, 0.46, 0.48, 0.10)), M.dark, g, [0, ENG_Y + 0.02, z]);
+      for (let i = 0; i < 5; i++) mesh(G(roundedBox(0.50, 0.03, 0.46, 0.012)), M.chrome, g, [0, ENG_Y - 0.16 + i * 0.085, z]);
+      for (const sx of [-1, 1]) blower(sx * 0.40, DECK_CLEAR + 0.06, 0.135, 0.28, M.frame, M.chrome, 3);
+      // low chrome crossover joining the two drums UNDER the sightline, so the pair
+      // still reads as one supercharger rather than two unrelated cans
+      mesh(G(new THREE.CylinderGeometry(0.055, 0.055, 0.56, LOW ? 6 : 10)), M.chrome, g,
+        [0, DECK_CLEAR - 0.06, z + 0.05], [0, 0, Math.PI / 2]);
+      for (const sx of [-1, 1]) for (const i of [0, 1]) {
+        trumpet(sx * (CHANNEL + 0.05 + i * 0.17), DECK_CLEAR + 0.15, z + i * 0.05,
+          0.068, 0.048, 0.21, 0.26, -sx * 0.24);                                   // tips ≈ 1.34
       }
-      mesh(G(roundedBox(0.28, 0.10, 0.10, 0.04)), M.accent, g, [0, ENG_Y + 0.28, z - 0.23]);
+      for (const sx of [-1, 1]) {
+        mesh(G(roundedBox(0.14, 0.26, 0.34, 0.05)), M.accent, g, [sx * 0.34, ENG_Y + 0.10, z]);
+        mesh(G(new THREE.CylinderGeometry(0.05, 0.05, 0.30, LOW ? 5 : 8)), M.chrome, g, [sx * 0.44, 0.88, z + 0.06], [0, 0, -sx * 0.5]);
+      }
     } else {
-      mesh(G(roundedBox(0.44, 0.44, 0.46, 0.14)), M.dark, g, [0, ENG_Y, z]);
-      // caged glowing core
-      const core = mesh(G(new THREE.IcosahedronGeometry(0.17, LOW ? 0 : 1)), M.glow, g, [0, ENG_Y + 0.08, z]);
+      // Hero tier: polished twin blowers with a gold drive pulley, SIX stacks in
+      // two raked banks reaching y ≈ 1.50, and twin turbos slung outboard with
+      // chrome crossover pipes arcing up over the deck. This is a genuine
+      // silhouette change — the kart grows a machine on its back — and every
+      // added element is either above 0.98 or outboard of the plate. Critically,
+      // the whole machine is built as two outboard banks with an open channel
+      // down the middle, so the driver still reads from the chase camera.
+      mesh(G(roundedBox(0.48, 0.46, 0.48, 0.13)), M.dark, g, [0, ENG_Y, z]);
+      for (const sx of [-1, 1]) mesh(G(roundedBox(0.06, 0.36, 0.44, 0.03)), M.gold, g, [sx * 0.25, ENG_Y + 0.04, z]);
+      // caged core, still there, but now a jewel inside the machine rather than
+      // the only thing carrying the tier
+      const core = mesh(G(new THREE.IcosahedronGeometry(0.13, LOW ? 0 : 1)), M.glow, g, [0, ENG_Y + 0.02, z - 0.16]);
       core.userData.spin = true; core.userData.pulse = true;
       coreGlow.push(core);
-      for (let i = 0; i < 3; i++) {
-        const ring = mesh(G(new THREE.TorusGeometry(0.22, 0.022, 4, LOW ? 8 : 16)), M.chrome, g, [0, ENG_Y + 0.08, z], [i * 0.9, i * 1.1, 0]);
-        ring.castShadow = false;
+      for (const sx of [-1, 1]) blower(sx * 0.45, DECK_CLEAR + 0.13, 0.165, 0.32, M.chromeHi, M.gold, 3);
+      // gold drive pulley + belt on the OUTER face of the left blower, where the
+      // chase camera sees it in profile against the sky
+      mesh(G(new THREE.CylinderGeometry(0.15, 0.15, 0.05, LOW ? 8 : 16)), M.gold, g, [-0.64, DECK_CLEAR + 0.13, z], [0, 0, Math.PI / 2]);
+      mesh(G(new THREE.TorusGeometry(0.115, 0.02, 4, LOW ? 8 : 14)), M.goldDark, g, [-0.67, DECK_CLEAR + 0.03, z], [0, Math.PI / 2, 0]);
+      // gold-trimmed plenum bridging the two drums, kept BELOW the sightline
+      mesh(G(roundedBox(0.62, 0.10, 0.30, 0.04)), M.gold, g, [0, DECK_CLEAR - 0.03, z + 0.04]);
+      for (const sx of [-1, 1]) for (const i of [0, 1, 2]) {
+        trumpet(sx * (CHANNEL + 0.05 + i * 0.14), DECK_CLEAR + 0.24, z + (i - 1) * 0.05,
+          0.068, 0.048, 0.26, 0.28, -sx * 0.26);                                       // tips ≈ 1.48
       }
-      const halo = mesh(G(new THREE.TorusGeometry(0.30, 0.03, 4, LOW ? 10 : 20)), M.glow, g, [0, ENG_Y + 0.08, z], [Math.PI / 2, 0, 0]);
+      for (const sx of [-1, 1]) {
+        // turbo: snail housing outboard, chrome crossover arcing back over the deck
+        const snail = mesh(G(new THREE.CylinderGeometry(0.135, 0.135, 0.16, LOW ? 8 : 14)), M.chromeHi, g,
+          [sx * 0.46, 0.80, z + 0.02], [0, 0, Math.PI / 2]);
+        snail.castShadow = shadows;
+        mesh(G(new THREE.TorusGeometry(0.135, 0.032, 4, LOW ? 8 : 14)), M.gold, g, [sx * 0.46, 0.80, z + 0.02], [0, 0, Math.PI / 2]);
+        const pipe = mesh(G(new THREE.TorusGeometry(0.20, 0.045, 4, LOW ? 8 : 14, Math.PI * 0.72)), M.chromeHi, g,
+          [sx * 0.46, 0.88, z + 0.02], [0, Math.PI / 2, sx > 0 ? -0.4 : Math.PI + 0.4]);
+        pipe.castShadow = shadows;
+        // wastegate screamer poking up and out
+        mesh(G(new THREE.CylinderGeometry(0.045, 0.055, 0.26, LOW ? 6 : 10)), M.chromeHi, g,
+          [sx * 0.62, 1.06, z - 0.04], [0, 0, sx * 0.30]);
+      }
+      const halo = mesh(G(new THREE.TorusGeometry(0.30, 0.03, 4, LOW ? 10 : 20)), M.glow, g, [0, ENG_Y + 0.02, z - 0.16], [Math.PI / 2, 0, 0]);
       coreGlow.push(halo);
-      for (const sx of [-1, 1]) mesh(G(roundedBox(0.09, 0.34, 0.40, 0.04)), M.chrome, g, [sx * 0.28, ENG_Y + 0.02, z]);
     }
   }
 
@@ -765,63 +972,143 @@ export function createKart(opts = {}) {
       flames.push(f);
       return f;
     };
-    // Pipe tips are lifted to ~1.0–1.15 so they clear the seat back and stay
-    // readable in the chase view.
+    // The pipes are pushed OUTBOARD as the tier rises (|x| 0.34 → 0.52 → 0.66), out
+    // over the rear tyres where the number plate, the seat and the wing pylons
+    // cannot hide them, and the tip diameter roughly doubles across the ramp. From
+    // behind, the exhaust is a pair of bright chrome ears growing away from the
+    // body — a width cue, which survives distance far better than a detail cue.
+    // A megaphone tip: open cone, flared mouth, with an optional coloured tip ring.
+    // open-ended cones must be double-sided or the mouth renders as a hole
+    const openOf = m => (m === M.gold ? M.goldOpen : M.chromeOpen);
+    const megaphone = (x, y, z, rIn, rOut, len, tilt, m, ringMat, ringR) => {
+      const c = mesh(G(new THREE.CylinderGeometry(rOut, rIn, len, LOW ? 8 : 14, 1, true)), openOf(m), g, [x, y, z], [Math.PI / 2 + tilt, 0, 0]);
+      c.castShadow = shadows;
+      // The mouth needs a dark bore or the lit backfaces make the pipe read as a
+      // pale ring — a doughnut stuck to the side of the kart rather than a pipe.
+      const ax = [0, -Math.sin(tilt), Math.cos(tilt)];
+      const bore = mesh(G(new THREE.CircleGeometry(rOut * 0.9, LOW ? 8 : 14)), M.dark, g,
+        [x + ax[0] * len * 0.36, y + ax[1] * len * 0.36, z + ax[2] * len * 0.36], [tilt, 0, 0]);
+      bore.castShadow = false;
+      if (ringMat && !LOW) mesh(G(new THREE.TorusGeometry(ringR ?? rOut, rOut * 0.16, 4, LOW ? 8 : 14)), ringMat, g,
+        [x + ax[0] * len * 0.5, y + ax[1] * len * 0.5, z + ax[2] * len * 0.5], [tilt, 0, 0]);
+      return c;
+    };
     if (tier === 0) {
-      const p = mk(0.30, 0.82, 1.00, 0.46, [1.0, 0, 0.45], M.frame);
-      p.material = M.frame;
+      // ONE bent, rusty, tape-wrapped pipe on the right and nothing on the left.
+      // The asymmetry is the gag and it reads from directly behind.
+      const p = mk(0.34, 0.80, 1.00, 0.50, [1.0, 0, 0.45], M.rust);
+      p.material = M.rust;
       wobblers.push(Object.assign(p, { userData: { junk: true } }));
-      mesh(G(new THREE.TorusGeometry(0.06, 0.022, 4, 8)), M.tape, g, [0.38, 0.94, 1.18], [Math.PI / 2 + 0.4, 0, 0]);
-      flame(0.40, 0.96, 1.24, 0.7);
+      for (const t of [0, 1]) mesh(G(new THREE.TorusGeometry(0.062, 0.026, 4, 8)), M.tape, g,
+        [0.40 + t * 0.03, 0.92 + t * 0.09, 1.14 + t * 0.06], [Math.PI / 2 + 0.4, 0, 0]);
+      // the stub where the other pipe used to be, blanked off with tape
+      mesh(G(new THREE.CylinderGeometry(0.05, 0.055, 0.12, 6)), M.rust, g, [-0.32, 0.62, 1.02], [1.1, 0, 0]);
+      mesh(G(new THREE.CylinderGeometry(0.055, 0.055, 0.02, 6)), M.tape, g, [-0.32, 0.67, 1.07], [1.1, 0, 0]);
+      flame(0.44, 1.00, 1.26, 0.7);
     } else if (tier === 1) {
-      for (const sx of [-1, 1]) { mk(sx * 0.34, 0.88, 1.02, 0.42, [1.15, 0, 0], M.chrome); flame(sx * 0.34, 0.98, 1.22, 0.8); }
+      // a tidy chrome pair, tucked inboard of the rear tyres
+      for (const sx of [-1, 1]) {
+        mk(sx * 0.44, 0.80, 0.98, 0.52, [1.14, 0, -sx * 0.26], M.chrome);
+        megaphone(sx * 0.62, 0.92, 1.18, 0.062, 0.085, 0.18, -0.34, M.chrome, null);
+        flame(sx * 0.63, 0.96, 1.31, 0.85);
+      }
     } else if (tier === 2) {
-      for (const sx of [-1, 1]) for (const i of [0, 1]) {
-        const x = sx * (0.26 + i * 0.14);
-        mk(x, 0.90 + i * 0.07, 1.00, 0.48, [1.1, 0, 0], M.chrome);
-        mesh(G(new THREE.TorusGeometry(0.062, 0.02, 4, LOW ? 6 : 12)), M.accent, g, [x, 1.01 + i * 0.07, 1.21], [Math.PI / 2 + 0.45, 0, 0]);
-        flame(x, 1.02 + i * 0.07, 1.24, 0.85);
+      // Four pipes bundled into two accent-tipped megaphones that now exit
+      // OUTBOARD of the rear tyre, silhouetted against open ground instead of
+      // against the kart's own bodywork. The kart visibly gets wider.
+      for (const sx of [-1, 1]) {
+        for (const i of [0, 1]) mk(sx * (0.40 + i * 0.16), 0.78 + i * 0.05, 0.96, 0.54, [1.10, 0, -sx * (0.32 + i * 0.12)], M.chrome);
+        const coll = mesh(G(new THREE.CylinderGeometry(0.085, 0.072, 0.34, LOW ? 8 : 12)), M.chrome, g,
+          [sx * 0.80, 0.72, 0.98], [Math.PI / 2 + 0.16, 0, -sx * 0.18]);
+        coll.castShadow = shadows;
+        megaphone(sx * 0.86, 0.80, 1.22, 0.078, 0.110, 0.26, -0.30, M.chrome, M.accent, 0.110);
+        flame(sx * 0.87, 0.83, 1.36, 0.9);
       }
     } else {
+      // Hero tier: twin chrome cannons slung just outside the rear tyres with gold
+      // mouth rings, plus a stacked pair of smaller stingers above them. Still the
+      // widest, brightest thing on the back of the kart after the wing — but the
+      // cannons used to sit at |x| = 1.08 with a 0.175 mouth, which put the kart at
+      // ~2.5 m across and made it read as a monster truck next to tier 0. Pulled
+      // back to |x| = 0.94 with a smaller mouth: expensive and fast, not oversized.
       for (const sx of [-1, 1]) {
-        const noz = mesh(G(new THREE.CylinderGeometry(0.10, 0.075, 0.28, LOW ? 8 : 14)), M.chrome, g, [sx * 0.36, 0.96, 1.06], [Math.PI / 2 + 0.16, 0, 0]);
-        const ring = mesh(G(new THREE.TorusGeometry(0.09, 0.025, 4, LOW ? 8 : 16)), M.glow, g, [sx * 0.36, 0.98, 1.19], [0.16, 0, 0]);
+        for (const i of [0, 1, 2]) mk(sx * (0.36 + i * 0.13), 0.74 + i * 0.05, 0.92, 0.60, [1.08, 0, -sx * (0.36 + i * 0.11)], M.chromeHi);
+        const collector = mesh(G(new THREE.CylinderGeometry(0.105, 0.09, 0.40, LOW ? 8 : 14)), M.chromeHi, g,
+          [sx * 0.88, 0.78, 0.96], [Math.PI / 2 + 0.16, 0, -sx * 0.20]);
+        collector.castShadow = shadows;
+        megaphone(sx * 0.94, 0.86, 1.26, 0.095, 0.150, 0.30, -0.26, M.chromeHi, M.gold, 0.150);
+        const ring = mesh(G(new THREE.TorusGeometry(0.095, 0.028, 4, LOW ? 8 : 16)), M.glow, g, [sx * 0.95, 0.88, 1.36], [0.2, 0, 0]);
         coreGlow.push(ring);
-        noz.castShadow = shadows;
-        flame(sx * 0.36, 0.98, 1.21, 1.1);
+        flame(sx * 0.95, 0.89, 1.40, 1.0);
+        // small upper stinger, stacked above the cannon
+        mesh(G(new THREE.CylinderGeometry(0.05, 0.058, 0.34, LOW ? 6 : 10)), M.chromeHi, g,
+          [sx * 0.80, 1.10, 1.02], [Math.PI / 2 + 0.32, 0, -sx * 0.24]);
+        megaphone(sx * 0.86, 1.22, 1.18, 0.055, 0.082, 0.14, -0.28, M.gold, null);
+        flame(sx * 0.87, 1.25, 1.28, 0.7);
       }
     }
   }
 
   // --- chassis dress ------------------------------------------------
+  // A rear diffuser: a wide angled panel under the rear bumper with vertical
+  // strakes. This is the chassis slot's rear-visible payload — side skirts are
+  // almost invisible from directly behind, but a toothed band sitting in the
+  // shadow under the tail is a strong dark/light pattern the eye picks up
+  // immediately, and its width and tooth count can carry the whole tier ramp.
+  function diffuser(g, w, nStrakes, panelMat, strakeMat, dropY) {
+    const z = 1.16;
+    const panel = mesh(G(roundedBox(w, 0.05, 0.34, 0.02)), panelMat, g, [0, dropY + 0.10, z], [-0.42, 0, 0]);
+    panel.castShadow = shadows;
+    if (LOW) return;
+    for (let i = 0; i < nStrakes; i++) {
+      const x = (-0.5 + (i + 0.5) / nStrakes) * w;
+      mesh(G(roundedBox(0.035, 0.20, 0.30, 0.015)), strakeMat, g, [x, dropY + 0.06, z], [-0.42, 0, 0]);
+    }
+  }
+
   function buildChassisKit(tier) {
     const g = slotGrp.chassis;
     if (tier === 0) {
-      // mismatched cardboard patch panels, taped on crooked
+      // Mismatched cardboard patch panels, taped on crooked — and only one of
+      // them reaches the ground. A flattened box is wedged under the tail where a
+      // diffuser should be, and it drags.
       for (const sx of [-1, 1]) {
-        const p = mesh(G(roundedBox(0.05, 0.28, 0.64, 0.02)), M.cardboard, g, [sx * 0.58, 0.34, -0.10], [0, 0, sx * 0.30]);
+        const p = mesh(G(roundedBox(0.05, sx > 0 ? 0.28 : 0.16, sx > 0 ? 0.64 : 0.40, 0.02)), M.cardboard, g,
+          [sx * 0.58, 0.34, -0.10], [0, 0, sx * 0.34]);
         wobblers.push(Object.assign(p, { userData: { junk: true } }));
       }
       const flap = mesh(G(roundedBox(0.46, 0.04, 0.28, 0.015)), M.cardboard, g, [0.08, 0.50, -1.05], [0.18, 0.14, 0.10]);
       wobblers.push(Object.assign(flap, { userData: { junk: true } }));
+      // the dragging cardboard "diffuser", one corner folded up
+      const drag = mesh(G(roundedBox(0.76, 0.035, 0.42, 0.012)), M.cardboard, g, [-0.06, 0.13, 1.20], [-0.30, 0.12, 0.16]);
+      wobblers.push(Object.assign(drag, { userData: { junk: true } }));
       for (const a of [0.8, -0.8]) mesh(G(roundedBox(0.20, 0.05, 0.03, 0.008)), M.tape, g, [-0.58, 0.40, -0.12], [0, Math.PI / 2, a]);
+      mesh(G(roundedBox(0.26, 0.05, 0.03, 0.008)), M.tape, g, [0.16, 0.20, 1.06], [0, 0, 0.3]);
     } else if (tier === 1) {
       for (const sx of [-1, 1]) mesh(G(roundedBox(0.07, 0.14, 0.96, 0.03)), M.bodyDark, g, [sx * 0.55, 0.21, -0.05]);
+      diffuser(g, 0.86, 3, M.bodyDark, M.dark, 0.06);
     } else if (tier === 2) {
       for (const sx of [-1, 1]) {
         mesh(G(roundedBox(0.10, 0.18, 1.16, 0.045)), M.accent, g, [sx * 0.56, 0.21, -0.02]);
+        // flared skirt end, kicked out behind the rear axle so the kart widens
+        // toward the camera rather than staying a parallel slab
+        mesh(G(roundedBox(0.09, 0.20, 0.34, 0.04)), M.accent, g, [sx * 0.66, 0.22, 0.62], [0, -sx * 0.22, 0]);
         mesh(G(roundedBox(0.16, 0.05, 0.34, 0.02)), M.bodyDark, g, [sx * 0.55, 0.31, -0.66], [0, 0, sx * 0.2]);
       }
       mesh(G(roundedBox(1.02, 0.05, 0.26, 0.02)), M.bodyDark, g, [0, 0.19, -1.24]);
+      diffuser(g, 1.12, 5, M.bodyDark, M.accent, 0.04);
     } else {
       for (const sx of [-1, 1]) {
         mesh(G(roundedBox(0.12, 0.20, 1.30, 0.06)), M.accent, g, [sx * 0.57, 0.22, -0.02]);
+        mesh(G(roundedBox(0.11, 0.22, 0.44, 0.05)), M.accent, g, [sx * 0.72, 0.23, 0.66], [0, -sx * 0.26, 0]);
+        mesh(G(roundedBox(0.13, 0.05, 0.44, 0.02)), M.gold, g, [sx * 0.72, 0.35, 0.66], [0, -sx * 0.26, 0]);
         const strip = mesh(G(roundedBox(0.04, 0.05, 1.16, 0.02)), M.glow, g, [sx * 0.625, 0.14, -0.02]);
         coreGlow.push(strip);
         // canard fins on the nose
-        mesh(G(roundedBox(0.28, 0.035, 0.16, 0.015)), M.chrome, g, [sx * 0.46, 0.40, -1.10], [0, 0, sx * 0.36]);
+        mesh(G(roundedBox(0.28, 0.035, 0.16, 0.015)), M.chromeHi, g, [sx * 0.46, 0.40, -1.10], [0, 0, sx * 0.36]);
       }
-      mesh(G(roundedBox(1.10, 0.05, 0.30, 0.02)), M.chrome, g, [0, 0.17, -1.28]);
+      mesh(G(roundedBox(1.10, 0.05, 0.30, 0.02)), M.chromeHi, g, [0, 0.17, -1.28]);
+      diffuser(g, 1.38, 7, M.chromeHi, M.gold, 0.02);
       const under = mesh(G(new THREE.PlaneGeometry(1.1, 2.2)), M.glow, g, [0, 0.06, 0], [-Math.PI / 2, 0, 0]);
       under.castShadow = false;
       coreGlow.push(under);
@@ -954,11 +1241,11 @@ export function createKart(opts = {}) {
     // glow responds to drift charge and boost
     const heat = clamp(st.charge * 0.8 + st.boost * 1.6, 0, 2.4);
     M.glow.emissiveIntensity = baseGlow + heat;
-    M.flame.emissiveIntensity = 0.6 + st.boost * 1.6 + st.charge * 0.4;
+    M.flame.emissiveIntensity = 0.45 + st.boost * 0.85 + st.charge * 0.25;
     for (const f of flames) {
       f.visible = st.boost > 0.05;
       const p = st.boost * (0.7 + 0.3 * Math.sin(st.t * 40 + f.position.x * 9));
-      f.scale.set(0.6 + p, 0.5 + p * 1.6, 0.6 + p);
+      f.scale.set(0.6 + p, 0.5 + p * 0.95, 0.6 + p);
     }
     for (const c of coreGlow) {
       if (c.userData.spin) { c.rotation.y += dt * (0.8 + heat * 2.5); c.rotation.x += dt * 0.4; }
@@ -1119,14 +1406,14 @@ export function previewChase(engine) {
 export function previewRear(engine) {
   const { scene, ground, env } = baseScene(engine, 160);
   const camera = new THREE.PerspectiveCamera(44, 16 / 9, 0.1, 400);
-  camera.position.set(0, 1.85, 9.20);
+  camera.position.set(0, 2.15, 12.6);
   camera.lookAt(0, 0.95, -0.6);
 
   const karts = [];
   ROSTER.forEach((r, i) => {
     const col = i % 4, row = Math.floor(i / 4);
     const k = createKart({ racer: r, engine, parts: { engine: 2, tires: 2, wing: 2, chassis: 2, exhaust: 2 } });
-    k.group.position.set((col - 1.5) * 2.60, 0, row === 0 ? 0.2 : -4.4);
+    k.group.position.set((col - 1.5) * 3.55, 0, row === 0 ? 0.2 : -5.6);
     k.group.rotation.y = (i % 2 ? 0.06 : -0.06);
     scene.add(k.group);
     karts.push(k);
@@ -1178,22 +1465,66 @@ export function previewRoster(engine) {
   };
 }
 
-export function previewParts(engine) {
-  const { scene, ground, env } = baseScene(engine, 140);
-  const camera = new THREE.PerspectiveCamera(40, 16 / 9, 0.1, 400);
-  camera.position.set(0, 4.4, 19.4);
-  camera.lookAt(0, 1.00, -0.2);
+// THE progression test. The same racer, four times, every slot matched at tier
+// 0 / 1 / 2 / 3, framed from the same low-behind angle the game actually renders
+// from. If the four karts do not step clearly left-to-right here, the upgrade
+// ladder does not exist as far as a player is concerned.
+export function previewTierLadder(engine) {
+  const { scene, ground, env } = baseScene(engine, 200);
+  // Matched to previewChase's ~6° elevation, pulled back and narrowed so all
+  // four sit in frame without becoming a three-quarter hero shot.
+  const camera = new THREE.PerspectiveCamera(30, 16 / 9, 0.1, 400);
+  camera.position.set(0, 2.30, 15.4);   // ≈5° elevation, same as the chase rig
+  camera.lookAt(0, 0.92, 0);
 
   const karts = [];
-  const SX = 3.6, SZ = 5.2;
+  const SX = 3.55;
+  for (let tier = 0; tier < PART_TIERS; tier++) {
+    const k = createKart({
+      racer: ROSTER[0], engine,
+      parts: { engine: tier, tires: tier, wing: tier, chassis: tier, exhaust: tier },
+    });
+    k.group.position.set((tier - (PART_TIERS - 1) / 2) * SX, 0, 0);
+    scene.add(k.group);
+    karts.push(k);
+  }
+
+  let t = 0;
+  return {
+    scene, camera,
+    update(dt) {
+      t += dt;
+      // straight-ahead, mid-throttle, no drift — the calmest pose to judge from
+      const s = { steer: 0, speed01: 0.55, drifting: false, driftCharge01: 0, airborne: false, boosting: false };
+      karts.forEach(k => k.update(dt, s));
+    },
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); },
+    dispose() { disposeWorld(ground, env, karts); },
+  };
+}
+
+export function previewParts(engine) {
+  const { scene, ground, env } = baseScene(engine, 140);
+  // Framed from behind, not from a three-quarter hero angle: these pairs exist to
+  // answer "can you see the difference while racing?", and only a rear view can.
+  // The junk tier sits in the NEAR row so the hero tier reads over the top of it.
+  const camera = new THREE.PerspectiveCamera(42, 16 / 9, 0.1, 400);
+  camera.position.set(0, 4.55, 17.6);
+  camera.lookAt(0, 0.85, -0.4);
+
+  const karts = [];
+  // One column per slot; junk tier in the NEAR row, hero tier behind it, both
+  // yawed toward the camera's rear quarter so the back of each kart — the only
+  // view the game ever gives a player — stays the dominant face.
+  const SX = 3.9, SZ = 6.6;
   PART_SLOTS.forEach((slot, i) => {
     const cx = i - (PART_SLOTS.length - 1) / 2;
-    for (const [row, tier] of [[-0.5, 0], [0.5, PART_TIERS - 1]]) {
+    for (const [row, tier] of [[0.5, 0], [-0.5, PART_TIERS - 1]]) {
       const p = { engine: 1, tires: 1, wing: 1, chassis: 1, exhaust: 1 };
       p[slot] = tier;
       const k = createKart({ racer: ROSTER[0], engine, parts: p });
-      k.group.position.set(cx * SX, 0, row * SZ);
-      k.group.rotation.y = 0.62;
+      k.group.position.set(cx * SX + (tier ? -0.55 : 0.55), 0, row * SZ);
+      k.group.rotation.y = 0.34;
       scene.add(k.group);
       karts.push(k);
     }

@@ -13,6 +13,7 @@
 // is most of what the player actually reads.
 import * as THREE from 'three';
 import { makeRng, makeNoise2D, fbm } from '../core/rng.js';
+import { bus } from '../core/bus.js';
 import {
   rockTexture, stripeTexture, woodTexture, waterTexture, stoneWallTexture,
   sandTexture, canvasTexture,
@@ -136,26 +137,50 @@ const SHIRT = [
 ];
 const SKIN = [0xf0c9a0, 0xdba173, 0xb87a4e, 0x8a5734, 0xf6dcc0];
 const HAT = [0xf5f1e6, 0xe8563f, 0x2f3d59, 0xf2a03a, 0x3fa8a0];
+// Team colours the spectators wave: the racer palette, so a flag in the stand
+// reads as "someone here is backing one of us" rather than as random confetti.
+const FLAG = [0xffc247, 0x9fe053, 0x5f82b4, 0xe8563f, 0x5fc8d8, 0xe06fa0, 0xf5f1e6];
+const UP_Y = new THREE.Vector3(0, 1, 0);
+
+// --- shared cheer envelope -------------------------------------------------
+// Module level on purpose: dressTrack builds several crowd groups per track and
+// they must all erupt together. Stored as (start, duration, strength) rather
+// than an integrated decay so it needs no dt and stays frame-rate independent.
+let cheerT0 = -1e9, cheerDur = 1, cheerStr = 0;
+function cheerAt(t) {
+  if (cheerStr <= 0) return 0;
+  const k = 1 - (t - cheerT0) / cheerDur;
+  return k <= 0 ? 0 : cheerStr * k * k;    // quadratic tail: a sharp roar, a slow settle
+}
 
 /**
- * Hundreds of stylised capsule spectators as two InstancedMeshes (bodies +
- * heads). Never a face, never a per-person draw call.
+ * Hundreds of stylised capsule spectators as three InstancedMeshes (bodies,
+ * heads, and a few waved flags). Never a face, never a per-person draw call.
+ *
+ * Variety comes out of the instance matrices we already have to write: each
+ * spectator gets a yaw and a slightly non-uniform scale at build time, and one
+ * of three bob archetypes (gentle / near-still / bouncer). `cheer()` — also
+ * fired from the race bus — briefly lifts the whole stand.
  *
  * @param {Array<{x,y,z,s?}>} spots
- * @returns {{group, update(t), dispose()}}
+ * @returns {{group, update(t), cheer(strength, seconds), dispose()}}
  */
-export function createCrowd(spots, rng, q = {}) {
+export function createCrowd(spots, rng, q = {}, opts = {}) {
   const n = spots.length;
   const group = new THREE.Group();
   group.name = 'crowd';
-  if (!n) return { group, update() { }, dispose() { } };
+  if (!n) return { group, update() { }, cheer() { }, dispose() { } };
 
   const bodyGeo = new THREE.CapsuleGeometry(0.19, 0.42, 3, 7);
   bodyGeo.translate(0, 0.40, 0);
   const headGeo = new THREE.SphereGeometry(0.145, 7, 5);
   headGeo.translate(0, 0.86, 0);
 
-  const mat = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 });
+  const mat = new THREE.MeshStandardMaterial({
+    roughness: 0.85, metalness: 0,
+    emissive: opts.emissive ?? 0x000000,
+    emissiveIntensity: opts.emissiveIntensity ?? 0,
+  });
   const bodies = new THREE.InstancedMesh(bodyGeo, mat, n);
   const heads = new THREE.InstancedMesh(headGeo, mat, n);
   bodies.castShadow = heads.castShadow = !!q.shadows;
@@ -163,45 +188,166 @@ export function createCrowd(spots, rng, q = {}) {
 
   const base = new Float32Array(n * 3);
   const phase = new Float32Array(n);
+  const jump = new Float32Array(n);     // phase of the cheer jump, per person
   const amp = new Float32Array(n);
-  const scl = new Float32Array(n);
+  const freq = new Float32Array(n);
+  const arch = new Uint8Array(n);       // 0 gentle, 1 near-still, 2 bouncer
   const m4 = new THREE.Matrix4();
   const col = new THREE.Color();
+  const qt = new THREE.Quaternion();
+  const eu = new THREE.Euler();
+  const vp = new THREE.Vector3();
+  const vs = new THREE.Vector3();
+
+  // flags get built after the loop, so collect their owners as we go
+  const flagOwner = [];
+  const flagYaw = [];
+  const flagScale = [];
+  const flagCol = [];
 
   for (let i = 0; i < n; i++) {
     const s = spots[i];
     base[i * 3] = s.x; base[i * 3 + 1] = s.y; base[i * 3 + 2] = s.z;
     phase[i] = rng() * TAU;
-    amp[i] = rng.range(0.035, 0.13);
-    scl[i] = (s.s ?? 1) * rng.range(0.86, 1.16);
+    jump[i] = rng() * TAU;
+
+    // --- bob archetype ------------------------------------------------------
+    // A stand where every capsule breathes at the same rate reads as a texture
+    // scrolling. Three behaviours is enough to break that up.
+    const rA = rng();
+    const a = rA < 0.60 ? 0 : rA < 0.85 ? 1 : 2;
+    arch[i] = a;
+    const baseAmp = rng.range(0.035, 0.13);
+    amp[i] = baseAmp * (a === 1 ? 0.13 : a === 2 ? 2.5 : 1);
+    freq[i] = 2.1 * (a === 1 ? 0.55 : a === 2 ? 2.0 : 1) * rng.range(0.9, 1.1);
+
+    // --- pose: yaw + mildly non-uniform scale, written once ------------------
+    const sc = (s.s ?? 1) * rng.range(0.86, 1.16);
+    const yaw = rng() * TAU;
+    const sx = sc * rng.range(0.94, 1.06);
+    const sy = sc * rng.range(0.94, 1.06);
+    const sz = sc * rng.range(0.94, 1.06);
+
     col.setHex(rng.pick(SHIRT)).multiplyScalar(rng.range(0.86, 1.08));
     bodies.setColorAt(i, col);
     col.setHex(rng() < 0.30 ? rng.pick(HAT) : rng.pick(SKIN)).multiplyScalar(rng.range(0.9, 1.06));
     heads.setColorAt(i, col);
+
     // initial matrices so a t=0 screenshot is already correct
-    m4.makeScale(scl[i], scl[i], scl[i]);
-    m4.setPosition(s.x, s.y, s.z);
+    qt.setFromAxisAngle(UP_Y, yaw);
+    m4.compose(vp.set(s.x, s.y, s.z), qt, vs.set(sx, sy, sz));
     bodies.setMatrixAt(i, m4); heads.setMatrixAt(i, m4);
+
+    if (rng() < 0.12) {
+      flagOwner.push(i); flagYaw.push(yaw); flagScale.push(sc);
+      flagCol.push(rng.pick(FLAG));
+    }
   }
   bodies.instanceMatrix.needsUpdate = heads.instanceMatrix.needsUpdate = true;
   bodies.instanceColor.needsUpdate = heads.instanceColor.needsUpdate = true;
   group.add(bodies, heads);
 
+  // --- flags: one more instanced mesh, ~12% of the crowd ---------------------
+  const nf = flagOwner.length;
+  let flags = null, flagGeo = null, flagMat = null;
+  let fOwner = null, fYaw = null, fScl = null, fm = null;
+  if (nf) {
+    const fb = new MB(true);
+    const stickC = tint(0x6b4a2c, 1);
+    fb.box(0, 1.05, 0, 0.035, 1.05, 0.035, 1, stickC);       // the stick
+    // the cloth: a quad off one side of the stick, tinted per instance
+    fb.face([[0.02, 1.18, 0], [0.44, 1.15, 0.02], [0.44, 1.50, 0.02], [0.02, 1.52, 0]],
+      [[0, 0], [1, 0], [1, 1], [0, 1]], [1, 1, 1]);
+    flagGeo = fb.geometry();
+    flagMat = new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.9, metalness: 0, side: THREE.DoubleSide,
+      emissive: opts.emissive ?? 0x000000,
+      emissiveIntensity: opts.emissiveIntensity ?? 0,
+    });
+    flags = new THREE.InstancedMesh(flagGeo, flagMat, nf);
+    flags.name = 'crowd-flags';
+    flags.castShadow = false;
+    fOwner = new Uint16Array(nf); fYaw = new Float32Array(nf); fScl = new Float32Array(nf);
+    for (let k = 0; k < nf; k++) {
+      const i = flagOwner[k];
+      fOwner[k] = i; fYaw[k] = flagYaw[k]; fScl[k] = flagScale[k];
+      col.setHex(flagCol[k]);
+      flags.setColorAt(k, col);
+      qt.setFromAxisAngle(UP_Y, fYaw[k]);
+      m4.compose(vp.set(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]), qt,
+        vs.set(fScl[k], fScl[k], fScl[k]));
+      flags.setMatrixAt(k, m4);
+    }
+    flags.instanceMatrix.needsUpdate = true;
+    flags.instanceColor.needsUpdate = true;
+    group.add(flags);
+    fm = flags.instanceMatrix.array;
+  }
+
   const bm = bodies.instanceMatrix.array, hm = heads.instanceMatrix.array;
-  return {
+
+  let lastT = 0;
+  const self = {
     group,
-    /** Gentle idle bob — writes only the 3 translation floats per instance. */
+    /**
+     * Erupt. `strength` ~1 is a full-throated roar; the envelope decays over
+     * `seconds` and is shared by every crowd group on the track.
+     */
+    cheer(strength = 1, seconds = 2.5) {
+      const s = Math.max(0, Math.min(1.5, strength));
+      // never cut an existing roar short — take whichever is louder
+      if (s * s >= cheerAt(lastT)) { cheerT0 = lastT; cheerDur = Math.max(0.2, seconds); cheerStr = s; }
+    },
+    /**
+     * Idle bob (three archetypes) plus the cheer lift. Writes only the Y
+     * translation of the bodies/heads; flags get a full recompose, but there
+     * are only ~12% as many of them.
+     */
     update(t) {
+      lastT = t;
+      const env = cheerAt(t);
+      const gain = 1 + 3 * env;
+      const jAmp = env * 0.34;
       for (let i = 0; i < n; i++) {
-        const y = base[i * 3 + 1] + Math.abs(Math.sin(t * 2.1 + phase[i])) * amp[i];
         const o = i * 16;
+        let y = base[i * 3 + 1] + Math.abs(Math.sin(t * freq[i] + phase[i])) * amp[i] * gain;
+        if (jAmp > 0) y += jAmp * Math.abs(Math.sin(t * 6.3 + jump[i]));
         bm[o + 13] = y; hm[o + 13] = y;
       }
       bodies.instanceMatrix.needsUpdate = true;
       heads.instanceMatrix.needsUpdate = true;
+      if (nf) {
+        const wave = 0.16 + env * 0.5;
+        for (let k = 0; k < nf; k++) {
+          const i = fOwner[k];
+          const s = fScl[k];
+          const sw = Math.sin(t * (2.4 + env * 3.0) + phase[i]) * wave;
+          eu.set(sw * 0.5, fYaw[k] + sw * 0.35, sw);
+          qt.setFromEuler(eu);
+          vp.set(base[i * 3], bm[i * 16 + 13], base[i * 3 + 2]);
+          m4.compose(vp, qt, vs.set(s, s, s));
+          m4.toArray(fm, k * 16);
+        }
+        flags.instanceMatrix.needsUpdate = true;
+      }
     },
-    dispose() { bodyGeo.dispose(); headGeo.dispose(); mat.dispose(); bodies.dispose(); heads.dispose(); },
+    dispose() {
+      for (const off of offs) off();
+      offs.length = 0;
+      bodyGeo.dispose(); headGeo.dispose(); mat.dispose();
+      bodies.dispose(); heads.dispose();
+      flagGeo?.dispose(); flagMat?.dispose(); flags?.dispose();
+    },
   };
+
+  // The world reacting to the player is the whole point of a crowd. Subscribed
+  // here and released in dispose(), so a stand never outlives its track.
+  const offs = [
+    bus.on('race:position', e => { if (e && e.to < e.from) self.cheer(0.85, 2.8); }),
+    bus.on('race:lap', () => self.cheer(0.7, 2.2)),
+    bus.on('race:finish', () => self.cheer(1.0, 5.0)),
+  ];
+  return self;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +452,7 @@ export function createPalms(spots, rng, q = {}) {
   buckets.forEach((list, i) => {
     if (!list.length) return;
     const im = new THREE.InstancedMesh(geos[i], mat, list.length);
+    im.name = 'palms' + i;
     im.castShadow = !!q.shadows;
     list.forEach((s, k) => {
       qt.setFromAxisAngle(new THREE.Vector3(0, 1, 0), s.r ?? 0);
@@ -363,16 +510,17 @@ export function createRockGeometry(rng, opts = {}) {
 }
 
 /** @param {Array<{x,y,z,s,r}>} spots */
-export function createRocks(spots, rng, q = {}) {
+export function createRocks(spots, rng, q = {}, opts = {}) {
   const group = new THREE.Group();
   group.name = 'rocks';
   if (!spots.length) return { group, dispose() { } };
   const variants = 5;
   const geos = [];
   for (let i = 0; i < variants; i++) {
+    const cols = opts.colors || [0xb06a3e, 0xa25c38, 0xc07f4c, 0x96543a, 0xb8763f];
     geos.push(createRockGeometry(rng, {
       detail: i < 3 ? 2 : 1,
-      color: [0xb06a3e, 0xa25c38, 0xc07f4c, 0x96543a, 0xb8763f][i],
+      color: cols[i % cols.length], pale: opts.pale,
     }));
   }
   const mat = vcMat({ flatShading: false, roughness: 1 });
@@ -383,6 +531,7 @@ export function createRocks(spots, rng, q = {}) {
   buckets.forEach((list, i) => {
     if (!list.length) return;
     const im = new THREE.InstancedMesh(geos[i], mat, list.length);
+    im.name = 'rocks' + i;
     im.castShadow = !!q.shadows; im.receiveShadow = !!q.shadows;
     list.forEach((s, k) => {
       qt.setFromEuler(new THREE.Euler(rng.range(-0.12, 0.12), s.r ?? 0, rng.range(-0.12, 0.12)));
@@ -453,6 +602,7 @@ export function createShrubs(spots, rng, q = {}) {
   buckets.forEach((list, i) => {
     if (!list.length) return;
     const im = new THREE.InstancedMesh(geos[i], mat, list.length);
+    im.name = 'shrubs' + i;
     im.castShadow = !!q.shadows;
     list.forEach((s, k) => {
       qt.setFromAxisAngle(new THREE.Vector3(0, 1, 0), s.r ?? 0);
@@ -612,6 +762,7 @@ export function createPool(x, z, radius, heightAt, rng, q = {}) {
     map: sandMaps.map, normalMap: sandMaps.normalMap, vertexColors: true, roughness: 1,
   });
   const shore = new THREE.Mesh(sg, smat);
+  shore.name = 'pool-shore';
   shore.receiveShadow = !!q.shadows;
   group.add(shore);
 
@@ -637,6 +788,7 @@ export function createPool(x, z, radius, heightAt, rng, q = {}) {
   }
   reeds.instanceMatrix.needsUpdate = true;
   if (reeds.instanceColor) reeds.instanceColor.needsUpdate = true;
+  reeds.name = 'pool-reeds';
   reeds.castShadow = !!q.shadows;
   group.add(reeds);
 
@@ -709,7 +861,7 @@ function atlasUV(i) {
  * A striped fabric shade canopy on four poles, appended into shared builders.
  * `fabric` gets the sagging cloth, `timber` the poles.
  */
-export function addCanopy(fabric, timber, cx, cy, cz, w, d, h, rotY, rng, stripeOffset = 0) {
+export function addCanopy(fabric, timber, cx, cy, cz, w, d, h, rotY, rng, stripeOffset = 0, poleHex = 0xb08a58) {
   const co = Math.cos(rotY), si = Math.sin(rotY);
   const px = (lx, lz) => [cx + lx * co - lz * si, cz + lx * si + lz * co];
   const NX = 5, NZ = 3;
@@ -735,7 +887,7 @@ export function addCanopy(fabric, timber, cx, cy, cz, w, d, h, rotY, rng, stripe
   for (const [lx, lz] of [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]]) {
     const [x, z] = px(lx * w * 0.94, lz * d * 0.94);
     const ph = h + (lz > 0 ? -0.55 : 0);
-    timber.box(x, cy + ph / 2, z, 0.13, ph, 0.13, 0.6, tint(0xb08a58, rng.range(0.85, 1.1)));
+    timber.box(x, cy + ph / 2, z, 0.13, ph, 0.13, 0.6, tint(poleHex, rng.range(0.85, 1.1)));
   }
 }
 
@@ -746,6 +898,8 @@ export function addCanopy(fabric, timber, cx, cy, cz, w, d, h, rotY, rng, stripe
  */
 export function addGrandstand(structure, fabric, timber, seats, opts, rng) {
   const { x, y, z, rotY, width = 22, rows = 7, q = {} } = opts;
+  const pal = opts.pal || { concrete: 0xe4cda4, timber: 0xb08a58 };
+  const seatCols = opts.seat || [0xc0603a, 0x2f6f70];
   const co = Math.cos(rotY), si = Math.sin(rotY);
   const px = (lx, lz) => [x + lx * co - lz * si, z + lx * si + lz * co];
   const stepD = 1.25, stepH = 0.52;
@@ -754,11 +908,11 @@ export function addGrandstand(structure, fabric, timber, seats, opts, rng) {
     const h = 0.4 + r * stepH;
     const [cxx, czz] = px(0, lz + stepD / 2);
     structure.box(cxx, y + h / 2, czz, width, h, stepD + 0.04, 0.5,
-      tint(0xe4cda4, 0.90 + (r % 2) * 0.12), rotY);
+      tint(pal.concrete, 0.90 + (r % 2) * 0.12), rotY);
     // seat plank
     const [sx2, sz2] = px(0, lz + stepD * 0.1);
     timber.box(sx2, y + h + 0.12, sz2, width * 0.98, 0.16, 0.42, 0.7,
-      tint(rng() < 0.5 ? 0xc0603a : 0x2f6f70, 1), rotY);
+      tint(rng() < 0.5 ? seatCols[0] : seatCols[1], 1), rotY);
     // A half-empty grandstand looks worse than a small one, so seat density
     // falls off far more gently than the global crowd budget does.
     const perRow = Math.max(3, Math.round(width / 0.92 * (0.5 + 0.5 * (q.crowdDensity ?? 1))));
@@ -772,20 +926,20 @@ export function addGrandstand(structure, fabric, timber, seats, opts, rng) {
   const depth = rows * stepD + 2.2;
   const [rcx, rcz] = px(0, -depth / 2);
   const roofY = y + 0.4 + rows * stepH + 2.6;
-  addCanopy(fabric, timber, rcx, roofY - 0.4, rcz, width + 1.6, depth, 0.9, rotY, rng, rng.range(0, 2));
+  addCanopy(fabric, timber, rcx, roofY - 0.4, rcz, width + 1.6, depth, 0.9, rotY, rng, rng.range(0, 2), pal.timber);
   // back wall so the stand has a silhouette from behind
   const [bx, bz] = px(0, -depth - 0.2);
   structure.box(bx, y + (0.4 + rows * stepH) / 2 + 0.6, bz, width + 1.2, 0.4 + rows * stepH + 1.2, 0.5, 0.4,
-    tint(0xdcc39a, 0.94), rotY);
+    tint(pal.concrete, 0.88), rotY);
 }
 
 /** A string of bunting triangles hung in a catenary between two points. */
-export function addBunting(mb, ax, ay, az, bx, by, bz, rng, sagK = 0.10) {
+export function addBunting(mb, ax, ay, az, bx, by, bz, rng, sagK = 0.10, opts = {}) {
   const dx = bx - ax, dy = by - ay, dz = bz - az;
   const len = Math.hypot(dx, dz);
   const n = Math.max(4, Math.round(len / 1.5));
   const sag = len * sagK;
-  const colors = [0xe8563f, 0xf2a03a, 0xf6d34a, 0x3fa8a0, 0x4776c8, 0xf1efe4];
+  const colors = opts.colors || [0xe8563f, 0xf2a03a, 0xf6d34a, 0x3fa8a0, 0x4776c8, 0xf1efe4];
   // the cord
   for (let i = 0; i < n; i++) {
     const f0 = i / n, f1 = (i + 1) / n;
@@ -817,10 +971,19 @@ export function createFarSilhouettes(centre, horizonColor, rng, opts = {}) {
   group.name = 'far';
   const mats = [], geos = [];
   const hz = new THREE.Color(horizonColor);
-  // Each ring is flatter, taller and closer in value to the horizon than the
-  // last — the cheapest depth cue there is, and fog finishes the job.
+  // THE P0: these rings are measured from the CENTRE of the layout, but a
+  // racetrack is not a circle. The oasis loop reaches 270 m from its centre on
+  // the west straight, and the first ring sits at 330 x 0.82 = 270 m — so one
+  // 50 m mesa landed squarely across the road, with no collision, and karts
+  // drove through it. Two independent fixes, because this must never recur:
+  //   1. rings start beyond the track's own maximum radius (`minDist`);
+  //   2. every blob is rejected outright if its footprint reaches the circuit.
+  const spline = opts.spline || null;
+  const minDist = opts.minDist ?? 0;
+  const probe = new THREE.Vector3();
   const layers = opts.layers || [[330, 52, 0.03, 24], [560, 115, 0.16, 19], [900, 210, 0.40, 14]];
-  for (const [dist, tall, blend, n] of layers) {
+  for (const [dist0, tall, blend, n] of layers) {
+    const dist = Math.max(dist0, minDist + tall * 1.6);
     const mb = new MB(false);
     for (let i = 0; i < n; i++) {
       const a = (i / n) * TAU + rng.range(-0.2, 0.2);
@@ -829,6 +992,11 @@ export function createFarSilhouettes(centre, horizonColor, rng, opts = {}) {
       const rB = h * rng.range(0.7, 1.5);
       const rT = rB * rng.range(0.12, 0.6);
       const cx = centre.x + Math.sin(a) * d, cz = centre.z + Math.cos(a) * d;
+      if (spline) {
+        const s = spline.closestT(probe.set(cx, 0, cz));
+        // rB is the base radius before the 0.9-1.7 stretch, hence the 2x
+        if (s.dist < spline.widthAt(s.t) + rB * 2 + 40) continue;
+      }
       const sides = 7;
       const b0 = mb.count;
       const rot = rng() * TAU;
@@ -852,9 +1020,392 @@ export function createFarSilhouettes(centre, horizonColor, rng, opts = {}) {
     const col = new THREE.Color(opts.color ?? 0xa05c33).lerp(hz, blend);
     const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 1, metalness: 0, flatShading: true });
     mats.push(mat);
-    group.add(new THREE.Mesh(g, mat));
+    const m = new THREE.Mesh(g, mat);
+    m.name = 'far-ring' + geos.length;
+    group.add(m);
   }
   return { group, dispose() { geos.forEach(g => g.dispose()); mats.forEach(m => m.dispose()); } };
+}
+
+// ---------------------------------------------------------------------------
+// MID-GROUND SET — the depth rung between the barrier and the far silhouettes
+// ---------------------------------------------------------------------------
+//
+// Track 1's honest weakness was that the eye jumped from the barrier straight
+// to the mesas: nothing lived between ~20 m and ~150 m, so the depth ladder lost
+// a rung and the whole scene read flatter than the reference. These three props
+// fill it, in a theme-appropriate skin, on every track:
+//
+//   marshal post   raised deck + roof + two marshals, on the outside of corners
+//   tyre stack     the universal "this is a racetrack" object, 8-25 m out
+//   paddock hut    a small building with an awning, clustered into paddocks
+//
+// All three append into builders the caller already commits, so the whole set
+// costs ONE extra draw call (the rubber) across the entire lap.
+
+/** A raised marshal post: legs, deck, rail, roof, and two marshals on it. */
+export function addMarshalPost(structure, timber, fabric, seats, opts, rng) {
+  const { x, y, z, rotY, pal } = opts;
+  const co = Math.cos(rotY), si = Math.sin(rotY);
+  const px = (lx, lz) => [x + lx * co - lz * si, z + lx * si + lz * co];
+  const DECK = 2.35, W = 3.2, D = 2.6;
+  const tCol = tint(pal.timber, rng.range(0.9, 1.1));
+  for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const [ax, az] = px(lx * W * 0.42, lz * D * 0.42);
+    timber.box(ax, y + DECK / 2, az, 0.16, DECK, 0.16, 0.6, tCol);
+  }
+  // deck slab + a skirt so it is not a floating plank
+  const [cx0, cz0] = px(0, 0);
+  timber.box(cx0, y + DECK + 0.09, cz0, W, 0.18, D, 0.6, tCol, rotY);
+  structure.box(cx0, y + DECK - 0.14, cz0, W * 0.86, 0.22, D * 0.86, 0.5,
+    tint(pal.concrete, 0.92), rotY);
+  // rail: three sides, so the track side stays open
+  for (const [lx, lz, sx, sz] of [[0, -0.5, W, 0.1], [-0.5, 0, 0.1, D], [0.5, 0, 0.1, D]]) {
+    const [ax, az] = px(lx * W, lz * D);
+    timber.box(ax, y + DECK + 0.58, az, sx, 0.09, sz, 0.6, tCol, rotY);
+    timber.box(ax, y + DECK + 0.95, az, sx, 0.09, sz, 0.6, tCol, rotY);
+  }
+  // roof
+  addCanopy(fabric, timber, cx0, y + DECK + 1.05, cz0, W + 0.5, D + 0.4, 1.5, rotY, rng, rng.range(0, 3));
+  // two marshals looking at the track
+  for (const lx of [-0.55, 0.5]) {
+    const [mx, mz] = px(lx, rng.range(-0.3, 0.3));
+    seats.push({ x: mx, y: y + DECK + 0.2, z: mz, s: rng.range(0.98, 1.06) });
+  }
+}
+
+/** A stack of `n` tyres. Appended to a dedicated vertex-coloured rubber builder. */
+export function addTyreStack(mb, x, y, z, n, rng, topHex = 0xd8d3c8) {
+  const SIDES = 9, R = 0.56, H = 0.34;
+  for (let i = 0; i < n; i++) {
+    const cy = y + 0.02 + i * (H - 0.02);
+    const wob = 1 - i * 0.02;
+    const dark = tint(0x24232a, rng.range(0.8, 1.15));
+    const b0 = mb.count;
+    for (let k = 0; k <= SIDES; k++) {
+      const a = (k / SIDES) * TAU + i * 0.3;
+      const cx2 = x + Math.cos(a) * R * wob, cz2 = z + Math.sin(a) * R * wob;
+      mb.vert(cx2, cy, cz2, k / SIDES * 2, 0, dark);
+      mb.vert(cx2, cy + H, cz2, k / SIDES * 2, 1, dark);
+    }
+    for (let k = 0; k < SIDES; k++) { const a0 = b0 + k * 2; mb.quad(a0, a0 + 2, a0 + 3, a0 + 1); }
+    // top face of the last tyre gets the paddock's colour flash
+    if (i === n - 1) {
+      const cap = mb.count;
+      const col = tint(topHex, rng.range(0.85, 1.1));
+      mb.vert(x, cy + H + 0.01, z, 0.5, 0.5, col);
+      for (let k = 0; k <= SIDES; k++) {
+        const a = (k / SIDES) * TAU + i * 0.3;
+        mb.vert(x + Math.cos(a) * R * wob, cy + H + 0.01, z + Math.sin(a) * R * wob, 0.5, 0.5, col);
+      }
+      for (let k = 0; k < SIDES; k++) mb.tri(cap, cap + 1 + k, cap + 2 + k);
+    }
+  }
+}
+
+/**
+ * A small paddock building: walls, a roof slab, an awning over the track-facing
+ * side and (where the theme wants it) a lit window band in the glow builder.
+ */
+export function addPaddockHut(structure, timber, fabric, glow, opts, rng) {
+  const { x, y, z, rotY, pal, w = 6.5, d = 4.4, h = 3.2, lit = false } = opts;
+  const co = Math.cos(rotY), si = Math.sin(rotY);
+  const px = (lx, lz) => [x + lx * co - lz * si, z + lx * si + lz * co];
+  structure.box(x, y + h / 2, z, w, h, d, 0.4, tint(pal.concrete, rng.range(0.88, 1.06)), rotY);
+  structure.box(x, y + h + 0.16, z, w + 0.7, 0.32, d + 0.7, 0.4, tint(pal.concrete, 1.12), rotY);
+  // awning on the +Z face (which the caller points at the track)
+  const [ax, az] = px(0, d * 0.5 + 1.1);
+  addCanopy(fabric, timber, ax, y + h - 1.5, az, w * 0.9, 2.6, 1.35, rotY, rng, rng.range(0, 3));
+  // a stripe of trim so the wall is not one flat slab
+  structure.box(x, y + h * 0.62, z, w + 0.14, 0.26, d + 0.14, 0.4, tint(pal.trim, 1.0), rotY);
+  if (lit && glow) {
+    const [wx, wz] = px(0, d * 0.5 + 0.06);
+    const nx = si, nz = -co;   // outward normal of the +Z face
+    const hw = w * 0.36, y0 = y + h * 0.52, y1 = y + h * 0.78;
+    const col = tint(pal.light, 1);
+    glow.face([
+      [wx - co * hw, y0, wz - si * hw], [wx + co * hw, y0, wz + si * hw],
+      [wx + co * hw, y1, wz + si * hw], [wx - co * hw, y1, wz - si * hw],
+    ], [[0, 0], [1, 0], [1, 1], [0, 1]], col);
+    void nx; void nz;
+  }
+}
+
+/**
+ * A flat additive decal lying on the ground — the single most useful primitive
+ * for a wet night circuit (neon reflected in the tarmac) and for the cloud
+ * track's light pooling. `dir` is the direction the streak runs in.
+ */
+export function addGlowDecal(mb, x, y, z, len, wid, dirX, dirZ, hex, k = 1) {
+  const m = Math.hypot(dirX, dirZ) || 1;
+  const ux = dirX / m * len * 0.5, uz = dirZ / m * len * 0.5;
+  const vx = -dirZ / m * wid * 0.5, vz = dirX / m * wid * 0.5;
+  const col = tint(hex, k);
+  mb.face([
+    [x - ux - vx, y, z - uz - vz], [x + ux - vx, y, z + uz - vz],
+    [x + ux + vx, y, z + uz + vz], [x - ux + vx, y, z - uz + vz],
+  ], [[0, 0], [1, 0], [1, 1], [0, 1]], col);
+}
+
+/** A vertical additive card — sign halo, light shaft, waterfall of light. */
+export function addGlowCard(mb, x, y, z, w, h, dirX, dirZ, hex, k = 1) {
+  const m = Math.hypot(dirX, dirZ) || 1;
+  const ux = -dirZ / m * w * 0.5, uz = dirX / m * w * 0.5;
+  const col = tint(hex, k);
+  mb.face([
+    [x - ux, y, z - uz], [x + ux, y, z + uz],
+    [x + ux, y + h, z + uz], [x - ux, y + h, z - uz],
+  ], [[0, 0], [1, 0], [1, 1], [0, 1]], col);
+}
+
+/** Soft round falloff, used by every additive decal. One texture, one material. */
+export function glowTexture(size = 128) {
+  return canvasTexture('glowSoft', size, (ctx, S) => {
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, S, S);
+    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    g.addColorStop(0.00, 'rgba(255,255,255,1)');
+    g.addColorStop(0.35, 'rgba(255,255,255,0.62)');
+    g.addColorStop(0.70, 'rgba(255,255,255,0.16)');
+    g.addColorStop(1.00, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+  }, { srgb: false });
+}
+
+// ---------------------------------------------------------------------------
+// CIRCUIT CITY — towers, holo signage, neon
+// ---------------------------------------------------------------------------
+
+/** Facade texture: dark glass with a grid of lit windows. One tile = 28 m. */
+export function windowTexture(size = 512) {
+  return canvasTexture('cityWindows', size, (ctx, S) => {
+    ctx.fillStyle = '#0d1024'; ctx.fillRect(0, 0, S, S);
+    const N = 8, cell = S / N;
+    // faint vertical mullions
+    ctx.fillStyle = 'rgba(120,140,200,0.10)';
+    for (let i = 0; i < N; i++) ctx.fillRect(i * cell, 0, 1.5, S);
+    const lit = ['#ffd9a0', '#9fe8ff', '#ff9fd0', '#cfd6ff', '#fff2cf'];
+    let seed = 7;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const on = rnd() < 0.42;
+        const w = cell * 0.62, h = cell * 0.44;
+        const ox = x * cell + cell * 0.19, oy = y * cell + cell * 0.28;
+        if (on) {
+          const c = lit[Math.floor(rnd() * lit.length)];
+          ctx.globalAlpha = 0.55 + rnd() * 0.45;
+          ctx.fillStyle = c; ctx.fillRect(ox, oy, w, h);
+          ctx.globalAlpha = 0.16;
+          ctx.fillRect(ox - w * 0.25, oy - h * 0.3, w * 1.5, h * 1.6);
+          ctx.globalAlpha = 1;
+        } else {
+          ctx.fillStyle = 'rgba(90,110,170,0.16)';
+          ctx.fillRect(ox, oy, w, h);
+        }
+      }
+    }
+  }, { wrap: THREE.RepeatWrapping });
+}
+
+/**
+ * The city that surrounds עיר המעגלים: merged tower blocks on three distance
+ * rings, keyed to the horizon so fog does the aerial perspective. Two draw
+ * calls total (facades + roof-light beacons ride the same material).
+ */
+export function createCityBlocks(centre, spline, rng, opts = {}) {
+  const mb = new MB(true);
+  const hz = new THREE.Color(opts.horizon ?? 0x93395f);
+  const c = new THREE.Color();
+  const v = new THREE.Vector3();
+  const base = new THREE.Color(opts.color ?? 0x1b1d3a);
+  const outward = opts.outward || (() => 1);
+  const dens = opts.density ?? 1;
+
+  const tower = (cx, cz, y, h, w, d, blend, rot) => {
+    c.copy(base).lerp(hz, blend);
+    const col = [c.r, c.g, c.b];
+    mb.box(cx, y + h / 2, cz, w, h, d, 1 / 28, col, rot);
+    if (rng() < 0.6) {
+      const h2 = h * rng.range(0.18, 0.45);
+      mb.box(cx, y + h + h2 / 2, cz, w * 0.6, h2, d * 0.6, 1 / 28, col, rot);
+    }
+    if (rng() < 0.35) mb.box(cx, y + h * 1.1 + 4, cz, 0.6, 8, 0.6, 1 / 28, col, rot);
+  };
+
+  // --- band 1: the city crowds the circuit itself --------------------------
+  // Fog on this theme is thick (76% at 200 m), so the buildings that actually
+  // read have to be BESIDE the track, not on a ring around the layout.
+  const nNear = Math.round((opts.near ?? 130) * dens);
+  for (let i = 0; i < nNear; i++) {
+    const t = rng();
+    const side = outward(t) * (rng() < 0.82 ? 1 : -1);
+    const w0 = spline.widthAt(t);
+    const f = Math.pow(rng(), 0.8);
+    const dist = w0 + 26 + f * 150;
+    const p = spline.offsetPoint(t, side * dist);
+    p.x += rng.gauss() * 12; p.z += rng.gauss() * 12;
+    const s = spline.closestT(v.set(p.x, 0, p.z));
+    const foot = Math.max(12, 9 + f * 26) * rng.range(0.7, 1.5);
+    // never within reach of the road, and never so close it clips the crowd
+    if (s.dist < spline.widthAt(s.t) + 22 + foot) continue;
+    const h = (14 + f * 90) * rng.range(0.55, 1.7);
+    tower(p.x, p.z, p.y - 1, h, foot, foot * rng.range(0.7, 1.4),
+      0.06 + f * 0.22, rng() * TAU);
+  }
+
+  // --- band 2/3: the skyline behind it -------------------------------------
+  for (const [dist0, tall, blend, n] of (opts.rings || [[420, 90, 0.34, 40], [820, 190, 0.62, 30]])) {
+    for (let i = 0; i < Math.round(n * dens); i++) {
+      const a = (i / n) * TAU + rng.range(-0.14, 0.14);
+      const d = dist0 * rng.range(0.8, 1.45);
+      const cx = centre.x + Math.sin(a) * d, cz = centre.z + Math.cos(a) * d;
+      const h = tall * rng.range(0.45, 1.8);
+      const foot = rng.range(14, 34);
+      const s = spline.closestT(v.set(cx, 0, cz));
+      if (s.dist < spline.widthAt(s.t) + 40 + foot) continue;
+      tower(cx, cz, centre.y - 2, h, foot, foot * rng.range(0.7, 1.4), blend, rng() * TAU);
+    }
+  }
+
+  const g = mb.geometry();
+  const tex = windowTexture(opts.texSize ?? 512);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.8,
+    vertexColors: true, roughness: 0.5, metalness: 0.3,
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.name = 'city';
+  return { mesh, dispose() { g.dispose(); mat.dispose(); } };
+}
+
+/** Holographic sign face: a Hebrew brand glowing on a dark scanlined panel. */
+export function holoTexture(size = 512) {
+  const B = [
+    { he: 'טורבו־בינה', fg: '#7ff2ff', bg: '#0a1030' },
+    { he: 'מנוע פרומפט', fg: '#ff86d6', bg: '#160a2e' },
+    { he: 'אלגו־גיר', fg: '#a8ff9c', bg: '#07172a' },
+    { he: 'ברק אנרגיה', fg: '#ffd76a', bg: '#231032' },
+  ];
+  return canvasTexture('holoAtlas', size, (ctx, S) => {
+    const h = S / 2;
+    B.forEach((b, i) => {
+      const ox = (i % 2) * h, oy = Math.floor(i / 2) * h;
+      ctx.save(); ctx.translate(ox, oy);
+      ctx.fillStyle = b.bg; ctx.fillRect(0, 0, h, h);
+      // scanlines
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      for (let y = 0; y < h; y += 6) ctx.fillRect(0, y, h, 2);
+      // frame
+      ctx.strokeStyle = b.fg; ctx.globalAlpha = 0.85; ctx.lineWidth = h * 0.018;
+      ctx.strokeRect(h * 0.05, h * 0.10, h * 0.90, h * 0.80);
+      ctx.globalAlpha = 1;
+      ctx.direction = 'rtl'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `bold ${Math.round(h * 0.23)}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
+      ctx.shadowColor = b.fg; ctx.shadowBlur = h * 0.09;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(b.he, h / 2, h * 0.46);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = b.fg;
+      ctx.globalAlpha = 0.9;
+      ctx.fillRect(h * 0.18, h * 0.66, h * 0.64, h * 0.035);
+      ctx.fillRect(h * 0.30, h * 0.74, h * 0.40, h * 0.025);
+      ctx.restore();
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// CLOUD PEAK — floating islands, cloud sea, waterfalls of light
+// ---------------------------------------------------------------------------
+
+/**
+ * Floating stone islands: a flattened rock cap with a tapering keel underneath,
+ * so it reads as a chunk torn out of a mountain rather than as a boulder.
+ */
+export function createIslandGeometry(rng, seed = 1) {
+  const mb = new MB(true);
+  const noise = makeNoise2D(seed);
+  const SIDES = 11, RINGS = [
+    // [radius scale, y, colour lerp]
+    [1.00, 0.00, 0.00], [1.04, -0.35, 0.10], [0.92, -1.1, 0.30],
+    [0.70, -2.4, 0.55], [0.42, -4.2, 0.78], [0.14, -6.4, 0.95],
+  ];
+  const top = new THREE.Color(0xece6e2), bot = new THREE.Color(0x2b2940);
+  const c = new THREE.Color();
+  const jag = [];
+  for (let k = 0; k <= SIDES; k++) jag.push(0.72 + fbm(noise, Math.cos(k / SIDES * TAU) * 2, Math.sin(k / SIDES * TAU) * 2, 3) * 0.6);
+  const base = mb.count;
+  for (const [rs, y, t] of RINGS) {
+    for (let k = 0; k <= SIDES; k++) {
+      const a = (k / SIDES) * TAU;
+      const r = rs * jag[k];
+      // sedimentary banding down the flank, plus a per-facet break, so the
+      // silhouette is not a smooth beige molar
+      const band = 0.5 + 0.5 * Math.sin(y * 2.6 + jag[k] * 5);
+      c.copy(top).lerp(bot, clamp01(t * 1.05 + band * 0.16 - 0.08))
+        .multiplyScalar(0.9 + ((k * 7) % 5) * 0.045);
+      mb.vert(Math.cos(a) * r, y + (t === 0 ? Math.sin(a * 3) * 0.06 : 0), Math.sin(a) * r,
+        k / SIDES * 2.5, -y / 2.2, [c.r, c.g, c.b]);
+    }
+  }
+  for (let ri = 0; ri < RINGS.length - 1; ri++) {
+    for (let k = 0; k < SIDES; k++) {
+      const a0 = base + ri * (SIDES + 1) + k;
+      mb.quad(a0, a0 + 1, a0 + SIDES + 2, a0 + SIDES + 1);
+    }
+  }
+  // grassy/lit top cap
+  const cap = mb.count;
+  const capCol = [top.r * 1.05, top.g * 1.04, top.b * 1.02];
+  mb.vert(0, 0.06, 0, 0.5, 0.5, capCol);
+  for (let k = 0; k <= SIDES; k++) {
+    const a = (k / SIDES) * TAU;
+    mb.vert(Math.cos(a) * jag[k], 0.02, Math.sin(a) * jag[k], 0.5, 0.5, capCol);
+  }
+  for (let k = 0; k < SIDES; k++) mb.tri(cap, cap + 1 + k, cap + 2 + k);
+  return mb.geometry();
+}
+
+/** Puffy cloud-tops: merged low-poly blobs. One draw call for a whole sea. */
+export function createCloudBanks(spots, rng, opts = {}) {
+  const mb = new MB(true);
+  const base = new THREE.Color(opts.color ?? 0xfdf3ec);
+  const shade = new THREE.Color(opts.shade ?? 0xb9b7d4);
+  const c = new THREE.Color();
+  const geoSrc = new THREE.IcosahedronGeometry(1, 1);
+  const p = geoSrc.attributes.position;
+  for (const s of spots) {
+    const lobes = 4 + Math.floor(rng() * 5);
+    for (let l = 0; l < lobes; l++) {
+      const ox = rng.gauss() * s.r * 0.75, oz = rng.gauss() * s.r * 0.75;
+      const oy = rng.range(-0.06, 0.14) * s.r;
+      const rr = s.r * rng.range(0.5, 0.95);
+      const b0 = mb.count;
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+        const k = clamp01(0.42 + y * 0.62);
+        c.copy(shade).lerp(base, k);
+        mb.vert(s.x + ox + x * rr, s.y + oy + y * rr * 0.34, s.z + oz + z * rr,
+          0, 0, [c.r, c.g, c.b]);
+      }
+      // IcosahedronGeometry is non-indexed (three tris are three vertex triples)
+      const idx = geoSrc.index;
+      if (idx) for (let i = 0; i < idx.count; i += 3) mb.tri(b0 + idx.getX(i), b0 + idx.getX(i + 1), b0 + idx.getX(i + 2));
+      else for (let i = 0; i < p.count; i += 3) mb.tri(b0 + i, b0 + i + 1, b0 + i + 2);
+    }
+  }
+  geoSrc.dispose();
+  const g = mb.geometry();
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 1, metalness: 0, flatShading: true, fog: true,
+    // a cloud is lit from every direction at once; without a little self-light
+    // the shaded facets read as grey rock rather than as vapour
+    emissive: opts.emissive ?? 0xfdf1ec, emissiveIntensity: opts.emissiveIntensity ?? 0.34,
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.name = 'clouds';
+  return { mesh, dispose() { g.dispose(); mat.dispose(); } };
 }
 
 // ---------------------------------------------------------------------------
@@ -862,11 +1413,55 @@ export function createFarSilhouettes(centre, horizonColor, rng, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-theme dressing recipe. The SHAPE of the dressing (crowd at corners,
+ * stands at the start line, canopies, bunting, a mid-ground paddock every
+ * ~110 m) is shared by all three tracks — that is what makes them read as one
+ * game. Only the palette, the material tints and the far-field furniture change.
+ */
+const DRESS = {
+  oasis: {
+    pal: { concrete: 0xe4cda4, timber: 0xb08a58, trim: 0xc0603a, light: 0xffdca8, rubberTop: 0xd8d3c8 },
+    stripes: [0xd94f3d, 0xf5ead6, 0x2f8f8a, 0xf5ead6],
+    seat: [0xc0603a, 0x2f6f70],
+    far: 0xa8623a, horizon: 0xf8cba1,
+    bunting: [0xe8563f, 0xf2a03a, 0xf6d34a, 0x3fa8a0, 0x4776c8, 0xf1efe4],
+    veg: true, cliffs: true, pools: true, lit: false,
+    accents: [0xffc247, 0xd94f3d, 0x2f8f8a],
+  },
+  circuit: {
+    pal: { concrete: 0x7f869c, timber: 0x99a2b4, trim: 0x39e6ff, light: 0x9fe8ff, rubberTop: 0xff5fae },
+    stripes: [0x232a4a, 0x5ce0ff, 0x232a4a, 0xff5fae],
+    seat: [0x39406b, 0x7a3f7d],
+    far: 0x2a2448, horizon: 0x93395f,
+    bunting: [0x39e6ff, 0xff5fae, 0xa06bff, 0x5ce0ff, 0xf1efe4, 0x2f7de0],
+    veg: false, cliffs: false, pools: false, lit: true, city: true,
+    accents: [0x39e6ff, 0xff5fae, 0xa06bff],
+  },
+  cloud: {
+    pal: { concrete: 0xeae3e6, timber: 0xd6cec6, trim: 0xffc247, light: 0xfff0d0, rubberTop: 0xe38fb0 },
+    stripes: [0xf6e7d8, 0xffc247, 0xf6e7d8, 0xe38fb0],
+    seat: [0xe0a4b8, 0xc8b6e2],
+    far: 0xbfc6e0, horizon: 0xedc9a6,
+    bunting: [0xffc247, 0xffe3b0, 0xf6d6e4, 0xffffff, 0xffd88a, 0xe9d7f2],
+    veg: false, cliffs: false, pools: false, lit: true, islands: true,
+    rock: [0xbfbccb, 0xd3cfd8, 0xa9a6b8, 0xcdc7d2, 0xb6b2c4],
+    accents: [0xffd88a, 0xfff3d6, 0xffc247],
+  },
+};
+
+/**
  * Scatter the whole scenery library along a track.
  *
  * Placement is driven by `curvatureAt` (crowd, canopies and bunting cluster at
  * corners and the start line) and everything scales with
  * `engine.q.propDensity` / `engine.q.crowdDensity`.
+ *
+ * NOTHING here has collision — the physics only knows the track limit at
+ * `widthAt(t)` and the barrier at `widthAt(t)+RUNOFF`. So every placement goes
+ * through `clearance()` / `rectClear()` below: a prop that lands on the road is
+ * a wall karts drive straight through, which is exactly the bug that shipped on
+ * oasis (a 26 m grandstand pitched tangentially at a hairpin, whose far end lay
+ * flat across the track 40 m further round the lap).
  *
  * @returns {{group, update(t), dispose()}}
  */
@@ -895,6 +1490,30 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
   }
   const interestAt = t => interest[Math.floor(((t % 1) + 1) % 1 * NS) % NS];
 
+  const D = DRESS[def.theme] || DRESS.oasis;
+  const PAL = D.pal;
+
+  // =========================================================================
+  // PLACEMENT CLEARANCE — the guard that keeps scenery off the racing line
+  // =========================================================================
+  const CW = new THREE.Vector3();
+  /** Metres from (x,z) to the track LIMIT (negative = on the road). */
+  const clearance = (x, z) => {
+    const s = spline.closestT(CW.set(x, 0, z));
+    return s.dist - spline.widthAt(s.t);
+  };
+  /** Is a rotated w x d footprint (centred at local z = zOff) clear by `pad`? */
+  const rectClear = (x, z, rotY, w, d, zOff, pad) => {
+    const co = Math.cos(rotY), si = Math.sin(rotY);
+    for (const fx of [-0.5, -0.25, 0, 0.25, 0.5]) {
+      for (const fz of [-0.5, 0, 0.5]) {
+        const lx = fx * w, lz = zOff + fz * d;
+        if (clearance(x + lx * co - lz * si, z + lx * si + lz * co) < pad) return false;
+      }
+    }
+    return true;
+  };
+
   // =========================================================================
   // CROWD — behind the barriers, densest at corners and the start line
   // =========================================================================
@@ -917,6 +1536,9 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
           if (rng() > 0.68 + k * 0.32) continue;
           const lat = side * (w + RUNOFF + 1.5 + r * 1.15 + rng.range(-0.25, 0.25));
           const p = spline.offsetPoint(t + rng.range(-0.4, 0.4) * step, lat);
+          // where the loop doubles back, "1.5 m behind the barrier" at one t is
+          // the middle of the road at another
+          if (clearance(p.x, p.z) < RUNOFF + 0.8) continue;
           const gy = Math.max(heightAt(p.x, p.z), p.y - 0.35);
           seats.push({ x: p.x, y: gy + 0.05 + r * 0.22, z: p.z, s: rng.range(0.85, 1.12) });
         }
@@ -946,16 +1568,35 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     standSpots.push({ t: bestT, side: -(Math.sign(curv[Math.floor(bestT * NS)]) || 1), width: 22, rows: 6 });
 
     for (const s of standSpots) {
-      const w = spline.widthAt(s.t);
-      const p = spline.offsetPoint(s.t, s.side * (w + RUNOFF + 6.5));
-      // The stand's seating recedes along local -Z, so local +Z has to point
-      // back at the track: that direction is -side * right.
-      const r = spline.rightAt(s.t);
-      const rotY = Math.atan2(-s.side * r.x, -s.side * r.z);
+      const rows = Math.max(3, Math.round(s.rows * (q.crowdDensity ?? 1) + 1));
+      const depth = rows * 1.25 + 3.4;
+      // A grandstand is a 20-26 m SLAB pitched on the tangent at one t. On a
+      // tight corner — or anywhere the loop doubles back — its far end swings
+      // out over the road further round the lap, and since nothing here has
+      // collision that end becomes a wall karts drive through. So: try the
+      // nominal spot, then progressively further along and further back, and
+      // only build once the whole footprint clears the corridor.
+      let placed = null;
+      for (const dt of [0, 0.008, -0.008, 0.016, -0.016, 0.026, -0.026, 0.04, -0.04]) {
+        for (const extra of [6.5, 9.5, 13.5, 18]) {
+          const t = ((s.t + dt) % 1 + 1) % 1;
+          const w = spline.widthAt(t);
+          const p = spline.offsetPoint(t, s.side * (w + RUNOFF + extra));
+          // The stand's seating recedes along local -Z, so local +Z has to point
+          // back at the track: that direction is -side * right.
+          const r = spline.rightAt(t);
+          const rotY = Math.atan2(-s.side * r.x, -s.side * r.z);
+          if (!rectClear(p.x, p.z, rotY, s.width + 2.0, depth + 1.4, -depth / 2 + 0.4, RUNOFF + 1.6)) continue;
+          placed = { p, rotY };
+          break;
+        }
+        if (placed) break;
+      }
+      if (!placed) continue;      // nowhere safe: better no stand than a wall
+      const { p, rotY } = placed;
       const y = Math.max(heightAt(p.x, p.z), p.y - 0.4);
       addGrandstand(structure, fabric, timber, standSeats, {
-        x: p.x, y, z: p.z, rotY, width: s.width,
-        rows: Math.max(3, Math.round(s.rows * (q.crowdDensity ?? 1) + 1)), q,
+        x: p.x, y, z: p.z, rotY, width: s.width, rows, q, pal: PAL, seat: D.seat,
       }, rng);
     }
   }
@@ -969,9 +1610,34 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     for (const s of seats) if (rng() < keepRate) crowdSpots.push(s);
   }
   crowdSpots = crowdSpots.concat(standSeats);
-  const crowd = createCrowd(crowdSpots, rng, q);
+  // On the night circuit and above the clouds the crowd is lit by the signage,
+  // not by a sun, so it gets a little self-illumination or it reads as a field
+  // of grey pebbles.
+  const crowd = createCrowd(crowdSpots, rng, q,
+    D.lit ? { emissive: def.theme === 'circuit' ? 0x2a3352 : 0x3a3040, emissiveIntensity: 0.55 } : {});
   dressed.add(crowd.group);
   parts.push(crowd);
+
+  /**
+   * A light pool lying IN the road plane, built from two spline frames rather
+   * than as a flat world-space quad. On a track with real gradient (cloud
+   * climbs 17% out of turn 1) a world-flat quad cuts up through the tarmac and
+   * is picked up by the obstruction ray-cast as geometry across the road; a
+   * frame-built one stays parallel to the surface everywhere.
+   */
+  const addRoadGlow = (mb, t, lat, len, wid, hex, k) => {
+    const dt = (len * 0.5) / L;
+    const f0 = spline.frameAt(((t - dt) % 1 + 1) % 1);
+    const f1 = spline.frameAt(((t + dt) % 1 + 1) % 1);
+    const col = tint(hex, k);
+    const pt = (f, l) => [f.pos.x + f.right.x * l, f.pos.y + 0.04, f.pos.z + f.right.z * l];
+    mb.face([pt(f0, lat - wid / 2), pt(f1, lat - wid / 2), pt(f1, lat + wid / 2), pt(f0, lat + wid / 2)],
+      [[0, 0], [1, 0], [1, 1], [0, 1]], col);
+  };
+
+  // The additive-glow builder: neon reflections in wet tarmac, sign halos, lit
+  // windows, waterfalls of light. One material, one draw call, whole lap.
+  const glow = new MB(true);
 
   // =========================================================================
   // SHADE CANOPIES over the crowd + BUNTING over the track
@@ -988,23 +1654,48 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
         const w = spline.widthAt(t);
         const p = spline.offsetPoint(t, side * (w + RUNOFF + 4.0));
         const tan = spline.tangentAt(t);
+        const rotY = Math.atan2(tan.x, tan.z);
+        // the canopy runs ALONG the track, so test it in its own frame or the
+        // axis-aligned box swallows the barrier and rejects every one of them
+        if (!rectClear(p.x, p.z, rotY, 9.4, 5.8, 0, RUNOFF - 1.0)) continue;
         const y = Math.max(heightAt(p.x, p.z), p.y - 0.4);
         addCanopy(fabric, timber, p.x, y, p.z, 9.0, 5.4, 3.75,
-          Math.atan2(tan.x, tan.z), rng, rng.range(0, 3));
+          rotY, rng, rng.range(0, 3), PAL.timber);
       }
     }
-    // bunting: strung between poles across the start straight and at corners
+    // On the two new tracks the strings carry on round the lap, not just over
+    // the start straight: a lit cable every ~90 m is what gives a night circuit
+    // (and a sky circuit) its sense of a roofed, decorated venue.
+    if (D.lit) {
+      for (let t = 0; t < 1; t += 88 / L) {
+        const w = spline.widthAt(t);
+        const a5 = spline.offsetPoint(t, -(w + RUNOFF + 1.0));
+        const b5 = spline.offsetPoint(t, (w + RUNOFF + 1.0));
+        if (clearance(a5.x, a5.z) < RUNOFF - 0.5 || clearance(b5.x, b5.z) < RUNOFF - 0.5) continue;
+        const ay = Math.max(heightAt(a5.x, a5.z), a5.y) + 7.4;
+        const by = Math.max(heightAt(b5.x, b5.z), b5.y) + 7.4;
+        addBunting(bunting, a5.x, ay, a5.z, b5.x, by, b5.z, rng, 0.026, { colors: D.bunting });
+        timber.box(a5.x, (ay + a5.y) / 2, a5.z, 0.18, ay - a5.y, 0.18, 0.6, tint(PAL.timber, 0.8));
+        timber.box(b5.x, (by + b5.y) / 2, b5.z, 0.18, by - b5.y, 0.18, 0.6, tint(PAL.timber, 0.8));
+        const tan5 = spline.tangentAt(t);
+        addGlowCard(glow, a5.x, ay - 0.6, a5.z, 1.6, 1.2, tan5.x, tan5.z, D.accents[0], 0.7);
+        addGlowCard(glow, b5.x, by - 0.6, b5.z, 1.6, 1.2, tan5.x, tan5.z, D.accents[1], 0.7);
+      }
+    }
+    // Bunting: strung between poles across the start straight and at corners.
+    // 6.8 m at the poles with a shallow sag keeps the lowest point above 5.5 m
+    // — well clear of the 4.6 m corridor ceiling the audit enforces.
     const buntSpots = [startT + 0.004, startT + 0.020, startT + 0.036, startT - 0.020];
     for (const bt of buntSpots) {
       const t = ((bt % 1) + 1) % 1;
       const w = spline.widthAt(t);
       const a = spline.offsetPoint(t, -(w + RUNOFF + 1.0));
       const b = spline.offsetPoint(t, (w + RUNOFF + 1.0));
-      const ay = Math.max(heightAt(a.x, a.z), a.y) + 5.4;
-      const by = Math.max(heightAt(b.x, b.z), b.y) + 5.4;
-      addBunting(bunting, a.x, ay, a.z, b.x, by, b.z, rng, 0.055);
-      timber.box(a.x, (ay + a.y) / 2, a.z, 0.16, ay - a.y, 0.16, 0.6, tint(0xb08a58));
-      timber.box(b.x, (by + b.y) / 2, b.z, 0.16, by - b.y, 0.16, 0.6, tint(0xb08a58));
+      const ay = Math.max(heightAt(a.x, a.z), a.y) + 6.8;
+      const by = Math.max(heightAt(b.x, b.z), b.y) + 6.8;
+      addBunting(bunting, a.x, ay, a.z, b.x, by, b.z, rng, 0.030, { colors: D.bunting });
+      timber.box(a.x, (ay + a.y) / 2, a.z, 0.16, ay - a.y, 0.16, 0.6, tint(PAL.timber));
+      timber.box(b.x, (by + b.y) / 2, b.z, 0.16, by - b.y, 0.16, 0.6, tint(PAL.timber));
     }
   }
 
@@ -1024,6 +1715,7 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
         const t2 = t + 5.0 / L;
         const p0 = spline.offsetPoint(t, lat);
         const p1 = spline.offsetPoint(t2, lat);
+        if (clearance(p0.x, p0.z) < RUNOFF - 0.6 || clearance(p1.x, p1.z) < RUNOFF - 0.6) continue;
         const [u0, v0, du, dv] = atlasUV(bi++);
         const yb = p0.y + 0.16, yt = p0.y + 1.28;
         // A viewer standing on the track looks along `side * right`, so their
@@ -1051,7 +1743,9 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     const p = spline.positionAt(t), r = spline.rightAt(t);
     return ((p.x - centre.x) * r.x + (p.z - centre.z) * r.z) >= 0 ? 1 : -1;
   };
-  {
+  const rubber = new MB(true);      // tyre stacks — one draw call for the lap
+
+  if (D.cliffs) {
     // Cliffs always flank the OUTSIDE of the loop — a canyon wall standing in
     // the infield reads as a mistake from any aerial or long corner shot.
     const arcs = [];
@@ -1083,7 +1777,7 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
   }
 
   const palmSpots = [], rockSpots = [], shrubSpots = [];
-  {
+  if (D.veg) {
     const nClusters = Math.round(430 * density);
     for (let i = 0; i < nClusters; i++) {
       const t = rng();
@@ -1167,8 +1861,373 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     for (const s of rockSpots) s.y -= s.s * (s.sy ?? 1) * 0.35;
   }
   const palms = createPalms(palmSpots, rng, q); dressed.add(palms.group); parts.push(palms);
-  const rocks = createRocks(rockSpots, rng, q); dressed.add(rocks.group); parts.push(rocks);
+  const rocks = createRocks(rockSpots, rng, q, { colors: D.rock }); dressed.add(rocks.group); parts.push(rocks);
   const shrubs = createShrubs(shrubSpots, rng, q); dressed.add(shrubs.group); parts.push(shrubs);
+
+  // How far the layout itself reaches from its centre — everything "far" has to
+  // start beyond this or it lands on the track (see createFarSilhouettes).
+  let maxR = 0;
+  for (let i = 0; i < 256; i++) {
+    const p = spline.positionAt(i / 256);
+    maxR = Math.max(maxR, Math.hypot(p.x - centre.x, p.z - centre.z));
+  }
+
+  // =========================================================================
+  // MID-GROUND — marshal posts, tyre stacks, paddock huts (ALL THREE TRACKS)
+  // =========================================================================
+  // Track 1's honest weakness was an empty band between the barrier and the
+  // cliffs. This is the rung that fills it, and because it rides the builders
+  // that are already committed it costs one extra draw call (the rubber).
+  {
+    // --- tyre stacks at the barrier, thickest on corner exits ---------------
+    const tStep = 19 / L;
+    for (let t = 0; t < 1; t += tStep) {
+      const k = interestAt(t);
+      if (rng() > 0.30 + k * 0.5) continue;
+      const side = rng.sign();
+      const w = spline.widthAt(t);
+      const base = spline.offsetPoint(t, side * (w + RUNOFF + 1.5));
+      if (clearance(base.x, base.z) < RUNOFF + 1.0) continue;
+      const tan = spline.tangentAt(t);
+      const nStacks = rng.int(2, 4);
+      for (let i = 0; i < nStacks; i++) {
+        const off = (i - (nStacks - 1) / 2) * 1.35;
+        const px2 = base.x + tan.x * off + rng.range(-0.2, 0.2);
+        const pz2 = base.z + tan.z * off + rng.range(-0.2, 0.2);
+        const gy = Math.max(heightAt(px2, pz2), base.y - 0.35);
+        addTyreStack(rubber, px2, gy, pz2, rng.int(2, 4), rng,
+          rng() < 0.4 ? PAL.rubberTop : D.accents[i % D.accents.length]);
+      }
+    }
+
+    // --- marshal posts, on the outside of the better corners ----------------
+    const mStep = 56 / L;
+    for (let t = rng() * mStep; t < 1; t += mStep) {
+      const i = Math.floor(t * NS) % NS;
+      const side = -(Math.sign(curv[i]) || rng.sign());     // outside of the turn
+      const w = spline.widthAt(t);
+      const r = spline.rightAt(t);
+      const rotY = Math.atan2(-side * r.x, -side * r.z);
+      let put = null;
+      for (const extra of [5.0, 8.0, 12.0]) {
+        const p = spline.offsetPoint(t, side * (w + RUNOFF + extra));
+        if (rectClear(p.x, p.z, rotY, 5.0, 4.4, 0, RUNOFF + 1.4)) { put = p; break; }
+      }
+      if (!put) continue;
+      const gy = Math.max(heightAt(put.x, put.z), put.y - 0.4);
+      addMarshalPost(structure, timber, fabric, standSeats,
+        { x: put.x, y: gy, z: put.z, rotY, pal: PAL }, rng);
+      if (D.lit) {
+        addGlowCard(glow, put.x, gy + 3.9, put.z, 2.6, 1.5,
+          Math.cos(rotY), Math.sin(rotY), PAL.light, 0.55);
+      }
+    }
+
+    // --- paddocks: two or three huts and a service tent, 25-70 m out --------
+    const pStep = 72 / L;
+    for (let t = rng() * pStep; t < 1; t += pStep) {
+      const side = rng.sign();
+      const w = spline.widthAt(t);
+      const r = spline.rightAt(t);
+      const tan = spline.tangentAt(t);
+      const rotY = Math.atan2(-side * r.x, -side * r.z) + rng.range(-0.22, 0.22);
+      const dist = w + RUNOFF + (D.islands ? rng.range(9, 19) : rng.range(20, 52));
+      const anchorP = spline.offsetPoint(t, side * dist);
+      const nHut = rng.int(2, 3);
+      for (let i = 0; i < nHut; i++) {
+        const off = (i - (nHut - 1) / 2) * rng.range(9, 13);
+        const back = rng.range(-3, 9);
+        const hx = anchorP.x + tan.x * off + r.x * side * back;
+        const hz = anchorP.z + tan.z * off + r.z * side * back;
+        const ww = rng.range(5.5, 9), dd = rng.range(4, 6.5), hh = rng.range(2.8, 4.2);
+        if (!rectClear(hx, hz, rotY, ww + 3, dd + 5, 1.5, RUNOFF + 3)) continue;
+        const gy = heightAt(hx, hz) - 0.1;
+        addPaddockHut(structure, timber, fabric, glow, {
+          x: hx, y: gy, z: hz, rotY: rotY + rng.range(-0.1, 0.1), pal: PAL,
+          w: ww, d: dd, h: hh, lit: !!D.lit,
+        }, rng);
+        // a couple of tyre stacks and two onlookers give it life
+        if (rng() < 0.7) {
+          const sx2 = hx + Math.cos(rotY) * rng.range(-4, 4);
+          const sz2 = hz + Math.sin(rotY) * rng.range(-4, 4);
+          addTyreStack(rubber, sx2, heightAt(sx2, sz2) - 0.1, sz2, rng.int(2, 5), rng, D.accents[i % 3]);
+        }
+        for (let m = 0; m < 2; m++) {
+          const mx = hx + Math.cos(rotY + 1.57) * rng.range(-3.5, 3.5) + rng.gauss();
+          const mz = hz + Math.sin(rotY + 1.57) * rng.range(-3.5, 3.5) + rng.gauss();
+          if (clearance(mx, mz) > RUNOFF + 2) standSeats.push({ x: mx, y: heightAt(mx, mz), z: mz, s: rng.range(0.9, 1.1) });
+        }
+        // A mast with a banner on it. One thin vertical per paddock is what
+        // actually breaks the horizon line and gives the mid-ground a read at
+        // 80 m — the huts alone sit below the barrier from a driver's eye.
+        if (i === 0) {
+          const H2 = rng.range(7.5, 11);
+          timber.box(hx + Math.cos(rotY) * (ww * 0.62), gy + H2 / 2, hz + Math.sin(rotY) * (ww * 0.62),
+            0.22, H2, 0.22, 0.6, tint(PAL.timber, 0.95));
+          const bx2 = hx + Math.cos(rotY) * (ww * 0.62), bz2 = hz + Math.sin(rotY) * (ww * 0.62);
+          const fw = 2.6, fh = 2.0;
+          const dx2 = Math.cos(rotY + 1.57) * fw, dz2 = Math.sin(rotY + 1.57) * fw;
+          const n0 = fabric.count;
+          fabric.vert(bx2, gy + H2, bz2, 0, 0);
+          fabric.vert(bx2 + dx2, gy + H2 - 0.25, bz2 + dz2, 2, 0);
+          fabric.vert(bx2 + dx2, gy + H2 - fh - 0.25, bz2 + dz2, 2, 1.4);
+          fabric.vert(bx2, gy + H2 - fh, bz2, 0, 1.4);
+          fabric.quad(n0, n0 + 1, n0 + 2, n0 + 3);
+          if (D.lit) addGlowCard(glow, bx2, gy + H2 - 0.4, bz2, 1.4, 1.4, dx2, dz2, D.accents[1], 0.7);
+        }
+      }
+    }
+  }
+
+  // =========================================================================
+  // ROADSIDE LIGHTING — circuit's neon masts, cloud's light pylons
+  // =========================================================================
+  if (D.lit) {
+    const step = (def.theme === 'circuit' ? 27 : 44) / L;
+    let idx = 0;
+    for (let t = 0; t < 1; t += step) {
+      const side = (idx % 2 === 0) ? -1 : 1;
+      const hue = D.accents[idx % D.accents.length];
+      idx++;
+      const w = spline.widthAt(t);
+      const r = spline.rightAt(t), tan = spline.tangentAt(t);
+      const p = spline.offsetPoint(t, side * (w + RUNOFF + 1.6));
+      if (clearance(p.x, p.z) < RUNOFF + 1.0) continue;
+      const gy = Math.max(heightAt(p.x, p.z), p.y - 0.3);
+      const inx = -side * r.x, inz = -side * r.z;
+      if (def.theme === 'circuit') {
+        // slim mast, crossarm, lamp head — then the light it throws
+        timber.box(p.x, gy + 4.3, p.z, 0.20, 8.6, 0.20, 0.5, tint(PAL.timber, 0.75));
+        const ax2 = p.x + inx * 1.5, az2 = p.z + inz * 1.5;
+        timber.box(ax2, gy + 8.5, az2, 3.2, 0.16, 0.16, 0.5, tint(PAL.timber, 0.8),
+          Math.atan2(inz, inx));
+        const hx2 = p.x + inx * 2.9, hz2 = p.z + inz * 2.9;
+        addGlowCard(glow, hx2, gy + 8.0, hz2, 2.2, 1.2, tan.x, tan.z, hue, 1.0);
+        addGlowCard(glow, hx2, gy + 8.0, hz2, 1.2, 2.2, inx, inz, hue, 0.7);
+        // the wet-tarmac reflection: a long streak lying on the road below
+        const lx = p.x + inx * (RUNOFF + w * 0.55), lz = p.z + inz * (RUNOFF + w * 0.55);
+        // long and narrow: a lamp reflected in wet tarmac is a streak, and a
+        // fat soft blob just reads as a stain on the road
+        addRoadGlow(glow, t, side * (w * 0.45 + 1.6), 34, 3.0, hue, 0.34);
+        addRoadGlow(glow, t, side * (w + RUNOFF + 0.2), 11, 2.6, hue, 0.26);
+      } else {
+        // cloud: a pale stone pylon with a lit capital and a shaft of light
+        structure.box(p.x, gy + 2.1, p.z, 0.7, 4.2, 0.7, 0.5, tint(PAL.concrete, 1.02));
+        structure.box(p.x, gy + 4.35, p.z, 1.15, 0.4, 1.15, 0.5, tint(PAL.concrete, 1.12));
+        addGlowCard(glow, p.x, gy + 4.6, p.z, 2.0, 2.0, tan.x, tan.z, hue, 0.7);
+        addGlowCard(glow, p.x, gy + 4.6, p.z, 2.0, 2.0, inx, inz, hue, 0.45);
+        addRoadGlow(glow, t, side * (w + RUNOFF - 0.8), 13, 8, hue, 0.26);
+      }
+    }
+  }
+
+  // =========================================================================
+  // ARCHES over the track — the vertical rhythm both new tracks need
+  // =========================================================================
+  // Legs stand outside the barrier and the beam sits at 8 m, well above the
+  // 4.6 m corridor ceiling, so an arch is never something a kart can reach.
+  if (D.lit) {
+    const nArch = 5;
+    for (let k = 0; k < nArch; k++) {
+      const t = ((startT + 0.13 + k / nArch) % 1 + 1) % 1;
+      const w = spline.widthAt(t);
+      const r = spline.rightAt(t), tan = spline.tangentAt(t);
+      const span = w + RUNOFF + 1.8;
+      const a4 = spline.offsetPoint(t, -span), b4 = spline.offsetPoint(t, span);
+      if (clearance(a4.x, a4.z) < RUNOFF + 1.0 || clearance(b4.x, b4.z) < RUNOFF + 1.0) continue;
+      const gy = Math.max(heightAt(a4.x, a4.z), heightAt(b4.x, b4.z), a4.y - 0.4);
+      const H = 8.4;
+      const rotY = Math.atan2(tan.x, tan.z);
+      const hue = D.accents[k % D.accents.length];
+      for (const pp of [a4, b4]) {
+        structure.box(pp.x, gy + H / 2, pp.z, 1.5, H, 1.5, 0.4, tint(PAL.concrete, 1.0), rotY);
+        structure.box(pp.x, gy + 0.5, pp.z, 2.4, 1.0, 2.4, 0.4, tint(PAL.concrete, 0.9), rotY);
+        addGlowCard(glow, pp.x, gy + H - 1.4, pp.z, 1.9, 2.6, tan.x, tan.z, hue, 0.8);
+      }
+      // the beam, with a lit soffit facing the track
+      const mid = spline.offsetPoint(t, 0);
+      const beamLen = span * 2 + 2.4;
+      const across = Math.atan2(r.z, r.x);   // local +X -> (cos,sin) == right
+      structure.box(mid.x, gy + H + 0.7, mid.z, beamLen, 1.4, 1.9, 0.4, tint(PAL.concrete, 1.08), across);
+      structure.box(mid.x, gy + H + 1.9, mid.z, beamLen * 0.8, 0.9, 1.3, 0.4, tint(PAL.trim, 1.0), across);
+      for (let i = -3; i <= 3; i++) {
+        const pp = spline.offsetPoint(t, i * (span / 3.2));
+        addGlowCard(glow, pp.x, gy + H - 0.5, pp.z, 2.2, 1.1, tan.x, tan.z, hue, 0.6);
+      }
+      addRoadGlow(glow, t, 0, 15, w * 2, hue, 0.22);
+    }
+  }
+
+  // =========================================================================
+  // CIRCUIT CITY — skyline, holographic Hebrew signage
+  // =========================================================================
+  const signs = new MB(false);
+  if (D.city) {
+    const city = createCityBlocks(centre, spline, rng, {
+      horizon: D.horizon, color: 0x1b1d3a, texSize: Math.min(q.texSize || 512, 512),
+      outward: outwardAt, density: Math.max(0.5, density), near: 230,
+      rings: [[maxR + 120, 95, 0.34, 56], [maxR + 460, 200, 0.66, 40]],
+    });
+    dressed.add(city.mesh); parts.push(city);
+
+    // holographic billboards on masts above the barrier
+    const step = 62 / L;
+    let bi2 = 0;
+    for (let t = 0.01; t < 1; t += step) {
+      const side = (bi2 % 2 === 0) ? 1 : -1;
+      const w = spline.widthAt(t);
+      const lat = side * (w + RUNOFF + 2.2);
+      const t2 = t + 9.0 / L;
+      const p0 = spline.offsetPoint(t, lat), p1 = spline.offsetPoint(t2, lat);
+      if (clearance(p0.x, p0.z) < RUNOFF + 1.4 || clearance(p1.x, p1.z) < RUNOFF + 1.4) { bi2++; continue; }
+      const k = bi2++ % 4;
+      const u0 = (k % 2) * 0.5, v0 = 1 - (Math.floor(k / 2) + 1) * 0.5;
+      const gy = Math.max(heightAt(p0.x, p0.z), p0.y - 0.3);
+      const yb = gy + 5.0, yt = gy + 9.4;
+      const [a2, b2] = side > 0 ? [p0, p1] : [p1, p0];
+      signs.face(
+        [[a2.x, yb, a2.z], [b2.x, yb, b2.z], [b2.x, yt, b2.z], [a2.x, yt, a2.z]],
+        [[u0, v0], [u0 + 0.5, v0], [u0 + 0.5, v0 + 0.5], [u0, v0 + 0.5]], null);
+      // masts + halo + the pool of light it throws on the wet track
+      const r = spline.rightAt(t), tan = spline.tangentAt(t);
+      const hue = D.accents[k % D.accents.length];
+      for (const pp of [p0, p1]) timber.box(pp.x, gy + 2.5, pp.z, 0.26, 5.0, 0.26, 0.5, tint(PAL.timber, 0.7));
+      const mx2 = (p0.x + p1.x) / 2, mz2 = (p0.z + p1.z) / 2;
+      addGlowCard(glow, mx2, gy + 4.4, mz2, 12.5, 6.0, tan.x, tan.z, hue, 0.45);
+      const inx = -side * r.x, inz = -side * r.z;
+      const tMid = t + 4.5 / L;
+      addRoadGlow(glow, tMid, side * (w * 0.3 + 2.2), 42, 5.5, hue, 0.30);
+      addRoadGlow(glow, tMid, side * (2.2 - w * 0.25), 30, 2.6, hue, 0.20);
+    }
+  }
+
+  // =========================================================================
+  // CLOUD PEAK — floating islands, waterfalls of light, a sea of cloud
+  // =========================================================================
+  const islands = [];
+  if (D.islands) {
+    const geosI = [createIslandGeometry(rng, 11), createIslandGeometry(rng, 22), createIslandGeometry(rng, 33)];
+    const rockMaps = rockTexture({ size: Math.min(q.texSize || 512, 512), tint: 0xffffff, bands: 13, contrast: 0.75 });
+    for (const tx of Object.values(rockMaps)) if (tx?.isTexture) { tx.wrapS = tx.wrapT = THREE.RepeatWrapping; tx.repeat.set(1, 1); }
+    const mat = vcMat({
+      roughness: 0.95, map: rockMaps.map, normalMap: rockMaps.normalMap || null,
+    });
+    const buckets = geosI.map(() => []);
+    const cloudSpots = [];
+    const nI = Math.round(116 * Math.max(0.5, density));
+    for (let i = 0; i < nI; i++) {
+      const t = rng();
+      const side = rng.sign();
+      const w = spline.widthAt(t);
+      // Fog eats 73% of the contrast by 300 m on this theme, so the islands
+      // that matter are the CLOSE ones. Bias hard toward the near band.
+      const far2 = Math.pow(rng(), 1.35);
+      const d = w + 78 + far2 * 260;
+      const p = spline.offsetPoint(t, side * d);
+      p.x += rng.gauss() * 14; p.z += rng.gauss() * 14;
+      const sIsl = lerp(12, 54, far2) * rng.range(0.7, 1.5);
+      if (clearance(p.x, p.z) < 46 + sIsl * 0.7) continue;
+      // A third of them HANG IN THE SKY. This is the shot: from the driver's
+      // seat the plateau hides anything below the road, so the islands that
+      // actually sell פסגת הענן are the ones silhouetted against the dawn.
+      const aloft = far2 > 0.22 && rng() < 0.6;
+      const y = aloft
+        ? p.y + rng.range(18, 40) + far2 * 70
+        : p.y - rng.range(14, 34) - far2 * 44;
+      buckets[i % 3].push({ x: p.x, y, z: p.z, s: sIsl, r: rng() * TAU });
+      // waterfalls of light spilling off the near ones
+      if ((aloft || far2 < 0.5) && rng() < 0.78) {
+        const a3 = rng() * TAU;
+        const fx = p.x + Math.cos(a3) * sIsl * 0.7, fz = p.z + Math.sin(a3) * sIsl * 0.7;
+        const H = aloft ? rng.range(50, 150) : rng.range(26, 90);
+        const wF = sIsl * rng.range(0.5, 1.0);
+        addGlowCard(glow, fx, y - H, fz, wF, H,
+          Math.cos(a3 + 1.57), Math.sin(a3 + 1.57), D.accents[i % 3], 0.9);
+        addGlowCard(glow, fx, y - H, fz, wF * 0.5, H,
+          Math.cos(a3), Math.sin(a3), D.accents[(i + 1) % 3], 0.6);
+        // a column of mist under the fall: additive light alone is invisible
+        // against a bright dawn sky, but mist has shape and shadow
+        const cols = rng.int(3, 5);
+        for (let m2 = 0; m2 < cols; m2++) {
+          cloudSpots.push({
+            x: fx + rng.gauss() * wF * 0.3, y: y - H * (0.25 + 0.75 * m2 / cols),
+            z: fz + rng.gauss() * wF * 0.3, r: wF * rng.range(0.5, 0.95),
+          });
+        }
+        cloudSpots.push({ x: fx, y: y - H - 6, z: fz, r: rng.range(16, 30) });
+      }
+      if (rng() < 0.35) cloudSpots.push({ x: p.x + rng.gauss() * 30, y: y - rng.range(14, 46), z: p.z + rng.gauss() * 30, r: rng.range(16, 40) });
+    }
+    const m4i = new THREE.Matrix4(), qti = new THREE.Quaternion(), sci = new THREE.Vector3(), pvi = new THREE.Vector3();
+    buckets.forEach((list, i) => {
+      if (!list.length) { geosI[i].dispose(); return; }
+      const im = new THREE.InstancedMesh(geosI[i], mat, list.length);
+      im.name = 'islands' + i;
+      im.castShadow = false; im.receiveShadow = !!q.shadows;
+      list.forEach((sp2, k) => {
+        qti.setFromAxisAngle(new THREE.Vector3(0, 1, 0), sp2.r);
+        sci.set(sp2.s, sp2.s * rng.range(0.8, 1.6), sp2.s);
+        pvi.set(sp2.x, sp2.y, sp2.z);
+        m4i.compose(pvi, qti, sci);
+        im.setMatrixAt(k, m4i);
+      });
+      im.instanceMatrix.needsUpdate = true;
+      dressed.add(im); islands.push(im);
+    });
+    parts.push({ dispose() { geosI.forEach(g => g.dispose()); mat.dispose(); islands.forEach(m => m.dispose()); } });
+
+    // WATERFALLS OF LIGHT off the plateau's own edge — the ones the driver
+    // actually sees, 25 m beyond the barrier, pouring into the cloud.
+    for (let t = 0; t < 1; t += 46 / L) {
+      for (const side of [-1, 1]) {
+        if (rng() > 0.5) continue;
+        const w2 = spline.widthAt(t);
+        const p2 = spline.offsetPoint(t + rng.range(-0.4, 0.4) * (46 / L), side * (w2 + rng.range(24, 31)));
+        if (clearance(p2.x, p2.z) < 20) continue;
+        const tan2 = spline.tangentAt(t);
+        const H = rng.range(34, 78);
+        const wide = rng.range(6, 15);
+        addGlowCard(glow, p2.x, p2.y - 4 - H, p2.z, wide, H, tan2.x, tan2.z, D.accents[0], 0.9);
+        addGlowCard(glow, p2.x, p2.y - 4 - H, p2.z, wide * 0.55, H * 0.7,
+          -tan2.z, tan2.x, D.accents[1], 0.5);
+        cloudSpots.push({ x: p2.x, y: p2.y - H - 12, z: p2.z, r: rng.range(14, 26) });
+      }
+    }
+
+    // the cloud sea: a bank curling against the plateau edge all the way round
+    // the lap (this is the layer that sells "above the clouds"), then banks
+    // under the islands, then a broad ring out at the horizon.
+    for (let t = 0; t < 1; t += 26 / L) {
+      for (const side of [-1, 1]) {
+        if (rng() > 0.75) continue;
+        const w2 = spline.widthAt(t);
+        const rr = rng.range(20, 46);
+        const p2 = spline.offsetPoint(t + rng.range(-0.3, 0.3) * (26 / L),
+          side * (w2 + rng.range(64, 150)));
+        if (clearance(p2.x, p2.z) < rr + 26) continue;
+        cloudSpots.push({ x: p2.x, y: p2.y - rng.range(16, 44), z: p2.z, r: rr });
+      }
+    }
+    const yBase = spline.positionAt(0).y;
+    for (let i = 0; i < Math.round(64 * Math.max(0.5, density)); i++) {
+      const a3 = rng() * TAU, d = maxR * rng.range(0.7, 1.6) + rng.range(0, 420);
+      // half the far banks sit AT eye level so the horizon is a sea of cloud
+      // tops rather than an empty pastel band
+      // only the TOPS show above the plateau horizon: any higher and the sea
+      // of cloud reads as a range of beige mountains
+      const hi = rng() < 0.5;
+      cloudSpots.push({
+        x: centre.x + Math.cos(a3) * d,
+        y: yBase - (hi ? rng.range(10, 34) : rng.range(50, 170)),
+        z: centre.z + Math.sin(a3) * d, r: rng.range(40, 120),
+      });
+    }
+    // final sweep: no cloud bank may reach the road (they are opaque geometry)
+    const safeSpots = cloudSpots.filter(sp2 => clearance(sp2.x, sp2.z) > sp2.r + 22);
+    const banks = createCloudBanks(safeSpots, rng, {});
+    dressed.add(banks.mesh); parts.push(banks);
+  }
+
 
   // =========================================================================
   // OASIS POOLS
@@ -1200,11 +2259,12 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
   }
 
   // =========================================================================
-  // FAR SILHOUETTES
+  // FAR SILHOUETTES — the outermost rung (circuit uses its skyline instead,
+  // cloud uses its island rings and cloud sea)
   // =========================================================================
-  {
-    const far = createFarSilhouettes(centre, 0xf8cba1, rng, {
-      color: def.theme === 'circuit' ? 0x2a2448 : def.theme === 'cloud' ? 0x7d7f9a : 0xa8623a,
+  if (!D.city && !D.islands) {
+    const far = createFarSilhouettes(centre, D.horizon, rng, {
+      color: D.far, spline, minDist: maxR + 40,
     });
     dressed.add(far.group); parts.push(far);
   }
@@ -1217,9 +2277,7 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     for (const t of Object.values(stoneMaps)) if (t?.isTexture) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1, 1); }
     const woodMaps = woodTexture({ size: Math.min(q.texSize || 512, 512), tint: 0xffffff });
     for (const t of Object.values(woodMaps)) if (t?.isTexture) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1, 1); }
-    const stripes = stripeTexture({
-      size: 256, colors: [0xd94f3d, 0xf5ead6, 0x2f8f8a, 0xf5ead6], count: 4, weave: 0.6,
-    });
+    const stripes = stripeTexture({ size: 256, colors: D.stripes, count: 4, weave: 0.6 });
     stripes.wrapS = stripes.wrapT = THREE.RepeatWrapping;
 
     const commit = (mb, mat, name, shadow = true) => {
@@ -1246,7 +2304,32 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     const atlas = brandAtlas(Math.min(q.texSize || 512, 512) * 2);
     commit(boards, new THREE.MeshStandardMaterial({
       map: atlas, roughness: 0.85, side: THREE.DoubleSide,
+      emissive: D.lit ? 0xffffff : 0x000000, emissiveMap: D.lit ? atlas : null,
+      emissiveIntensity: D.lit ? 0.55 : 0,
     }), 'boards', false);
+    commit(rubber, new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.95, metalness: 0.02,
+    }), 'tyres');
+    if (signs.count) {
+      const holo = holoTexture(Math.min(q.texSize || 512, 512) * 2);
+      commit(signs, new THREE.MeshStandardMaterial({
+        map: holo, emissiveMap: holo, emissive: 0xffffff, emissiveIntensity: 1.5,
+        roughness: 0.4, metalness: 0, side: THREE.FrontSide,
+      }), 'holo-signs', false);
+    }
+    // The additive layer goes last and never writes depth, so it reads as light
+    // rather than as glowing plastic. Fog is off: additive + fog brightens the
+    // distance instead of fading it.
+    if (glow.count) {
+      const gtex = glowTexture(128);
+      commit(glow, new THREE.MeshBasicMaterial({
+        map: gtex, vertexColors: true, transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
+        toneMapped: false,
+      }), 'glow', false);
+      const gm = dressed.getObjectByName('glow');
+      if (gm) gm.renderOrder = 6;
+    }
   }
 
   trackGroup.add(dressed);
@@ -1345,6 +2428,65 @@ export function preview(engine) {
     dispose() {
       parts.forEach(p => p.dispose?.());
       meshes.forEach(m => { m.geometry.dispose(); m.material.dispose(); });
+      ground.geometry.dispose(); ground.material.dispose();
+    },
+  };
+}
+
+/**
+ * The crowd on its own, close enough to judge: a block of spectators seen at
+ * mid distance, with the cheer envelope re-fired every couple of seconds so a
+ * still frame catches the stand mid-roar. The bob archetypes and the waved
+ * flags only fully read in motion — this is the best a PNG can do.
+ */
+export function previewCrowd(engine) {
+  const q = engine.q;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf0c49a);
+  scene.fog = new THREE.FogExp2(0xf8cba1, 0.0022);
+  const rng = makeRng(9182);
+  const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.1, 800);
+  camera.position.set(0, 4.2, 17);
+  camera.lookAt(0, 1.6, -2);
+
+  const sun = new THREE.DirectionalLight(0xffd3a0, 2.4);
+  sun.position.set(-30, 22, 26);
+  scene.add(sun);
+  scene.add(new THREE.HemisphereLight(0x9cbdf2, 0xa5714a, 0.75));
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400),
+    new THREE.MeshStandardMaterial({ color: 0xc9a173, roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  // Terraced rows so the back of the crowd is visible over the front.
+  const spots = [];
+  const rows = 7, per = 34;
+  for (let r = 0; r < rows; r++) {
+    for (let i = 0; i < per; i++) {
+      spots.push({
+        x: (i / (per - 1) - 0.5) * 26 + rng.range(-0.18, 0.18),
+        y: r * 0.52,
+        z: -2 - r * 1.25 + rng.range(-0.12, 0.12),
+        s: rng.range(0.92, 1.06),
+      });
+    }
+  }
+  const crowd = createCrowd(spots, rng, q);
+  scene.add(crowd.group);
+
+  let t = 0, nextCheer = 0.6;
+  return {
+    scene, camera,
+    update(dt) {
+      t += dt;
+      // re-fire so any capture time past ~0.7s lands inside a roar
+      if (t >= nextCheer) { crowd.cheer(1, 2.4); nextCheer = t + 2.6; }
+      crowd.update(t);
+    },
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); },
+    dispose() {
+      crowd.dispose();
       ground.geometry.dispose(); ground.material.dispose();
     },
   };

@@ -36,6 +36,12 @@ const lerp = (a, b, x) => a + (b - a) * x;
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 const EPS = 0.0001;
 
+// Every gesture type that counts as user activation in some browser. Bound in
+// the capture phase on window AND document, never with {once:true} — see
+// _installUnlock() for why each of those words matters.
+const UNLOCK_EVENTS = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click',
+  'touchstart', 'touchend', 'keydown'];
+
 const MAX_VOICES = 56;        // hard cap on concurrent scheduled sfx/music voices
 const MUSIC_HEADROOM = 20;    // music may use this many voices beyond the sfx cap
 
@@ -61,6 +67,39 @@ function driveCurve(k = 6) {
     c[i] = y * (1 - 0.18 * Math.max(0, -x)); // slight asymmetry = extra even harmonics
   }
   return c;
+}
+
+// Stick-slip grain train, pre-rendered ONCE into a looping buffer.
+// Rubber scrubbing is not a hiss: it is a very fast train of grip→slip→grip
+// events, each one a tiny damped ring. Filtered white noise can never sound like
+// that because it has no event structure. Rendering the train up front (a) gives
+// real granular texture, (b) costs nothing at runtime and allocates nothing per
+// frame, and (c) is deterministic, since the grains come from makeRng.
+// Two densities are rendered so the *texture* — not just the filter — can track
+// drift charge: a slow scrub crackles, a loaded one tears.
+function grainBuffer(ctx, rng, ratePerSec, ring) {
+  const sr = ctx.sampleRate, len = Math.floor(sr * 2), buf = ctx.createBuffer(1, len, sr);
+  const d = buf.getChannelData(0);
+  const step = sr / ratePerSec;
+  const w = 2 * Math.PI * ring / sr;
+  for (let g = 0; g * step < len; g++) {
+    const start = Math.floor(g * step + (rng() - 0.5) * step * 0.9);
+    if (start < 0) continue;
+    const amp = 0.3 + rng() * 0.7;
+    const decay = Math.exp(-1 / (sr * (0.0008 + rng() * 0.0028)));   // 0.8–3.6 ms grains
+    const w2 = w * (0.55 + rng() * 1.7);                             // pitch spread
+    let env = amp, ph = rng() * 6.2832;
+    for (let i = start; i < len && env > 0.0015; i++) {
+      d[i] += Math.sin(ph) * env;
+      ph += w2; env *= decay;
+    }
+  }
+  let m = 0;
+  for (let i = 0; i < len; i++) m = Math.max(m, Math.abs(d[i]));
+  if (m > 0) for (let i = 0; i < len; i++) d[i] /= m;
+  const fade = 128;                                     // keep the loop seam silent
+  for (let i = 0; i < fade; i++) { d[i] *= i / fade; d[len - 1 - i] *= i / fade; }
+  return buf;
 }
 
 // ── musical material ─────────────────────────────────────────────────────────
@@ -236,10 +275,21 @@ class EngineVoice {
     const boost = !!s.boosting;
     const surf = s.surface || 'road';
 
+    // LOAD, not just speed, is what an engine sounds like.
+    //   strain = lots of throttle and not much speed (uphill, hard launch, wheels
+    //            fighting the surface). The note SAGS a little, the buzz and the
+    //            mid growl come up, and the burble deepens — it lugs.
+    //   coast  = off the throttle. Harmonics fall away, it goes quiet and soft,
+    //            with a touch of overrun flutter.
+    const strain = clamp((load - rpm) * 1.35, 0, 1);
+    const coast = clamp(1 - load * 2.4, 0, 1);
+
     // firing frequency: a small 2-stroke idles low and screams high.
     let f = lerp(36, 205, Math.pow(rpm, 1.08));
+    f *= lerp(1, 0.945, strain);                 // lugging pulls the note down
+    f *= lerp(1, 1.012, coast);                  // free-revving sits fractionally sharp
     if (boost) f *= 1.055;                       // the distinct "on the pipe" note lift
-    const det = this.pitchOffset + (boost ? 88 : 0);
+    const det = this.pitchOffset + (boost ? 88 : 0) - strain * 26;
 
     const sq = (p, v) => { try { p.setTargetAtTime(v, time, tau); } catch { /* param clamp */ } };
 
@@ -250,28 +300,34 @@ class EngineVoice {
     sq(this.whine.o.frequency, f * 6);
     for (const v of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) sq(v.o.detune, det);
 
-    // cutoff opens hard with rpm — this is most of the "revving" sensation
-    sq(this.lp.frequency, clamp(280 + Math.pow(rpm, 1.4) * 4200 * (boost ? 1.5 : 1) * (0.7 + 0.5 * load), 120, 12000));
-    sq(this.lp.Q, boost ? 6.5 : lerp(2.2, 4.6, rpm));
-    sq(this.drive.gain, lerp(0.42, 0.78, load) * (boost ? 1.22 : 1));
+    // cutoff opens hard with rpm — this is most of the "revving" sensation.
+    // Strain adds a mid-growl on top; coasting shuts the filter down fast, which
+    // is what makes lifting off audibly *relax*.
+    sq(this.lp.frequency, clamp((280 + Math.pow(rpm, 1.4) * 4200 * (boost ? 1.5 : 1) * (0.7 + 0.5 * load)
+      + 950 * strain) * lerp(1, 0.5, coast), 120, 12000));
+    sq(this.lp.Q, (boost ? 6.5 : lerp(2.2, 4.6, rpm)) + 1.6 * strain);
+    sq(this.drive.gain, (lerp(0.42, 0.78, load) + 0.28 * strain) * (boost ? 1.22 : 1) * lerp(1, 0.72, coast));
+    // the square layer IS the strain: buzzy odd harmonics when it is working hard
+    sq(this.sqr.g.gain, 0.10 + 0.17 * strain - 0.05 * coast);
 
     // noise roar tracks rpm and load
     sq(this.bp.frequency, 420 + rpm * 2600);
-    sq(this.nzg.gain, lerp(0.03, 0.115, rpm) * lerp(0.6, 1.25, load));
+    sq(this.nzg.gain, lerp(0.03, 0.115, rpm) * lerp(0.6, 1.25, load) * lerp(1, 0.45, coast));
     sq(this.whine.g.gain, boost ? 0.045 : 0.0);
 
-    // idle burble: deep, slow wobble at low rpm, tightening as it revs out
-    sq(this.lfoA.frequency, lerp(4.1, 23, rpm));
+    // idle burble: deep, slow wobble at low rpm, tightening as it revs out.
+    // Under strain the wobble deepens and slows — that is the "lug".
+    sq(this.lfoA.frequency, lerp(4.1, 23, rpm) * lerp(1, 0.68, strain));
     sq(this.lfoB.frequency, lerp(9.3, 47, rpm));
-    sq(this.ampA.gain, lerp(0.26, 0.05, rpm));
-    sq(this.jitA.gain, lerp(22, 5, rpm));
+    sq(this.ampA.gain, lerp(0.26, 0.05, rpm) + 0.14 * strain + 0.05 * coast);
+    sq(this.jitA.gain, lerp(22, 5, rpm) + 10 * strain);
     sq(this.jitB.gain, lerp(9, 2.5, rpm));
 
     const rum = surf === 'grass' ? 0.22 : surf === 'sand' ? 0.19 : surf === 'dirt' ? 0.16 : 0;
     sq(this.rlp.frequency, surf === 'sand' ? 420 : 240);
     sq(this.rzg.gain, rum * lerp(0.35, 1, rpm));
 
-    if (this.enabled) sq(this.out.gain, this.level * lerp(0.72, 1, load));
+    if (this.enabled) sq(this.out.gain, this.level * lerp(0.72, 1, load) * lerp(1, 0.62, coast));
   }
 
   enable(time, fade = 0.25) {
@@ -305,7 +361,9 @@ class DriftVoice {
     this.active = false;
     this.out = c.createGain(); this.out.gain.value = 0; this.out.connect(A.sfxBus);
     this.bp = c.createBiquadFilter(); this.bp.type = 'bandpass'; this.bp.frequency.value = 1200; this.bp.Q.value = 2.6;
-    this.bp.connect(this.out);
+    // broadband air layer — supporting cast now, not the main event
+    this.hiss = c.createGain(); this.hiss.gain.value = 0.5;
+    this.bp.connect(this.hiss); this.hiss.connect(this.out);
     this.hp = c.createBiquadFilter(); this.hp.type = 'highpass'; this.hp.frequency.value = 600;
     this.hp.connect(this.bp);
     this.n = c.createBufferSource(); this.n.buffer = A._noiseBuf; this.n.loop = true;
@@ -327,6 +385,24 @@ class DriftVoice {
     this.lfo = c.createOscillator(); this.lfo.type = 'sine'; this.lfo.frequency.value = 17.3;
     this.lg = c.createGain(); this.lg.gain.value = 260;
     this.lfo.connect(this.lg); this.lg.connect(this.bp.frequency); this.lfo.start(0);
+
+    // ── granular stick-slip layer (the actual "rubber tearing") ─────────────
+    // Two pre-rendered densities, crossfaded by charge, through their own
+    // bandpass. Everything is allocated here, once.
+    this.grainBus = c.createGain(); this.grainBus.gain.value = 0;
+    this.gbp = c.createBiquadFilter(); this.gbp.type = 'bandpass';
+    this.gbp.frequency.value = 1800; this.gbp.Q.value = 0.85;
+    this.grainBus.connect(this.gbp); this.gbp.connect(this.out);
+    const mkg = (buffer, gain) => {
+      const s = c.createBufferSource();
+      s.buffer = buffer; s.loop = true;
+      const gg = c.createGain(); gg.gain.value = gain;
+      s.connect(gg); gg.connect(this.grainBus);
+      s.start(0);
+      return { s, g: gg };
+    };
+    this.gSlow = mkg(A._grainSlow, 1);
+    this.gFast = mkg(A._grainFast, 0);
   }
   setAt(time, charge, tau = 0.08) {
     const ch = clamp(charge, 0, 1);
@@ -343,21 +419,36 @@ class DriftVoice {
     sq(this.sq2.frequency, (1250 + ch * 900) * 1.51);
     sq(this.sg1.gain, this.active ? 0.05 + ch * 0.13 : 0);
     sq(this.sg2.gain, this.active ? 0.03 + ch * 0.09 : 0);
-    if (this.active) sq(this.out.gain, 0.17 + ch * 0.28);
+
+    // grain train: density, pitch and brightness all climb with the charge, so
+    // the tyre goes from an intermittent crackle to a continuous tear
+    sq(this.gSlow.g.gain, 1 - ch * 0.85);
+    sq(this.gFast.g.gain, 0.12 + ch * 0.95);
+    sq(this.gSlow.s.playbackRate, 0.88 + ch * 0.5);
+    sq(this.gFast.s.playbackRate, 0.92 + ch * 0.55);
+    sq(this.gbp.frequency, 1500 + ch * 2100);
+    sq(this.gbp.Q, 0.8 + ch * 1.5);
+    sq(this.grainBus.gain, this.active ? 0.22 + ch * 0.30 : 0);
+    // the broadband hiss steps back as the grains take over
+    sq(this.hiss.gain, 0.40 - ch * 0.17);
+
+    if (this.active) sq(this.out.gain, 0.075 + ch * 0.12);
   }
   start(time) {
     this.active = true;
     const g = this.out.gain;
-    try { g.cancelScheduledValues(time); g.setValueAtTime(g.value, time); g.linearRampToValueAtTime(0.18, time + 0.06); } catch { /* */ }
+    try { g.cancelScheduledValues(time); g.setValueAtTime(g.value, time); g.linearRampToValueAtTime(0.11, time + 0.06); } catch { /* */ }
+    const gg = this.grainBus.gain;
+    try { gg.cancelScheduledValues(time); gg.setValueAtTime(gg.value, time); gg.linearRampToValueAtTime(0.22, time + 0.05); } catch { /* */ }
   }
   stop(time, fade = 0.12) {
     this.active = false;
-    for (const g of [this.out.gain, this.sg1.gain, this.sg2.gain, this.tg.gain]) {
+    for (const g of [this.out.gain, this.sg1.gain, this.sg2.gain, this.tg.gain, this.grainBus.gain]) {
       try { g.cancelScheduledValues(time); g.setValueAtTime(g.value, time); g.linearRampToValueAtTime(0, time + fade); } catch { /* */ }
     }
   }
   dispose() {
-    for (const n of [this.n, this.tone, this.lfo]) { try { n.stop(); } catch { /* */ } }
+    for (const n of [this.n, this.tone, this.lfo, this.gSlow.s, this.gFast.s]) { try { n.stop(); } catch { /* */ } }
     try { this.out.disconnect(); } catch { /* */ }
   }
 }
@@ -374,7 +465,7 @@ class AudioSystem {
     this.muted = !!save.read('muted');
     // Balanced by measurement (.tmp/audiocheck.mjs): the engine is a continuous
     // bed and must sit ~5 dB under the SFX peaks or collisions vanish under it.
-    this.vol = { master: 0.9, music: 0.85, sfx: 1.0, engine: 0.55 };
+    this.vol = { master: 0.9, music: 0.85, sfx: 1.0, engine: 0.32 };
     this.sounds = new Map();
     this._pending = [];           // {end} — deterministic voice accounting
     this._nodes = new Set();      // live source nodes, for dispose()
@@ -423,6 +514,9 @@ class AudioSystem {
     const d = buf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = rng() * 2 - 1;
     this._noiseBuf = buf;
+    // two stick-slip densities for the drift scrape (see grainBuffer)
+    this._grainSlow = grainBuffer(c, makeRng(0x5C4A9E), 46, 1900);
+    this._grainFast = grainBuffer(c, makeRng(0x7EA411), 190, 2900);
     this._driveCurve = driveCurve(6);
 
     this.master = c.createGain();
@@ -457,31 +551,79 @@ class AudioSystem {
     this.music = new MusicEngine(this);
   }
 
+  // ── autoplay unlock ────────────────────────────────────────────────────────
+  // Rules learned the hard way, all of them load-bearing:
+  //  * NEVER `{once:true}`. A synthetic or stray event would spend the listener
+  //    and the real gesture would then never resume anything.
+  //  * CAPTURE phase, on BOTH window and document. Every menu button in this
+  //    game lives in a DOM overlay above the canvas; a handler that calls
+  //    stopPropagation() on the way up would otherwise eat the only gesture.
+  //  * Every gesture type, including `click` and `pointerup` — some embedded
+  //    webviews only treat the completed tap as activation.
+  //  * Re-check AFTER resume() settles (it is a promise; the state is still
+  //    'suspended' on the next line), and stay armed until it really is running.
+  //  * Re-resume on visibilitychange: coming back to a backgrounded tab can find
+  //    the context suspended again with no further gesture coming.
   _installUnlock() {
     if (typeof document === 'undefined' || this._unlockBound) return;
-    const go = () => { this.unlock(); };
+    const go = () => { this.unlock(true); };
     this._unlockBound = go;
-    for (const ev of ['pointerdown', 'touchstart', 'keydown', 'mousedown']) {
-      try { document.addEventListener(ev, go, { passive: true }); } catch { /* */ }
+    this._visBound = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible' && this.ok
+        && this.ctx && this.ctx.state === 'suspended' && this._gestured) this.unlock();
+    };
+    for (const ev of UNLOCK_EVENTS) {
+      for (const tgt of [window, document]) {
+        try { tgt.addEventListener(ev, go, { passive: true, capture: true }); } catch { /* */ }
+      }
     }
+    try { document.addEventListener('visibilitychange', this._visBound); } catch { /* */ }
   }
   _removeUnlock() {
-    if (!this._unlockBound || typeof document === 'undefined') return;
-    for (const ev of ['pointerdown', 'touchstart', 'keydown', 'mousedown']) {
-      try { document.removeEventListener(ev, this._unlockBound); } catch { /* */ }
+    if (typeof document === 'undefined') return;
+    if (this._unlockBound) {
+      for (const ev of UNLOCK_EVENTS) {
+        for (const tgt of [window, document]) {
+          try { tgt.removeEventListener(ev, this._unlockBound, { capture: true }); } catch { /* */ }
+        }
+      }
+      this._unlockBound = null;
     }
-    this._unlockBound = null;
+    // The visibility re-resume stays installed for the life of the page: a tab
+    // that is backgrounded and restored gets suspended again with no new gesture.
   }
 
-  /** Create/resume the context. Safe to call any number of times. */
-  unlock() {
+  /**
+   * Create/resume the context. Safe to call any number of times, and safe to
+   * call outside a gesture (it just will not succeed until one arrives).
+   */
+  unlock(fromGesture = false) {
     if (this.broken) return false;
     if (!this.ok) this.init();
     if (!this.ok) return false;
+    if (fromGesture) this._gestured = true;
     try {
-      if (this.ctx.state === 'suspended' && this.ctx.resume) this.ctx.resume().catch(() => {});
+      if (this.ctx.state === 'suspended' && this.ctx.resume) {
+        this.ctx.resume().then(() => {
+          if (this.ok && this.ctx && this.ctx.state === 'running') this._removeUnlock();
+        }).catch(() => { /* not a gesture yet — the listeners stay armed */ });
+      }
     } catch { /* */ }
-    if (this.ctx.state === 'running') this._removeUnlock();
+    if (this.ctx.state === 'running') { this._removeUnlock(); return true; }
+    // Make the failure impossible to miss. If a real gesture has happened and the
+    // context is STILL not running a moment later, something in the host page is
+    // blocking playback — say so loudly instead of shipping silence.
+    if (fromGesture && !this._blockedTimer && typeof setTimeout === 'function') {
+      this._blockedTimer = setTimeout(() => {
+        this._blockedTimer = 0;
+        if (this.ok && this.ctx && this.ctx.state !== 'running') {
+          console.warn('[audio] AudioContext is still "' + this.ctx.state + '" after a user gesture — '
+            + 'the game will be SILENT. Check for an autoplay/permissions policy on this page, '
+            + 'or call audio.unlock() from inside your own click handler.');
+          try { bus.emit('audio:blocked', { state: this.ctx.state }); } catch { /* */ }
+        }
+      }, 1500);
+    }
     return true;
   }
 
@@ -504,6 +646,20 @@ class AudioSystem {
     try { g.cancelScheduledValues(tN); g.setValueAtTime(g.value, tN); g.linearRampToValueAtTime(v, tN + fade); } catch { g.value = v; }
     if (!this.muted) this.unlock();
   }
+  /**
+   * duck(on) — pull the race bed down under a modal (pause menu, quiz card) so
+   * the child can think. Never a hard cut: the world is still there, quieter.
+   */
+  duck(on = true) {
+    this._ducked = !!on;
+    if (!this.ready) return;
+    const tN = this.now;
+    const set = (node, v) => { try { node.gain.setTargetAtTime(v, tN, 0.08); } catch { node.gain.value = v; } };
+    set(this.musicBus, this.vol.music * (on ? 0.42 : 1));
+    set(this.engineBus, this.vol.engine * (on ? 0.20 : 1));
+    set(this.sfxBus, this.vol.sfx * (on ? 0.72 : 1));
+  }
+
   setVolume(p = {}) {
     Object.assign(this.vol, p);
     if (!this.ready) return;
@@ -513,6 +669,7 @@ class AudioSystem {
     if (p.sfx !== undefined) set(this.sfxBus, this.vol.sfx);
     if (p.engine !== undefined) set(this.engineBus, this.vol.engine);
     if (p.master !== undefined) this._applyMute(0.03);
+    if (this._ducked) this.duck(true);     // keep a modal duck in force
   }
 
   // ── voice budget ───────────────────────────────────────────────────────────
@@ -806,6 +963,10 @@ class AudioSystem {
       this._tone(t, { type: 'sawtooth', f: mtof(38), dur: 0.9, peak: 0.10, attack: 0.02, filter: 400, filter2: 1400, q: 3 });
       this._noise(t + 0.66, { type: 'bandpass', f: 900, f2: 4200, q: 1.6, dur: 0.45, peak: 0.06, attack: 0.1 });
     }, true);
+    S('lap.best', 'race', 0.80, 'Personal best lap', function (t) {
+      [88, 92, 95].forEach((m, i) => this._blip(t + i * 0.055, m, { peak: 0.11, dur: 0.35, type: 'sine' }));
+      this._noise(t + 0.02, { type: 'highpass', f: 7000, f2: 13000, dur: 0.35, peak: 0.028, attack: 0.04 });
+    });
     S('position.up', 'race', 0.45, 'Position gained', function (t) {
       [72, 76, 79, 84].forEach((m, i) => this._blip(t + i * 0.05, m, { peak: 0.12, dur: 0.14, type: 'triangle' }));
     });
@@ -864,6 +1025,12 @@ class AudioSystem {
       D.setAt(t + 1.30, 1.0, 0.15);
       D.stop(t + 1.65, 0.18);
       this._reserve(t, 1.9);
+    });
+    S('drift.tier', 'drive', 0.30, 'Drift charge tier up', function (t, o = {}) {
+      const tier = clamp(Math.round(o.tier ?? 1), 1, 3);
+      this._tone(t, { type: 'triangle', f: mtof(70 + tier * 5), dur: 0.13, peak: 0.09 + 0.02 * tier, attack: 0.002, filter: 6000 });
+      this._tone(t, { type: 'sine', f: mtof(82 + tier * 5), dur: 0.09, peak: 0.045, attack: 0.002 });
+      this._noise(t, { type: 'highpass', f: 6500, dur: 0.03, peak: 0.03, attack: 0.001 });
     });
     S('boost.release', 'drive', 1.00, 'Mini-boost release', function (t) {
       // whoosh: noise sweeping up then falling away
@@ -962,6 +1129,41 @@ class AudioSystem {
       if (tier === 2) this._noise(t + 0.15, { type: 'highpass', f: 4000, f2: 9000, dur: 0.5, peak: 0.03, attack: 0.1 });
     });
 
+    // ---- quiz stingers (Wave 2) --------------------------------------------
+    // A wrong answer carries NO penalty in this game, so `quiz.wrong` must not
+    // scold. It is consonant, soft-attacked and *shorter* than the correct
+    // sting; the only thing the ear should read is "that one lit up, this one
+    // didn't". No buzzer, no minor second, no downward octave drop.
+    S('quiz.correct', 'quiz', 1.10, 'Quiz: correct', function (t) {
+      const root = 72;                                   // C5, bright and childlike
+      [0, 4, 7, 12].forEach((iv, i) => {
+        this._tone(t + i * 0.055, {
+          type: 'triangle', f: mtof(root + iv), dur: 0.5, peak: 0.13 - i * 0.012,
+          attack: 0.003, filter: 7000,
+        });
+        this._tone(t + i * 0.055, { type: 'sine', f: mtof(root + iv + 12), dur: 0.3, peak: 0.05, attack: 0.003 });
+      });
+      this._tone(t + 0.24, { type: 'sine', f: mtof(root + 19), dur: 0.75, peak: 0.09, attack: 0.006, hold: 0.05 });
+      this._noise(t + 0.06, { type: 'highpass', f: 6000, f2: 13000, dur: 0.45, peak: 0.03, attack: 0.05 });
+      this._hand(t, true, 0.45);                         // one light hand-drum tap
+    });
+    S('quiz.wrong', 'quiz', 0.85, 'Quiz: not that one', function (t) {
+      // A gentle major-2nd fall onto a warm perfect 4th — the shape of "hmm,
+      // have another look", not the shape of a mistake.
+      this._tone(t, { type: 'triangle', f: mtof(69), dur: 0.34, peak: 0.10, attack: 0.02, filter: 2400 });
+      this._tone(t + 0.16, { type: 'triangle', f: mtof(65), dur: 0.5, peak: 0.095, attack: 0.025, filter: 2000 });
+      this._tone(t + 0.16, { type: 'sine', f: mtof(53), dur: 0.55, peak: 0.055, attack: 0.03 });
+      this._noise(t, { type: 'lowpass', f: 900, dur: 0.18, peak: 0.025, attack: 0.03 });
+    });
+    S('quiz.timeout', 'quiz', 0.95, 'Quiz: time up', function (t) {
+      // A soft three-note wind-down. Still no alarm: running out of time is
+      // information, not a punishment.
+      [76, 72, 69].forEach((m, i) => this._tone(t + i * 0.15, {
+        type: 'sine', f: mtof(m), dur: 0.28 + i * 0.13, peak: 0.085 - i * 0.005, attack: 0.012,
+      }));
+      this._noise(t + 0.3, { type: 'lowpass', f: 1200, f2: 400, dur: 0.4, peak: 0.02, attack: 0.06 });
+    });
+
     // ---- engine demo (offline-renderable automation sweep) -----------------
     S('engine.sweep', 'engine', 4.60, 'Engine: idle → rev → boost', function (t) {
       const E = this.engine;
@@ -1032,11 +1234,16 @@ class AudioSystem {
     for (const e of ['kart:ai:engines', 'ai:engines']) on(e, p => this.setAiEngines(p || []));
     for (const e of ['kart:engine:stop', 'race:ended']) on(e, () => this.stopEngine());
 
-    // drift
+    // drift. NOTE: race.js emits `drift:end` with {tier} and announces the actual
+    // mini-boost separately as `drift:boost`, so drift:end must NOT try to infer
+    // "released" from its payload or the boost would either double or vanish.
     for (const e of ['drift:start', 'kart:drift:start']) on(e, () => this.driftStart());
     for (const e of ['drift:charge', 'kart:drift:charge']) on(e, p => this.setDrift(typeof p === 'number' ? p : (p && p.charge) || 0));
-    for (const e of ['drift:end', 'kart:drift:end']) on(e, p => this.driftEnd(p === true || (p && (p.released || p.boost))));
-    simple(['drift:release', 'boost:mini', 'kart:boost'], 'boost.release');
+    for (const e of ['drift:end', 'kart:drift:end']) on(e, () => this.driftEnd(false));
+    for (const e of ['drift:tier', 'kart:drift:tier']) {
+      on(e, p => this.play('drift.tier', { tier: (typeof p === 'number' ? p : (p && p.tier)) || 1 }));
+    }
+    simple(['drift:boost', 'drift:release', 'boost:mini', 'kart:boost'], 'boost.release');
 
     // tokens with a combo counter
     for (const e of ['token:pickup', 'pickup:token', 'token:collect']) {
@@ -1059,25 +1266,41 @@ class AudioSystem {
     simple(['collide:kart', 'kart:hitKart'], 'collide.kart');
     simple(['collide:scrape', 'kart:scrape'], 'collide.scrape');
 
-    // surface
-    for (const e of ['kart:surface', 'surface:changed']) {
+    // surface. race.js emits `surface:change` (singular, no 'd') with
+    // {surface:'asphalt'|'sand'|'grass'|'cloud'} — 'asphalt' means back on track
+    // and is deliberately silent.
+    for (const e of ['surface:change', 'kart:surface', 'surface:changed']) {
       on(e, p => {
         const s = typeof p === 'string' ? p : (p && p.surface);
         if (s === 'grass') this.play('surface.grass');
-        else if (s === 'sand' || s === 'dirt') this.play('surface.sand');
+        else if (s === 'sand' || s === 'dirt' || s === 'cloud') this.play('surface.sand');
       });
     }
 
-    // race flow
+    // race flow.
+    // The track id arrives on `race:begin`, BEFORE engine.js emits scene:entered
+    // for the race — remember it so the race music starts in that track's mood
+    // (oasis / circuit / cloud) instead of always defaulting to oasis.
+    on('race:begin', p => {
+      const id = typeof p === 'string' ? p : (p && (p.track || p.trackId));
+      this._raceTheme = THEMES[id] ? id : null;
+      if (this.ready && this.music && this.music.track === 'race') this.playMusic('race', { theme: this._raceTheme || undefined });
+    });
     on('race:countdown', p => {
       const n = typeof p === 'number' ? p : (p && p.n);
-      if (n === 0 || n === 'go') { this.play('countdown.go'); this.play('race.fanfare', { at: this.now + 0.12 }); }
+      // GO gets its own note; the fanfare belongs to `race:start`, a beat later.
+      // Playing both here made the start double-fire once race:start was wired.
+      if (n === 0 || n === 'go') this.play('countdown.go');
       else this.play('countdown.beep');
     });
     simple(['race:go', 'race:start'], 'race.fanfare');
     simple(['race:lap', 'lap:complete'], 'lap.complete');
-    on('race:finalLap', () => { this.play('lap.final'); this.setMusicIntensity(1); });
-    on('race:lastLap', () => { this.play('lap.final'); this.setMusicIntensity(1); });
+    simple(['race:bestlap', 'race:bestLap'], 'lap.best');
+    // race.js emits `race:finallap` (all lower case).
+    for (const e of ['race:finallap', 'race:finalLap', 'race:lastLap']) {
+      on(e, () => { this.play('lap.final'); this.setMusicIntensity(1); });
+    }
+    on('race:wrongway', p => { if (p && p.on) this.play('ui.error'); });
     on('race:position', p => {
       const d = typeof p === 'number' ? p : (p && (p.delta ?? (p.from - p.to)));
       if (d > 0) this.play('position.up'); else if (d < 0) this.play('position.down');
@@ -1085,12 +1308,25 @@ class AudioSystem {
     simple(['race:finish', 'race:results'], 'results.sting');
     simple('podium:show', 'results.sting');
 
-    // UI
+    // UI — includes the names menus.js actually emits (menu:racer / menu:start /
+    // menu:goto) and the pause-menu round trip.
     simple(['ui:hover', 'menu:hover'], 'ui.hover');
-    simple(['ui:select', 'menu:select'], 'ui.select');
-    simple(['ui:confirm', 'menu:confirm'], 'ui.confirm');
-    simple(['ui:back', 'menu:back'], 'ui.back');
+    simple(['ui:select', 'menu:select', 'menu:racer', 'menu:goto'], 'ui.select');
+    simple(['ui:confirm', 'menu:confirm', 'menu:start'], 'ui.confirm');
+    simple(['ui:back', 'menu:back', 'race:quit'], 'ui.back');
+    // pause.js emits race:pause / race:resume and expects the mix to duck.
+    on('race:pause', () => { this.play('ui.back'); this.duck(true); });
+    on('input:pause', () => this.duck(true));
+    on('race:resume', () => { this.play('ui.select'); this.duck(false); });
     simple(['ui:error', 'menu:error'], 'ui.error');
+
+    // quiz (Wave 2) — quiz.js emits these exact names; also reachable as
+    // audio.play('quiz.correct' | 'quiz.wrong' | 'quiz.timeout').
+    simple('quiz:open', 'ui.select');
+    simple(['quiz:correct', 'quiz:right'], 'quiz.correct');
+    simple(['quiz:wrong', 'quiz:incorrect'], 'quiz.wrong');
+    simple(['quiz:timeout', 'quiz:timeUp'], 'quiz.timeout');
+    on('quiz:answer', p => this.play(p && (p.correct === true || p.ok === true) ? 'quiz.correct' : 'quiz.wrong'));
 
     // garage
     simple(['garage:build', 'garage:assemble'], 'garage.build');
@@ -1100,12 +1336,20 @@ class AudioSystem {
     // music follows scenes unless a scene asks for something specific
     on('scene:entered', name => {
       if (!this.ready) return;
-      if (name === 'menu' || name === 'title') this.playMusic('menu');
+      if (name === 'menu' || name === 'title' || name === 'select') this.playMusic('menu');
       else if (name === 'garage') this.playMusic('garage');
-      else if (name === 'race') this.playMusic('race');
+      else if (name === 'race') this.playMusic('race', { theme: this._raceTheme || undefined });
       else if (name === 'results' || name === 'podium') this.stopMusic(0.8);
     });
-    on('scene:leaving', () => { this._combo = 0; });
+    // Leaving a scene must silence the persistent voices, or the engine keeps
+    // idling under the results screen for as long as the tab lives.
+    on('scene:leaving', () => {
+      this._combo = 0;
+      this.duck(false);
+      this.stopEngine();
+      if (this.ok) { this.drift.stop(this.now, 0.1); this.setAiEngines([]); }
+      this.setMusicIntensity(0);
+    });
   }
 }
 
@@ -1311,6 +1555,13 @@ class MusicEngine {
 // ─────────────────────────────────────────────────────────────────────────────
 export const audio = new AudioSystem();
 
+// Automation seam ONLY (same idea as window.__DEBUG in core/harness.js): no game
+// code reads this, but it is what lets tests/audio.test.mjs measure the REAL
+// graph inside the REAL built game rather than a look-alike offline rig.
+try {
+  if (typeof window !== 'undefined') { audio.bus = bus; window.__AUDIO = audio; }
+} catch { /* */ }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // preview(engine) — a hand-audition rig. Every registered sound gets a button;
 // an AnalyserNode drives a live oscilloscope + spectrum so you can *see* the
@@ -1334,6 +1585,7 @@ registerStrings({
     'audio.group.impact': 'התנגשויות',
     'audio.group.garage': 'מוסך',
     'audio.group.engine': 'מנוע',
+    'audio.group.quiz': 'חידון',
     'audio.group.music': 'מוזיקה',
     'audio.state': 'מצב הקשר',
     'audio.voices': 'קולות פעילים',
@@ -1352,6 +1604,11 @@ registerStrings({
     'audio.s.position.down': 'ירידה במיקום',
     'audio.s.results.sting': 'תוצאות ופודיום',
     'audio.s.token.pickup': 'איסוף טוקן (קומבו)',
+    'audio.s.lap.best': 'הקפה הכי מהירה',
+    'audio.s.quiz.correct': 'תשובה נכונה',
+    'audio.s.quiz.wrong': 'לא הפעם',
+    'audio.s.quiz.timeout': 'נגמר הזמן',
+    'audio.s.drift.tier': 'דריפט — עלייה בדרגה',
     'audio.s.drift.start': 'תחילת דריפט',
     'audio.s.drift.sustain': 'דריפט — טעינה',
     'audio.s.boost.release': 'שחרור בוסט',
@@ -1392,14 +1649,15 @@ registerStrings({
     'audio.group.impact': 'Impacts',
     'audio.group.garage': 'Garage',
     'audio.group.engine': 'Engine',
+    'audio.group.quiz': 'Quiz',
     'audio.group.music': 'Music',
   },
 });
 
-const GROUP_ORDER = ['engine', 'drive', 'race', 'impact', 'garage', 'ui', 'music'];
+const GROUP_ORDER = ['engine', 'drive', 'race', 'impact', 'garage', 'quiz', 'ui', 'music'];
 const GROUP_COLOUR = {
   engine: '#ffc247', drive: '#7ee081', race: '#ff9f6b', impact: '#ff6b6b',
-  garage: '#c9b8ff', ui: '#6fc3ff', music: '#ffd66b',
+  garage: '#c9b8ff', quiz: '#7ee0d0', ui: '#6fc3ff', music: '#ffd66b',
 };
 
 export function preview(engine) {

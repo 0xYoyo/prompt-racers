@@ -105,6 +105,43 @@ export function injectStyles() {
   document.head.appendChild(el);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MODAL TRAFFIC CONTROL
+//
+// Wave 2 added three things that can interrupt a race — the one-time token
+// explainer (pauses the sim), Boreg's one-time introduction, and the quiz panel
+// (slows the sim) — plus the pause overlay on top of all of them. Nothing
+// coordinated them, so they could stack: a token popup could land on top of a
+// live quiz whose timer kept running behind it, and the digit keys 1/2/3 still
+// answered that hidden question while the pause menu was up.
+//
+// This is the single source of truth for "is a blocking panel open". It lives in
+// style.js because every UI module already imports style.js and nothing else is
+// shared by all of race/, garage/ and ui/ — a registry with imports would create
+// a cycle. Deliberately dependency-free.
+//
+//   const off = pushModal('quiz');   // on open
+//   off();                           // on close (popModal('quiz') also works)
+//   if (modalOpen('quiz')) return;   // "is anything OTHER than me open?"
+//   if (modalOpen()) return;         // "is anything at all open?"
+// ─────────────────────────────────────────────────────────────────────────────
+const _modals = new Set();
+
+export function pushModal(id) {
+  _modals.add(id);
+  return () => popModal(id);
+}
+export function popModal(id) { _modals.delete(id); }
+/** @param {string} [except] ignore this id — pass your own to ask about others. */
+export function modalOpen(except) {
+  for (const m of _modals) if (m !== except) return true;
+  return false;
+}
+/** Is this specific panel open? */
+export function modalHas(id) { return _modals.has(id); }
+/** Teardown safety valve: a disposed scene must not leave a phantom modal. */
+export function clearModals() { _modals.clear(); }
+
 // Small helper used across UI modules: h('div.panel.row', {onclick}, ...children)
 export function h(sel, props, ...kids) {
   const [tag, ...cls] = sel.split('.');

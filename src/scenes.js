@@ -7,10 +7,12 @@
 // saved progress, and (b) keep the championship ledger. Scenes never import each
 // other; everything they need arrives through opts.
 import { bus } from './core/bus.js';
+import { attachPauseControl } from './ui/pause.js';
 import { save } from './core/save.js';
 import { engine } from './core/engine.js';
 import { raceScene } from './race/race.js';
-import { garageScene, setKartPreviewMounter } from './garage/garage.js';
+import { garageScene, freePlayScene, setKartPreviewMounter } from './garage/garage.js';
+import { sentenceText } from './garage/prompts.js';
 import {
   titleScene, racerSelectScene, resultsScene, podiumScene, setBackdrop,
 } from './ui/menus.js';
@@ -102,7 +104,7 @@ export const SCENES = {
   race: (eng, o = {}) => {
     const trackIndex = o.track ?? nextRaceIndex();
     if (o.racerId) save.set({ racerId: o.racerId });
-    return raceScene(eng, {
+    const s = raceScene(eng, {
       ...o,
       track: trackIndex,
       racerId: o.racerId || save.read('racerId') || ROSTER[0].id,
@@ -114,6 +116,18 @@ export const SCENES = {
         engine.goto('results', { ...result, isChampionship: true });
       },
     });
+
+    // Escape → pause. The freeze needs all three of engine.paused, a wrapped
+    // scene.update (because the capture harness calls update directly and never
+    // sees engine.paused), and the scene's own setPaused. The controller owns that.
+    const pause = attachPauseControl({
+      engine: eng, scene: s,
+      canPause: () => !s.state?.finished,
+      onQuit: () => engine.goto('menu'),
+    });
+    const disposeScene = s.dispose.bind(s);
+    s.dispose = () => { pause.dispose(); disposeScene(); };
+    return s;
   },
 
   results: (eng, o = {}) => resultsScene(eng, {
@@ -162,6 +176,17 @@ export const SCENES = {
         // silently does nothing.
         const slot = part?.slotKey || part?.slot;
         if (slot) parts[slot] = Math.max(0, Math.min(3, Number(part.tier) || 0));
+
+        // Remember the best prompt of the run, in the child's own words — the
+        // certificate quotes it back at them, and that is the thing that makes the
+        // award feel personal rather than like a form.
+        const score = Number(part?.score) || 0;
+        const prev = save.read('bestPrompt');
+        if (!prev || score > (prev.score || 0)) {
+          let text = '';
+          try { text = sentenceText(part?.selection || part?.sel || {}, getLang()); } catch { /* keep empty */ }
+          if (text) save.set({ bestPrompt: { text, score } });
+        }
         const spent = Number.isFinite(part?.cost) ? part.cost : costOf(part?.selection || {});
         save.set({
           parts,
@@ -172,10 +197,16 @@ export const SCENES = {
     });
   },
 
+  // Sandbox garage reachable from the home menu ("המוסך של בורג"): unlimited
+  // practice tokens, nothing persisted to the championship.
+  freeplay: (eng, o = {}) => freePlayScene(eng, { ...o, onExit: () => engine.goto('menu') }),
+
   podium: (eng, o = {}) => podiumScene(eng, {
     ...o,
     standings: totalPoints(),
     races: races(),
+    bestPrompt: save.read('bestPrompt') || null,
+    championship: (Number(save.read('championshipsDone')) || 0) + 1,
   }),
 };
 

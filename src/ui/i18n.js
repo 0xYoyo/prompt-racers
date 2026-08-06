@@ -66,7 +66,7 @@ registerStrings({
   he: {
     'game.title': 'מרוץ הפרומפטים',
     'common.back': 'חזרה',
-    'common.continue': 'המשך',
+    'common.continue': 'ממשיכים',   // impersonal present, like every other button
     'common.next': 'הבא',
     'common.close': 'סגירה',
     'common.tokens': 'טוקנים',
