@@ -1,0 +1,615 @@
+// ═════════════════════════════════════════════════════════════════════════════
+// RACE ORCHESTRATION — מרוץ הפרומפטים
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The integration layer. Owns the race state machine and binds together the
+// subsystems, none of which know about each other:
+//
+//   trackbuild  → geometry, checkpoints, token spots
+//   kartphysics → player KartBody (AI karts get their own inside createAIField)
+//   ai          → 7 opponents driving through the SAME physics
+//   kartmodel   → visual karts, with garage parts attached
+//   camera      → chase cam
+//   hud         → DOM overlay, driven by a state snapshot + bus events
+//   audio       → entirely bus-driven; this file emits, it never imports audio
+//
+// State machine:  intro → countdown → racing → finished → (results)
+//
+import * as THREE from 'three';
+import { bus } from '../core/bus.js';
+import { save } from '../core/save.js';
+import { makeRng } from '../core/rng.js';
+import { Input } from '../core/input.js';
+import { getTrack, gridSlots, TrackSpline } from '../track/trackdef.js';
+import { buildTrack } from '../track/trackbuild.js';
+import { applyTheme } from '../gfx/sky.js';
+import { KartBody, autopilotInput } from '../kart/kartphysics.js';
+import { ChaseCamera } from '../kart/camera.js';
+import { createKart, createKartLOD } from '../kart/kartmodel.js';
+import { createAIField } from '../kart/ai.js';
+import { ROSTER, nameKey } from '../kart/roster.js';
+import { createHUD } from './hud.js';
+import { registerStrings, t } from '../ui/i18n.js';
+
+registerStrings({
+  he: {
+    'race.go': 'קדימה!', 'race.finish': 'סיימת!', 'race.pos': 'מקום',
+  },
+  en: { 'race.go': 'GO!', 'race.finish': 'FINISH!', 'race.pos': 'Place' },
+});
+
+// ─── CANONICAL PARTS VOCABULARY ─────────────────────────────────────────────
+// Three subsystems named the same four slots differently, which silently broke
+// the game's core promise: the garage saved {engine,tires,wing,chassis}, but
+// applyPartStats() looks up {engine,tyres,frame,turbo}, so every upgrade
+// resolved to `undefined` → tier 0 and a better prompt made no difference to how
+// the kart drove. The save format is the garage's vocabulary (it is the thing the
+// child actually chose); this layer translates outward.
+//
+//   garage/visual        physics        why
+//   engine          →    engine         top speed + acceleration
+//   tires           →    tyres          grip + off-road
+//   chassis         →    frame          mass + stability
+//   wing            →    turbo          downforce reads as boost retention + drift rate
+const PARTS_TO_PHYSICS = { engine: 'engine', tires: 'tyres', chassis: 'frame', wing: 'turbo' };
+
+// scoring.js names its tiers as well as numbering them; accept either form so a
+// save written by any version resolves to a real tier instead of silently to 0.
+const TIER_NAMES = ['scrappy', 'basic', 'tuned', 'pro'];
+
+function tierOf(v) {
+  if (typeof v === 'number') return clampTier(v);
+  if (typeof v === 'string') {
+    const i = TIER_NAMES.indexOf(v);
+    return i >= 0 ? i : clampTier(Number(v) || 0);
+  }
+  if (v && typeof v === 'object') return tierOf(v.tier ?? v.visualTier ?? 0);
+  return 0;
+}
+const clampTier = n => Math.max(0, Math.min(3, Math.round(n) || 0));
+
+/** Garage/save parts → the tier map KartBody's applyPartStats expects. */
+export function toPhysicsParts(parts = {}) {
+  const out = {};
+  for (const [from, to] of Object.entries(PARTS_TO_PHYSICS)) out[to] = tierOf(parts[from]);
+  return out;
+}
+
+/** Garage/save parts → the tier map createKart().setParts expects. */
+export function toVisualParts(parts = {}) {
+  const out = {};
+  for (const slot of ['engine', 'tires', 'wing', 'chassis']) out[slot] = tierOf(parts[slot]);
+  // The exhaust has no garage slot of its own; let it follow the engine so a
+  // strong engine upgrade reads as a bigger visual change.
+  out.exhaust = out.engine;
+  return out;
+}
+
+// Finishing payout, 1st → 8th. The how-to-play screen tells a child "every race
+// pays out tokens based on where you finish", and until this existed that was
+// simply untrue — tokens came only from pickups. It also removes a dead end: a
+// player who collected nothing used to reach the garage with a budget of 0, and
+// every option card on the teaching screen rendered locked and grey.
+// Last place still funds a real ask (the cheapest complete ask costs 4, the most
+// precise one 21), so the garage is always playable and precision is always the
+// thing you have to choose between.
+const FINISH_TOKENS = [14, 12, 11, 10, 9, 8, 7, 6];
+
+const COUNTDOWN_S = 3.4;      // 3 · 2 · 1 · GO
+const TOKEN_RADIUS = 2.6;     // generous — kids should not have to thread a needle
+const COMBO_WINDOW = 2.2;     // seconds to chain a pickup
+
+/**
+ * @param {object} engine
+ * @param {object} opts  { track, racerId, difficulty, laps, parts, seed,
+ *                         onComplete(result), freeCam }
+ */
+export function raceScene(engine, opts = {}) {
+  const trackId = opts.track ?? 0;
+  const { def } = getTrack(trackId);
+  const laps = opts.laps ?? def.laps ?? 3;
+  const difficulty = opts.difficulty ?? 1;
+  const seed = opts.seed ?? 12345;
+  const rng = makeRng(seed);
+
+  const racer = ROSTER.find(r => r.id === opts.racerId) || ROSTER[0];
+  const parts = opts.parts || save.read('parts') || {};
+
+  // ---- world ---------------------------------------------------------------
+  const scene = new THREE.Scene();
+  const rig = applyTheme(scene, def.theme, engine);
+  const track = buildTrack(trackId, engine);
+  scene.add(track.group);
+  const spline = track.spline;
+
+  const camera = new THREE.PerspectiveCamera(62, 16 / 9, 0.25, Math.max(900, engine.q.drawDistance * 1.5));
+  const chase = new ChaseCamera(camera, { spline, mode: 'chase', seed });
+
+  // ---- karts ---------------------------------------------------------------
+  const slots = gridSlots(spline, def, 8);
+  const surface = def.theme === 'cloud' ? 'cloud' : def.theme === 'circuit' ? 'grass' : 'sand';
+
+  const player = new KartBody({
+    spline, stats: racer.stats, startSlot: slots[0], parts: toPhysicsParts(parts), surface,
+  });
+  const playerMesh = createKart({ racer, parts: toVisualParts(parts), engine });
+  scene.add(playerMesh.group);
+
+  const field = createAIField(spline, def, engine, {
+    difficulty, playerRacerId: racer.id, seed, slots, playerSlot: 0, count: 7,
+  });
+
+  // AI visuals. Distant opponents use the cheap LOD so eight karts stay in budget.
+  const aiKarts = [];
+  for (const k of fieldKarts(field)) {
+    const mk = (engine.q.propDensity < 0.5 ? createKartLOD : createKart)(
+      { racer: k.racer, parts: null, engine, lod: engine.q.propDensity < 0.5 ? 1 : 0 });
+    scene.add(mk.group);
+    aiKarts.push({ ...k, mesh: mk });
+  }
+
+  // ---- tokens --------------------------------------------------------------
+  const tokens = buildTokens(track.tokenSpots, engine, rng);
+  if (tokens) scene.add(tokens.group);
+
+  // ---- HUD -----------------------------------------------------------------
+  // Backdrop mode: the title/menu screens render a live slice of a race behind
+  // their UI. It must be a silent, chrome-less world — no HUD in the overlay, no
+  // input capture stealing menu keys, and no engine/collision audio.
+  const backdrop = !!opts.backdrop;
+  const hud = backdrop ? null : createHUD(engine, { spline, maxSpeedKmh: 140 });
+  hud?.setSpline?.(spline, def.startT ?? 0);
+
+  // ---- race state ----------------------------------------------------------
+  const input = backdrop ? null : new Input();
+  const S = {
+    phase: 'countdown',
+    clock: 0,
+    raceTime: 0,
+    lapTime: 0,
+    lap: 1,
+    bestLap: null,
+    tokens: 0,
+    combo: 0,
+    comboT: 0,
+    position: 1,
+    finished: false,
+    finishTime: null,
+    wrongWay: false,
+    wrongWayT: 0,
+    lastCountdownBeat: -1,
+    progress: 0,          // laps + fraction, monotonic
+    prevT: player.lapT,
+    cp: 0,                // next checkpoint index
+    cpHits: 0,
+  };
+  const CP = track.checkpoints || [];
+  const results = [];     // finish order as karts complete
+
+  chase.snap(player);
+  playerMesh.group.position.copy(player.position);
+  playerMesh.group.quaternion.copy(player.renderQuaternion);
+
+  if (!backdrop) bus.emit('race:begin', { track: def.id, laps, racer: racer.id });
+
+  // ══════════════════════════════════════════════════════════════════════ loop
+  function update(dt) {
+    S.clock += dt;
+
+    if (S.phase === 'countdown') {
+      const beat = Math.min(3, Math.floor(S.clock / (COUNTDOWN_S / 4)));
+      if (beat !== S.lastCountdownBeat) {
+        S.lastCountdownBeat = beat;
+        if (!backdrop) bus.emit('race:countdown', { n: 3 - beat });   // 3,2,1 then 0 = GO
+      }
+      if (S.clock >= COUNTDOWN_S) {
+        S.phase = 'racing';
+        S.clock = 0;
+        if (!backdrop) bus.emit('race:start');
+      }
+      // Karts sit still but the world (crowd, flags) keeps living.
+      track.update(S.clock);
+      rig.update?.(dt, camera);
+      chase.update(dt, player);
+      tokens?.update(dt);
+      pushHud();
+      return;
+    }
+
+    const racing = S.phase === 'racing';
+    if (racing) { S.raceTime += dt; S.lapTime += dt; }
+
+    // ---- player --------------------------------------------------------
+    // After finishing, the kart coasts under AI-ish control so the camera has
+    // something sane to watch during the results flourish.
+    const cmd = S.finished ? { throttle: 0.35, brake: 0, steer: 0, drift: false, hop: false }
+      : opts.autopilot ? autopilotInput(player, spline, { drift: true })
+        : (input ? input.sample(dt) : { throttle: 1, brake: 0, steer: 0, drift: false, hop: false });
+    player.update(dt, cmd);
+
+    // ---- AI ------------------------------------------------------------
+    field.update(dt, player);
+
+    // ---- progress, laps, checkpoints -----------------------------------
+    const d = TrackSpline.deltaT(player.lapT, S.prevT);
+    // Guard against the teleport that a respawn produces.
+    if (Math.abs(d) < 0.3) S.progress += d;
+    S.prevT = player.lapT;
+
+    if (racing && CP.length) {
+      // Checkpoints must be taken in order — this is what stops a player from
+      // reversing over the line to farm laps, and from cutting the infield.
+      const want = CP[S.cp];
+      if (Math.abs(TrackSpline.deltaT(player.lapT, want)) < 0.02) {
+        S.cp = (S.cp + 1) % CP.length;
+        S.cpHits++;
+        if (S.cp === 0 && S.cpHits >= CP.length) onLapComplete();
+      }
+    }
+
+    // Wrong-way: sustained negative progress while moving.
+    const goingBack = d < -0.00002 && player.speed > 4;
+    S.wrongWayT = goingBack ? S.wrongWayT + dt : Math.max(0, S.wrongWayT - dt * 2);
+    const ww = S.wrongWayT > 0.7;
+    if (ww !== S.wrongWay) { S.wrongWay = ww; bus.emit('race:wrongway', { on: ww }); }
+
+    // ---- tokens --------------------------------------------------------
+    if (tokens && racing && !S.finished) {
+      const got = tokens.collect(player.position, TOKEN_RADIUS);
+      if (got) {
+        S.combo = S.comboT > 0 ? S.combo + 1 : 1;
+        S.comboT = COMBO_WINDOW;
+        S.tokens += 1 + Math.floor(S.combo / 3);   // small chain bonus
+        if (!backdrop) bus.emit('token:pickup', { tokens: S.tokens, combo: S.combo });
+      }
+      S.comboT = Math.max(0, S.comboT - dt);
+      if (S.comboT === 0) S.combo = 0;
+    }
+
+    // ---- positions -----------------------------------------------------
+    updatePositions();
+
+    // ---- drift / boost / collision → audio + camera ---------------------
+    driveFeedback(dt);
+
+    // ---- visuals --------------------------------------------------------
+    syncMesh(playerMesh, player, dt);
+    for (const k of aiKarts) syncMesh(k.mesh, k.body, dt);
+    track.update(S.raceTime);
+    rig.update?.(dt, camera);
+    tokens?.update(dt);
+    if (backdrop) cinematic(dt); else chase.update(dt, player);
+
+    pushHud();
+  }
+
+  // Menu backdrop framing. A chase cam puts one kart dead centre, which is
+  // exactly where the logo and the primary button live. Instead we run a slow
+  // side-on tracking shot: low, offset, angled across the frame, with the pack
+  // in the near-mid ground — which is what makes the reference title plate read
+  // as "this is a racing game" before you've read a word.
+  const _look = new THREE.Vector3(), _cam = new THREE.Vector3(), _tmp = new THREE.Vector3();
+  let cineT = 0;
+  function cinematic(dt) {
+    cineT += dt;
+    // Aim at the centre of the pack rather than at any one kart.
+    _look.copy(player.position);
+    let n = 1;
+    for (const k of aiKarts) { _look.add(k.body.position); n++; }
+    _look.multiplyScalar(1 / n);
+
+    const near = spline.closestT(_look);
+    const tan = spline.tangentAt(near.t, _tmp);
+    const right = tan.clone().cross(new THREE.Vector3(0, 1, 0)).normalize();
+
+    // Sit off to one side and slightly behind, sweeping gently.
+    const sway = Math.sin(cineT * 0.16);
+    _cam.copy(_look)
+      .addScaledVector(right, 13 + sway * 3.5)
+      .addScaledVector(tan, -9 - sway * 4)
+      .add(new THREE.Vector3(0, 4.6 + sway * 0.5, 0));
+
+    camera.position.lerp(_cam, Math.min(1, dt * 2.2));
+    _look.y += 1.1;
+    camera.lookAt(_look);
+    camera.fov = 46;
+    camera.updateProjectionMatrix();
+  }
+
+  // ── lap / finish ─────────────────────────────────────────────────────────
+  function onLapComplete() {
+    const ms = S.lapTime * 1000;
+    if (S.bestLap == null || ms < S.bestLap) {
+      S.bestLap = ms;
+      bus.emit('race:bestlap', { ms });
+      const key = def.id;
+      const best = save.read('bestLap') || {};
+      if (!best[key] || ms < best[key]) save.set({ bestLap: { ...best, [key]: ms } });
+    }
+    S.lapTime = 0;
+    S.cpHits = 0;
+
+    if (S.lap >= laps) return finishPlayer();
+
+    S.lap++;
+    bus.emit('race:lap', { lap: S.lap, totalLaps: laps, lapTimeMs: ms });
+    if (S.lap === laps) bus.emit('race:finallap');
+  }
+
+  function finishPlayer() {
+    if (S.finished) return;
+    S.finished = true;
+    S.finishTime = S.raceTime;
+    S.phase = 'finished';
+    if (input) input.enabled = false;
+    chase.mode = 'orbit';
+    bus.emit('race:finish', { position: S.position });
+
+    // Settle the remaining order deterministically from current progress so the
+    // results screen can appear immediately rather than waiting out the AI.
+    const order = field.order();
+    const standings = [];
+    let place = 0;
+    for (const row of order) {
+      place++;
+      const isPlayer = row.isPlayer || !row.racer;
+      standings.push({
+        racerId: isPlayer ? racer.id : row.racer.id,
+        place,
+        isPlayer,
+        // AI times are projected from the gap in progress at the flag — honest
+        // enough for a results table and avoids simulating a dead race out.
+        timeMs: isPlayer ? S.finishTime * 1000
+          : (S.finishTime + (S.progress - row.progress) * estLapSeconds()) * 1000,
+      });
+    }
+    const myPlace = standings.find(s => s.isPlayer)?.place ?? S.position;
+    const finishBonus = FINISH_TOKENS[Math.max(0, Math.min(FINISH_TOKENS.length - 1, myPlace - 1))];
+    const result = {
+      track: def.id, trackIndex: trackId, laps,
+      place: myPlace,
+      timeMs: S.finishTime * 1000,
+      bestLapMs: S.bestLap,
+      tokens: S.tokens + finishBonus,
+      tokensCollected: S.tokens,
+      finishBonus,
+      standings,
+    };
+    setTimeout(() => {
+      bus.emit('race:complete', result);
+      opts.onComplete?.(result);
+    }, 2200);
+  }
+
+  function estLapSeconds() {
+    return S.bestLap ? S.bestLap / 1000 : (S.raceTime / Math.max(1, S.lap));
+  }
+
+  function updatePositions() {
+    const order = field.order();
+    let p = 1;
+    for (const row of order) {
+      if (row.isPlayer || !row.racer) break;
+      p++;
+    }
+    // `order()` is sorted best-first; find the player's index directly.
+    const idx = order.findIndex(r => r.isPlayer || !r.racer);
+    const np = (idx >= 0 ? idx : order.length) + 1;
+    if (np !== S.position && !S.finished) {
+      bus.emit('race:position', { from: S.position, to: np });
+      S.position = np;
+    } else if (S.finished) S.position = np;
+    void p;
+  }
+
+  // ── feedback: turn physics state changes into bus events ────────────────
+  const prev = { drifting: false, tier: -1, boosting: false, wallHit: false, kartHit: false, offTrack: false };
+  function driveFeedback(dt) {
+    void dt;
+    if (backdrop) return;   // a menu backdrop must never make engine noise
+    if (player.drifting !== prev.drifting) {
+      prev.drifting = player.drifting;
+      bus.emit(player.drifting ? 'drift:start' : 'drift:end', { tier: player.driftTier });
+    }
+    if (player.drifting) bus.emit('drift:charge', { charge: player.driftCharge01 });
+    if (player.driftTier !== prev.tier) {
+      if (player.driftTier > prev.tier && player.driftTier > 0) bus.emit('drift:tier', { tier: player.driftTier });
+      prev.tier = player.driftTier;
+    }
+    if (player.boosting !== prev.boosting) {
+      prev.boosting = player.boosting;
+      if (player.boosting) { bus.emit('drift:boost', { tier: player.driftTier }); chase.shake(0.35, 0.25); }
+    }
+    if (player.wallHit && !prev.wallHit) { bus.emit('kart:collide', { kind: 'wall', speed: player.speed }); chase.shake(0.6, 0.3); }
+    prev.wallHit = !!player.wallHit;
+    if (player.kartHit && !prev.kartHit) { bus.emit('kart:collide', { kind: 'kart', speed: player.speed }); chase.shake(0.3, 0.2); }
+    prev.kartHit = !!player.kartHit;
+    if (player.offTrack !== prev.offTrack) {
+      prev.offTrack = player.offTrack;
+      bus.emit('surface:change', { surface: player.offTrack ? player.surfaceKind : 'asphalt' });
+    }
+    bus.emit('kart:engine', {
+      rpm01: Math.min(1, player.speed / Math.max(1, player.p?.topSpeed || 24)),
+      load: player.throttleApplied ?? 1,
+      boosting: player.boosting,
+      surface: player.offTrack ? player.surfaceKind : 'asphalt',
+    });
+  }
+
+  // ── mesh sync ────────────────────────────────────────────────────────────
+  const _v = new THREE.Vector3();
+  function syncMesh(mk, body, dt) {
+    if (!mk?.group) return;
+    mk.group.position.copy(body.position);
+    mk.group.position.y += body.hopOffset || 0;
+    mk.group.quaternion.copy(body.renderQuaternion);
+    mk.update?.(dt, {
+      steer: body.steerAngle ? body.steerAngle / 0.6 : 0,
+      speed01: body.speed01 ?? 0,
+      speed: body.speed01 ?? 0,
+      drifting: body.drifting,
+      driftDir: body.driftDir,
+      driftCharge01: body.driftCharge01 ?? 0,
+      driftLean: body.driftLean ?? 0,
+      airborne: body.airborne,
+      boost: body.boosting ? 1 : 0,
+      boosting: body.boosting,
+      landingSquash: body.landingSquash ?? 0,
+    });
+    void _v;
+  }
+
+  // ── HUD snapshot ─────────────────────────────────────────────────────────
+  const kartRows = [];
+  function pushHud() {
+    if (!hud) return;
+    kartRows.length = 0;
+    kartRows.push({ t: player.lapT, lateral: player.lateral, color: racer.color, isPlayer: true });
+    for (const k of aiKarts) kartRows.push({ t: k.body.lapT, lateral: k.body.lateral, color: k.racer.color, isPlayer: false });
+
+    const rival = nearestRival();
+    hud.update({
+      lap: Math.min(S.lap, laps), totalLaps: laps,
+      position: S.position, totalRacers: 8,
+      raceTimeMs: S.raceTime * 1000, lapTimeMs: S.lapTime * 1000, bestLapMs: S.bestLap,
+      speed: player.speed, speed01: player.speed01,
+      tokens: S.tokens, comboCount: S.combo,
+      driftTier: player.driftTier, driftCharge01: player.driftCharge01, drifting: player.drifting,
+      boosting: player.boosting, offTrack: player.offTrack,
+      wrongWay: S.wrongWay, isFinalLap: S.lap === laps, finished: S.finished,
+      rivalNameKey: rival?.nameKey, rivalColor: rival?.color, rivalGapMs: rival?.gapMs,
+      karts: kartRows,
+    });
+  }
+
+  function nearestRival() {
+    const order = field.order();
+    const idx = order.findIndex(r => r.isPlayer || !r.racer);
+    if (idx < 0) return null;
+    const other = order[idx - 1] || order[idx + 1];
+    if (!other?.racer) return null;
+    const ahead = !!order[idx - 1];
+    const dProg = Math.abs(other.progress - S.progress);
+    const gapS = dProg * estLapSeconds();
+    // Pass the i18n KEY, not nameHe. Hard-coding the Hebrew name put a Hebrew
+    // string inside the English HUD's LTR run, where it rendered as garbage
+    // ("'TIT" for טיפה). hud.js resolves rivalNameKey in the active language.
+    return {
+      nameKey: nameKey(other.racer.id),
+      color: other.racer.color,
+      gapMs: (ahead ? 1 : -1) * gapS * 1000,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════ scene API
+  return {
+    scene, camera,
+    update,
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); chase.resize?.(w, h); hud?.resize?.(w); },
+    // Exposed for the pause overlay and the debug harness.
+    get state() { return S; },
+    player, field, track, hud, input, chase,
+    setPaused(p) { if (input) input.enabled = !p; },
+    dispose() {
+      input?.dispose();
+      hud?.dispose();
+      tokens?.dispose();
+      for (const k of aiKarts) k.mesh.dispose?.();
+      playerMesh.dispose?.();
+      field.dispose?.();
+      track.dispose();
+      rig.dispose?.();
+      scene.clear();
+    },
+  };
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+function fieldKarts(field) {
+  // createAIField keeps its karts private; order() gives us the racers, but we
+  // need the bodies too. It exposes them via order() rows' driver.body.
+  return field.order().filter(r => r.racer && r.driver)
+    .map(r => ({ racer: r.racer, body: r.driver.body, driver: r.driver }));
+}
+
+/**
+ * Glowing AI tokens — the game's currency. One InstancedMesh, so 40+ pickups
+ * cost a single draw call.
+ */
+function buildTokens(spots, engine, rng) {
+  if (!spots?.length) return null;
+  const n = spots.length;
+  const geo = new THREE.OctahedronGeometry(0.62, 0);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffd66b, emissive: 0xffb020, emissiveIntensity: 1.6,
+    roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.95,
+  });
+  const mesh = new THREE.InstancedMesh(geo, mat, n);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+
+  const group = new THREE.Group();
+  group.add(mesh);
+
+  const items = spots.map((p, i) => ({
+    pos: p.clone ? p.clone() : new THREE.Vector3(p.x, p.y, p.z),
+    phase: rng() * Math.PI * 2, alive: true, respawn: 0, i,
+  }));
+
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1);
+  const up = new THREE.Vector3(0, 1, 0), pos = new THREE.Vector3();
+  let time = 0;
+
+  function write() {
+    for (const it of items) {
+      const s = it.alive ? 1 : 0.0001;
+      pos.copy(it.pos); pos.y += 1.0 + Math.sin(time * 2 + it.phase) * 0.18;
+      q.setFromAxisAngle(up, time * 1.6 + it.phase);
+      sc.set(s, s, s);
+      m.compose(pos, q, sc);
+      mesh.setMatrixAt(it.i, m);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+  write();
+
+  return {
+    group,
+    update(dt) {
+      time += dt;
+      for (const it of items) {
+        if (!it.alive) { it.respawn -= dt; if (it.respawn <= 0) it.alive = true; }
+      }
+      write();
+    },
+    /** @returns {boolean} true if a token was taken this frame */
+    collect(p, radius) {
+      const r2 = radius * radius;
+      for (const it of items) {
+        if (!it.alive) continue;
+        const dx = p.x - it.pos.x, dy = p.y - it.pos.y, dz = p.z - it.pos.z;
+        if (dx * dx + dy * dy * 0.4 + dz * dz < r2) {
+          it.alive = false; it.respawn = 6;   // respawn so later laps still pay
+          return true;
+        }
+      }
+      return false;
+    },
+    dispose() { geo.dispose(); mat.dispose(); mesh.dispose(); },
+  };
+}
+
+// ── preview ────────────────────────────────────────────────────────────────
+// Previews drive the player on autopilot — headless capture has no keyboard, and
+// a stationary player kart tells a critic nothing about how the game looks racing.
+export function preview(engine) {
+  return raceScene(engine, { track: 0, difficulty: 1, seed: 4242, autopilot: true });
+}
+export function previewCountdown(engine) {
+  return raceScene(engine, { track: 0, difficulty: 1, seed: 4242, autopilot: true });
+}
+export function previewMidRace(engine) {
+  const s = raceScene(engine, { track: 0, difficulty: 1, seed: 4242, autopilot: true });
+  for (let i = 0; i < 60 * 12; i++) s.update(1 / 60);   // past the countdown, into the pack
+  return s;
+}

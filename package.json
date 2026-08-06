@@ -1,0 +1,30 @@
+{
+  "name": "kart-project",
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "node tests/spline.test.mjs && node tests/parts.test.mjs && node tests/feel.test.mjs && node tools/checkall.mjs",
+    "build": "node tools/build.mjs",
+    "dev": "node tools/build.mjs --dev",
+    "shot": "node tools/shot.mjs",
+    "preview": "node tools/preview.mjs",
+    "progress": "node tools/progress.mjs",
+    "verify": "node tools/verify.mjs",
+    "checkall": "node tools/checkall.mjs",
+    "layout": "node tools/layoutcheck.mjs",
+    "flow": "node tools/flowtest.mjs",
+    "gate": "npm run build && npm test && node tools/verify.mjs && node tools/flowtest.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "puppeteer-core": "^23.11.1"
+  },
+  "type": "module"
+}
