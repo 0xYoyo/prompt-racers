@@ -86,6 +86,19 @@ class Engine {
 
     this._onResize = () => this.resize();
     addEventListener('resize', this._onResize);
+    // A window `resize` event is not the only way the canvas changes size, and
+    // relying on it left `width`/`height` — and the renderer's backing store —
+    // stuck at their boot values for as long as one was never delivered. Two
+    // real cases: the mount element resizing while the window does not (the
+    // React embedding this project advertises), and headless Chrome, which does
+    // not reliably fire `resize` for the first viewport override — measured
+    // `engine.width === 800` on a 1920px page, which is how a stale layout
+    // reached a gate. Observe the element itself; the window listener stays for
+    // device-pixel-ratio changes that do not alter the element's box.
+    if (typeof ResizeObserver === 'function') {
+      this._ro = new ResizeObserver(() => this.resize());
+      this._ro.observe(this.el);
+    }
     this.resize();
     return this;
   }
@@ -153,6 +166,19 @@ class Engine {
   }
 
   stop() { cancelAnimationFrame(this._raf); this._raf = 0; }
+
+  /**
+   * Full teardown, as opposed to `stop()`, which only parks the animation frame
+   * and is reused for pausing. Called by `boot()`'s `destroy()`; without it a
+   * React remount stacks a fresh window listener and ResizeObserver on every
+   * mount, each holding a reference to a dead engine.
+   */
+  teardown() {
+    this.stop();
+    removeEventListener('resize', this._onResize);
+    this._ro?.disconnect();
+    this._ro = null;
+  }
 
   // Fixed-timestep accumulator: identical results regardless of framerate, which
   // is what makes the AI and the screenshot harness deterministic.

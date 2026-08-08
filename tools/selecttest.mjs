@@ -389,35 +389,122 @@ async function costOf(sceneName, opts) {
 // legend is a row of spans — so it reported "no clipping" while the legend hung
 // 46px below the fold at 1024x640 (and 23px at 1280x720, 6px at 1366x768). This
 // measures the stage's own overflow, which cannot miss it.
-console.log('\n  7. the whole screen fits — 6 resolutions × 2 languages');
+//
+// It also audits every control a child has to be able to REACH on this screen —
+// the start button first of all, because it is the only door off the screen.
+// This section used to measure stage overflow and nothing else, so it passed
+// green while "לזינוק!" hung below the fold at 1600x900 and 1920x1080. Two
+// things were missing and both are here now:
+//
+//  • the controls themselves are measured (fully inside the viewport, at least a
+//    24px tap target, and actually hit-testable at their own centre — a button
+//    under an invisible overlay is as unreachable as one off-screen);
+//  • each size is reached by three paths, not one. The bug never showed up on
+//    a freshly built screen: the column count was JS state written from the
+//    scene's resize() callback, so the roster stayed 3 columns wide — 3 rows
+//    instead of 2, ~290px taller — whenever that callback did not run, and the
+//    CTA went under the fold. The paths are:
+//      build  — built at the target size (all this section used to do);
+//      resize — built narrow, then resized into the target size;
+//      deaf   — built narrow, then resized with the scene's resize() callback
+//               unplugged. That is not a synthetic cruelty: headless Chrome
+//               genuinely does not deliver a window resize event for the first
+//               viewport override (engine.width sat at the boot 800 while the
+//               page was 1920 wide), which is why layoutcheck saw a clipped
+//               button at 1920x1080 and 1600x900 while a rebuild-only gate saw
+//               nothing. The invariant it pins is the real fix: this screen's
+//               layout must be correct without any JS resize signal at all.
+console.log('\n  7. every control fits and is reachable — 6 resolutions × 2 languages × 3 paths');
 {
   const SIZES = [[1920, 1080], [1600, 900], [1440, 900], [1366, 768], [1280, 720], [1024, 640]];
-  let over = [], off = [], hidden = [];
+  // Same thresholds as the .mn-grid media queries in menus.js.
+  const expectCols = w => (w >= 1000 ? 4 : w >= 740 ? 3 : w >= 520 ? 2 : 1);
+
+  /** Every control on this screen, measured against the viewport it lives in. */
+  const auditControls = (vw, vh) => evalp((w, h) => {
+    const items = [['start', document.querySelector('.mn-start')], ['back', document.querySelector('.mn-back')]];
+    for (const c of document.querySelectorAll('.mn-card')) items.push(['card:' + c.dataset.racer, c]);
+    const bad = [];
+    for (const [name, el] of items) {
+      if (!el) { bad.push(`${name}:MISSING`); continue; }
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity === 0) { bad.push(`${name}:INVISIBLE`); continue; }
+      const r = el.getBoundingClientRect();
+      if (r.width < 24 || r.height < 24) { bad.push(`${name}:${Math.round(r.width)}x${Math.round(r.height)}`); continue; }
+      const out = [r.top < -1 && 'top', r.bottom > h + 1 && 'bottom',
+        r.left < -1 && 'left', r.right > w + 1 && 'right'].filter(Boolean);
+      if (out.length) { bad.push(`${name}:CLIPPED[${out.join('+')}] box=${Math.round(r.top)}..${Math.round(r.bottom)} of ${h}`); continue; }
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (!hit || !(hit === el || el.contains(hit))) bad.push(`${name}:UNCLICKABLE(${hit ? hit.className || hit.tagName : 'nothing'})`);
+    }
+    return bad;
+  }, vw, vh);
+
+  const stageState = vh => evalp(h => {
+    const st = document.querySelector('.mn-stage');
+    const keys = document.querySelector('.mn-keys');
+    const grid = document.querySelector('.mn-grid');
+    const tpl = grid ? getComputedStyle(grid).gridTemplateColumns : '';
+    return {
+      over: st.scrollHeight - st.clientHeight,
+      keysOff: !keys || keys.bottom > h + 1,
+      cols: tpl && tpl !== 'none' ? tpl.trim().split(/\s+/).length : 0,
+    };
+  }, vh);
+
+  const over = [], off = [], hidden = [], broken = [], badCols = [];
+
   for (const lang of ['he', 'en']) {
     for (const [w, h] of SIZES) {
-      await page.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
-      await evalp(l => window.__DEBUG.goto('select', { lang: l }), lang);
-      await wait(420);
-      const r = await evalp(vh => {
-        const st = document.querySelector('.mn-stage');
-        const box = s => { const e = document.querySelector(s); return e ? e.getBoundingClientRect() : null; };
-        const keys = box('.mn-keys'), btn = box('.mn-start');
-        return {
-          over: st.scrollHeight - st.clientHeight,
-          keysOff: !keys || keys.bottom > vh + 1,
-          btnOff: !btn || btn.bottom > vh + 1 || btn.top < -1,
-          rtl: document.documentElement.dir,
-        };
-      }, h);
-      const tag = `${lang} ${w}x${h}`;
-      if (r.over > 0) over.push(`${tag}:+${r.over}px`);
-      if (r.keysOff || r.btnOff) off.push(tag);
-      const m = await mounted();
-      if (!(m.length === 8 && m.every(s => s.visible && s.name === 'kart:' + s.racerId))) hidden.push(tag);
+      for (const path of ['build', 'resize', 'deaf']) {
+        if (path === 'build') {
+          await page.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
+          await evalp(l => window.__DEBUG.goto('select', { lang: l }), lang);
+        } else {
+          // A deliberately different, narrower shape first — 3 columns' worth —
+          // so a stale column count survives into the target size if one can.
+          await page.setViewport({ width: 900, height: 700, deviceScaleFactor: 1 });
+          await evalp(l => window.__DEBUG.goto('select', { lang: l }), lang);
+          await wait(250);
+          // 'deaf': drop the scene's resize signal on the floor for the duration
+          // of the viewport change, reproducing the missed resize event exactly.
+          if (path === 'deaf') await evalp(() => {
+            const sc = window.__DEBUG.engine.active;
+            window.__savedResize = sc.resize;
+            sc.resize = () => {};
+          });
+          await page.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
+        }
+        await wait(450);
+        const tag = `${lang} ${w}x${h} (${path})`;
+        const s = await stageState(h);
+        if (s.over > 0) over.push(`${tag}:+${s.over}px`);
+        if (s.keysOff) off.push(tag);
+        if (s.cols !== expectCols(w)) badCols.push(`${tag}:${s.cols}≠${expectCols(w)}`);
+        const bad = await auditControls(w, h);
+        if (bad.length) broken.push(`${tag} → ${bad.join(', ')}`);
+        if (path === 'deaf') {
+          // Plug the signal back in and let the 3D karts re-park before the
+          // kart check — parking them IS resize()'s remaining job.
+          await evalp(() => {
+            const sc = window.__DEBUG.engine.active;
+            sc.resize = window.__savedResize;
+            window.__DEBUG.engine.resize();
+          });
+          await wait(150);
+        }
+        const m = await mounted();
+        if (!(m.length === 8 && m.every(x => x.visible && x.name === 'kart:' + x.racerId))) hidden.push(tag);
+      }
     }
   }
-  ok('the stage never overflows', over.length === 0, over.join(' ') || '0px at all 12 combinations');
-  ok('the start button and the key legend are always fully on screen', off.length === 0, off.join(' ') || 'all visible');
+
+  ok('the stage never overflows', over.length === 0, over.join(' ') || '0px at all 36 combinations');
+  ok('the key legend is always fully on screen', off.length === 0, off.join(' ') || 'all visible');
+  ok('EVERY control (start button, back, 8 cards) is on screen, ≥24px and clickable',
+    broken.length === 0, broken.join(' | ') || '10 controls × 36 combinations');
+  ok('the roster keeps the column count its width calls for (never a stale grid)',
+    badCols.length === 0, badCols.join(' ') || 'matches at all 36 combinations');
   ok('all 8 karts stay mounted and laid out at every size', hidden.length === 0, hidden.join(' ') || '8/8 everywhere');
   await page.setViewport({ width: 1366, height: 768, deviceScaleFactor: 1 });
 }

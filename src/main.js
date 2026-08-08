@@ -30,7 +30,7 @@ export function boot(mountEl, opts = {}) {
   return {
     engine,
     destroy() {
-      engine.stop();
+      engine.teardown();
       bus.clear();
       mountEl.replaceChildren();
     },

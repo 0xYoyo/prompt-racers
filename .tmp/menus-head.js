@@ -400,14 +400,7 @@ const MENU_CSS = `
 .mn-back{display:inline-flex;align-items:center;gap:6px;font-size:14px;padding:9px 18px;flex:none}
 .mn-back span{font-size:15px;line-height:1;opacity:.8;direction:ltr;unicode-bidi:isolate}
 @media (min-width:900px){
-  /* z-index, because the centred .mn-head next to it spans the FULL row width
-     and therefore overlaps this button's rectangle. Paint order alone kept the
-     button on top only while .mn-head's opacity was exactly 1 — during its
-     .35s fade-in the animated opacity gives it a stacking context of its own
-     and it swallows every click aimed at "back". A child who reaches for the
-     back button the moment the screen appears hits nothing. Caught by the
-     hit-test in tools/selecttest.mjs section 7. */
-  .mn-back{position:absolute;inset-inline-start:0;inset-block-start:0;z-index:2}
+  .mn-back{position:absolute;inset-inline-start:0;inset-block-start:0}
 }
 
 /* ---------- racer select ---------- */
@@ -416,26 +409,7 @@ const MENU_CSS = `
    drawn on the GL canvas underneath, is seen through it. Anything opaque or
    backdrop-filtered over that rectangle (the old card background did both) puts
    frosted glass in front of the kart. See makeKartStage() in racerSelectScene. */
-/* The column count is CSS's job, not JavaScript's.
-   It used to be an inline grid-template-columns written from the width handed
-   to resize(), which meant the roster's ROW COUNT — and therefore the height of
-   the whole screen — was a piece of JS state that could go stale. When the
-   resize signal did not arrive (headless Chrome does not always deliver a
-   window resize event for a viewport change, and engine.width stayed at the boot
-   800), the grid kept the 3 columns it was built with while the viewport was
-   1600 or 1920 wide: 8 cards became 3 rows instead of 2, ~290px taller, and the
-   "לזינוק!" CTA — the only door off this screen — was pushed under the bottom
-   edge. That is why the failure looked width-dependent and skipped 1440x900 at
-   the same height as a failing 1600x900: it was not the height maths, it was
-   which resize events happened to land.
-   Media queries cannot go stale, so the row count can no longer drift from the
-   viewport. The breakpoints mirror colsFor() exactly; JS now READS the column
-   count back off the layout for keyboard navigation instead of dictating it. */
-.mn-grid{display:grid;gap:clamp(8px,min(1.1vw,1.6vh),16px);width:min(1360px,100%);margin:0 auto;
-  grid-template-columns:repeat(1,minmax(0,1fr))}
-@media (min-width:520px){ .mn-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (min-width:740px){ .mn-grid{grid-template-columns:repeat(3,minmax(0,1fr))} }
-@media (min-width:1000px){ .mn-grid{grid-template-columns:repeat(4,minmax(0,1fr))} }
+.mn-grid{display:grid;gap:clamp(8px,min(1.1vw,1.6vh),16px);width:min(1360px,100%);margin:0 auto}
 .mn-card{position:relative;border-radius:var(--r-m);cursor:pointer;background:none;border:0;padding:0;
   display:flex;flex-direction:column;
   transition:transform .16s var(--ease)}
@@ -1189,6 +1163,7 @@ function selectPlateTexture(r) {
 export function racerSelectScene(engine, opts = {}) {
   return baseScreen(engine, opts, api => {
     let index = Math.max(0, RACERS.findIndex(r => r.id === (opts.racerId || RACERS[0].id)));
+    let cols = 4;
     let cards = [];
     let grid = null;
     let pickedName = null;
@@ -1197,17 +1172,7 @@ export function racerSelectScene(engine, opts = {}) {
 
     // Four columns keeps the roster two rows deep, which matters far more on a
     // short 1024x640 laptop than the extra card width three columns would buy.
-    // These thresholds live in CSS (see .mn-grid above); this is only the
-    // fallback for the case where the grid is not in the document yet.
     const colsFor = w => (w >= 1000 ? 4 : w >= 740 ? 3 : w >= 520 ? 2 : 1);
-    // Arrow-key navigation needs to know the column count. Read it off the real
-    // layout rather than remembering it: whatever the browser actually laid out
-    // is the truth, and it cannot be one resize event behind.
-    const colCount = () => {
-      const tpl = grid && getComputedStyle(grid).gridTemplateColumns;
-      const n = tpl && tpl !== 'none' ? tpl.trim().split(/\s+/).length : 0;
-      return n > 0 ? n : colsFor(innerWidth);
-    };
 
     /* ------------------------------------------------------ 3D kart stage ── */
     // Eight live karts, one per card, drawn on the GL canvas UNDER the overlay
@@ -1464,9 +1429,26 @@ export function racerSelectScene(engine, opts = {}) {
           keyHint(['Enter'], 'menu.select.confirm'),
           keyHint(['Esc'], 'menu.key.back')));
 
+      applyColsSettled(api.engine?.width || innerWidth);
       select(index, false);
       layoutKarts();
     };
+
+    // The width handed to resize() can be one frame stale (the engine reads
+    // clientWidth on the resize event, which in headless Chrome occasionally
+    // beats layout). A stale 800 leaves the grid at three columns on a 1600px
+    // screen, which is tall enough to push the "לזינוק!" CTA off the bottom —
+    // the exact class of bug the layout gate exists to catch, and it showed up
+    // as an intermittent failure. Re-apply from the authoritative innerWidth on
+    // the next frame so the column count can never be left behind.
+    function applyCols(w) {
+      cols = colsFor(Math.round(w || api.engine?.width || innerWidth));
+      if (grid) grid.style.gridTemplateColumns = `repeat(${cols},minmax(0,1fr))`;
+    }
+    function applyColsSettled(w) {
+      applyCols(w);
+      requestAnimationFrame(() => applyCols(innerWidth));
+    }
 
     build();
     api.rebuildOnLang(build);
@@ -1479,8 +1461,8 @@ export function racerSelectScene(engine, opts = {}) {
       switch (e.key) {
         case 'ArrowLeft': e.preventDefault(); select(index + fwd); break;
         case 'ArrowRight': e.preventDefault(); select(index - fwd); break;
-        case 'ArrowDown': e.preventDefault(); select(index + colCount()); break;
-        case 'ArrowUp': e.preventDefault(); select(index - colCount()); break;
+        case 'ArrowDown': e.preventDefault(); select(index + cols); break;
+        case 'ArrowUp': e.preventDefault(); select(index - cols); break;
         case 'Home': e.preventDefault(); select(0); break;
         case 'End': e.preventDefault(); select(RACERS.length - 1); break;
         // Enter/Space on a CARD confirms the pick and hands focus to the start
@@ -1496,9 +1478,7 @@ export function racerSelectScene(engine, opts = {}) {
     });
 
     return {
-      // Nothing to re-apply: the column count is a media query now, so the only
-      // thing a resize can invalidate is where the 3D karts are parked.
-      resize() { layoutKarts(); },
+      resize(w) { applyColsSettled(w); layoutKarts(); },
       update(dt) {
         const animateAll = !REDUCED() && !api.instant && !LOW;
         for (let i = 0; i < slots.length; i++) {
