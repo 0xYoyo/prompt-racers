@@ -22,6 +22,25 @@ Read DECISIONS.md, GAPS.md, README.md and skim progress.html before touching any
   ask the user questions mid-wave. One smoothing agent at the end for
   copy/difficulty/art consistency, then STOP for the user's playtest.
 
+## GIT SAFETY — absolute, for every agent including critics
+
+Wave 3 lost several hours of work to this: an agent ran `git stash` (plus a
+reset) to compare against HEAD while five builders were live. The tree snapped
+back to HEAD, the stash entry was then dropped by a racing process, and the work
+survived only as a dangling commit found via `git fsck --unreachable`.
+
+- NEVER run `git stash`, `git reset`, `git checkout -- .`, `git restore`,
+  `git clean`, or anything else that discards or rewinds the working tree.
+  Multiple agents share this one tree; a rewind destroys other agents' work.
+- To compare against committed code, READ it without touching the tree:
+  `git show HEAD:src/foo.js > .tmp/old-foo.js`, then diff or reason about the
+  copy. Never move it into place.
+- If a gate genuinely must run against pre-fix code, copy the current file to
+  `.tmp/` first, and restore from that copy — never from git.
+- The lead commits to a branch periodically so an accident is recoverable.
+  If you believe the tree is in a bad state, STOP and report it; do not repair
+  it with git.
+
 ## Constraints — absolute, contest-disqualifying if violated
 
 Zero network, zero personal data, all-original content, single self-contained

@@ -2,7 +2,7 @@
 // QUIZ BANK — the educational payload of מרוץ הפרומפטים
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// 103 kid-level questions about AI and prompting. This file is DATA ONLY — no
+// 101 kid-level questions about AI and prompting. This file is DATA ONLY — no
 // THREE, no DOM, no bus — so it can be unit-checked by a plain node script.
 //
 // ── ENTRY SHAPE ──
@@ -30,11 +30,17 @@
 //   only ever presses 1 does not get lucky. The runtime ALSO reshuffles options
 //   per draw (see quiz.js drawQuestion) — both layers are intentional.
 // • Position is shuffled at runtime, so the tells that matter are the ones the
-//   TEXT carries. The correct answer must not be the longest option (a child can
-//   score without reading), and no word may be a giveaway: "tokens" outside a
-//   token question, "always"/"never", or emphasis-by-punctuation must each turn
-//   up in right answers roughly as often as in wrong ones. tests/quizbank.test.mjs
-//   gates all four; the bank had drifted into every one of them before it did.
+//   TEXT carries. Length is the big one, and it is THREE tells, not one: check
+//   longest, shortest AND middle, per tier and per language, or two opposite
+//   biases in different tiers average out to a clean-looking number while a
+//   non-reader still scores 56%. No word may be a giveaway either: "tokens" outside a
+//   token question, "always"/"never", emphasis-by-punctuation, an opening
+//   "yes"/"no", or an option under five words must each turn up in right answers
+//   roughly as often as in wrong ones. tests/quizbank.test.mjs gates every one of
+//   these; the bank had drifted into all of them before it did.
+// • Two questions with the same correct answer are one lesson asked twice. That
+//   only matters when both can be drawn in the same race — tiers {1}, {1,2},
+//   {2,3} — which is also gated, so a tier-1 and a tier-3 overlap is fine.
 
 export const TOPICS = ['whatai', 'prompt', 'tokens', 'iterate', 'mistakes', 'vibe'];
 
@@ -47,7 +53,7 @@ export const QUESTIONS = [
       a: [
         'אנציקלופדיה ענקית שמחפשים בה תשובה מוכנה',
         'תוכנה שלמדה מהמון טקסט לנחש איזו מילה מתאימה להמשך',
-        'אדם אמיתי שיושב מהצד השני של המסך ומקליד את התשובות',
+        'אדם אמיתי שיושב מהצד השני ומקליד את התשובות',
       ],
       why: 'מודל שפה קרא כמות עצומה של טקסט ולמד לנחש מה מתאים לבוא אחר כך. זה נשמע כמו שיחה, אבל מאחורי הקלעים זה ניחוש חכם מאוד.',
     },
@@ -56,7 +62,7 @@ export const QUESTIONS = [
       a: [
         'A giant encyclopedia where you look up a ready-made answer',
         'Software that learned from lots of text to guess the next word',
-        'A real person on the other side of the screen, typing each answer',
+        'A real person on the other side, typing each answer',
       ],
       why: 'A language model read an enormous amount of text and learned to guess what fits next. It feels like a conversation, but under the hood it is a very clever guess.',
     },
@@ -108,7 +114,7 @@ export const QUESTIONS = [
     he: {
       q: 'מה נכון לגבי AI ורגשות?',
       a: [
-        'הוא מרגיש שמחה, עצב והתרגשות ממש כמו בן אדם',
+        'הוא מרגיש שמחה ועצב כמו בן אדם',
         'הוא יודע לכתוב על רגשות, אבל לא מרגיש אותם',
         'הוא לא מסוגל לכתוב על רגשות בכלל',
       ],
@@ -150,7 +156,7 @@ export const QUESTIONS = [
     he: {
       q: 'מה זה "חלון הקשר" של מודל?',
       a: [
-        'החלון שבתוכנה שבו מקלידים את השאלה ולוחצים על שליחה',
+        'החלון שבו מקלידים את השאלה',
         'כמות הטקסט שהמודל יכול להחזיק מול העיניים בבת אחת',
         'מספר השאלות שמותר לשאול ביום',
       ],
@@ -159,7 +165,7 @@ export const QUESTIONS = [
     en: {
       q: 'What is a model\'s "context window"?',
       a: [
-        'The box on screen where you type the question and press send',
+        'The box where you type your question',
         'How much text the model can hold in view at once',
         'How many questions you are allowed per day',
       ],
@@ -175,7 +181,7 @@ export const QUESTIONS = [
       a: [
         'השם של המודל החכם שאיתו עובדים כרגע',
         'הכפתור ששולח את ההודעה',
-        'ההוראה או הבקשה שכותבים ל־AI',
+        'ההוראה שכותבים ל־AI',
       ],
       why: 'כל מה שנכתב בתיבה הוא הפרומפט, כולל ה״שלום״ וה״תודה״. זה גם החלק היחיד שבשליטתנו: המודל, בסך הכול, מגיב אליו.',
     },
@@ -183,8 +189,8 @@ export const QUESTIONS = [
       q: 'What is a prompt?',
       a: [
         'The name of the smart model you are working with',
-        'The button that sends the message',
-        'The instruction or request written to the AI',
+        'The button that sends off the message',
+        'The instruction written to the AI',
       ],
       why: 'Everything typed in the box is the prompt, the \'hello\' and \'thanks\' included. It is also the only part you control: the model just responds to it.',
     },
@@ -245,9 +251,9 @@ export const QUESTIONS = [
     en: {
       q: 'Why does "explain it like I\'m ten" help?',
       a: [
-        'It makes the model run faster',
+        'It makes the model run faster and reply sooner',
         'An explanation for a child is shorter, and short costs fewer tokens',
-        'Naming the audience changes the words and the level',
+        'Naming the audience changes the level',
       ],
       why: 'The same content can be explained a hundred ways. Naming who it is for lets the model pick words and examples that fit that reader.',
     },
@@ -365,7 +371,7 @@ export const QUESTIONS = [
       q: 'למה פרומפט ארוך מאוד "עולה" יותר?',
       a: [
         'כי היא נשלחת למקום רחוק יותר',
-        'כי המודל מתקשה להתרכז בטקסט ארוך ומאבד סבלנות',
+        'כי המודל מתקשה להתרכז בטקסט ארוך',
         'כי יש בה יותר טוקנים, וכל טוקן דורש עבודה',
       ],
       why: 'לכל טוקן יש מחיר קטן בחישוב. הרבה טוקנים — הרבה חישוב, ולכן יותר זמן ויותר עלות. זה בדיוק כמו הטוקנים שאוספים במסלול.',
@@ -374,7 +380,7 @@ export const QUESTIONS = [
       q: 'Why does a very long prompt "cost" more?',
       a: [
         'Because it is sent somewhere further away',
-        'Because the model struggles to stay focused through long text',
+        'Because the model struggles to focus on long text',
         'Because it holds more tokens, and each token takes work',
       ],
       why: 'Every token costs a little computation. Many tokens means much computation — more time and more cost. Just like the tokens you collect on track.',
@@ -471,18 +477,18 @@ export const QUESTIONS = [
     he: {
       q: 'התשובה יצאה לגמרי לא מה שרצו. מה הכי כדאי לעשות?',
       a: [
-        'לוותר ולעשות את זה לבד',
+        'לוותר ולעשות את כל המשימה לבד',
         'לשלוח שוב בדיוק את אותו פרומפט',
-        'לשפר את הפרומפט — ולנסות שוב',
+        'לשפר את הפרומפט ולנסות שוב',
       ],
       why: 'ניסיון ראשון הוא טיוטה, לא גזר דין. מי שמשפר פרומפט ומנסה שוב מקבל תוצאות טובות בהרבה ממי שמנסה פעם אחת.',
     },
     en: {
       q: 'The answer came out nothing like what you wanted. What is best?',
       a: [
-        'Give up and do it yourself',
+        'Give up and do the whole thing yourself',
         'Send the exact same prompt again and hope for better',
-        'Improve the prompt — and try again',
+        'Improve the prompt and try again',
       ],
       why: 'A first try is a draft, not a verdict. People who sharpen the prompt and retry get far better results than people who ask once.',
     },
@@ -492,7 +498,7 @@ export const QUESTIONS = [
     he: {
       q: 'התשובה כמעט טובה. מה הכי יעיל לכתוב עכשיו?',
       a: [
-        'לכתוב "לא טוב" ולחכות',
+        'לכתוב "לא טוב" ולחכות לתשובה',
         'להגיד מה לשמור ומה לשנות',
         'לפתוח שיחה חדשה ולהתחיל מההתחלה',
       ],
@@ -501,8 +507,8 @@ export const QUESTIONS = [
     en: {
       q: 'The answer is almost right. What is most effective to write now?',
       a: [
-        'Write "not good" and wait',
-        'Say what to keep and what to change',
+        'Write "not good" and wait for more',
+        'Say what to keep, what to change',
         'Open a brand new chat and start over from scratch',
       ],
       why: '"Not good" leaves the model guessing. "The opening is great, the ending is too long" gives it exactly what it needs to fix only the broken part.',
@@ -513,7 +519,7 @@ export const QUESTIONS = [
     he: {
       q: 'למה כדאי לשנות דבר אחד בכל ניסיון?',
       a: [
-        'כי ככה יודעים איזה שינוי הוא זה שעזר',
+        'כי ככה יודעים איזה שינוי עזר',
         'כי המודל לא מסוגל לקלוט שני שינויים בבת אחת',
         'כי ניסיון עם שינוי אחד רץ מהר יותר',
       ],
@@ -522,7 +528,7 @@ export const QUESTIONS = [
     en: {
       q: 'Why change one thing per attempt?',
       a: [
-        'So you know which change is the one that helped',
+        'So you know which change helped',
         'Because the model cannot handle two changes at once',
         'Because a one-change attempt runs faster',
       ],
@@ -558,7 +564,7 @@ export const QUESTIONS = [
       q: 'ה־AI ענה בביטחון מלא. אפשר לסמוך על זה?',
       a: [
         'לא בהכרח — גם תשובה בטוחה מאוד יכולה להיות שגויה',
-        'כן, כשהתשובה נשמעת בטוחה זה בדרך כלל סימן שהיא נכונה',
+        'כן, כשהתשובה נשמעת בטוחה היא בדרך כלל נכונה',
         'כן, אם התשובה ארוכה ומפורטת',
       ],
       why: 'המודל כותב הכול באותו טון בטוח, גם כשהוא טועה. הביטחון בטקסט הוא סגנון כתיבה — לא הוכחה.',
@@ -567,7 +573,7 @@ export const QUESTIONS = [
       q: 'The AI answered with total confidence. Can you rely on it?',
       a: [
         'Not necessarily — a very confident answer can still be wrong',
-        'Yes, when an answer sounds sure that usually means it is right',
+        'Yes, a confident answer is usually a correct one',
         'Yes, if the answer is long and detailed',
       ],
       why: 'The model writes everything in the same confident tone, including its mistakes. Confidence in the text is a writing style, not proof.',
@@ -578,7 +584,7 @@ export const QUESTIONS = [
     he: {
       q: 'איך בודקים עובדה שה־AI נתן?',
       a: [
-        'שואלים את אותו AI שוב אם הוא בטוח בתשובה שלו',
+        'שואלים את אותו AI אם הוא בטוח',
         'סופרים כמה פעמים הוא חזר על זה',
         'משווים למקור אמין נוסף, מחוץ לשיחה',
       ],
@@ -587,7 +593,7 @@ export const QUESTIONS = [
     en: {
       q: 'How do you check a fact the AI gave you?',
       a: [
-        'Ask the same AI again whether it is really sure of its answer',
+        'Ask the same AI if it is sure',
         'Count how many times it repeated it',
         'Compare it with a trustworthy source outside the chat',
       ],
@@ -620,7 +626,7 @@ export const QUESTIONS = [
     he: {
       q: 'ה־AI צירף קישור או שם של ספר. מה עושים?',
       a: [
-        'פותחים ובודקים שהמקור באמת קיים ומתאים',
+        'פותחים ובודקים שהמקור קיים',
         'מעתיקים ישר לעבודה, כי זה נראה מסודר ומקצועי',
         'מניחים שזה תקין כי יש שם ותאריך',
       ],
@@ -629,7 +635,7 @@ export const QUESTIONS = [
     en: {
       q: 'The AI gave a link or a book title. What now?',
       a: [
-        'Open it and check the source really exists and fits',
+        'Open it and check the source exists',
         'Copy it straight into the work, since it looks tidy and professional',
         'Assume it is fine because it has a name and a date',
       ],
@@ -778,7 +784,7 @@ export const QUESTIONS = [
     he: {
       q: 'איפה פוגשים AI ביום רגיל?',
       a: [
-        'רק במעבדות של מדענים ובאוניברסיטאות גדולות',
+        'רק במעבדות של מדענים',
         'בתרגום, בהמלצות סרטים ובסינון דואר זבל',
         'רק במשחקי מחשב חדשים',
       ],
@@ -787,7 +793,7 @@ export const QUESTIONS = [
     en: {
       q: 'Where do you meet AI on an ordinary day?',
       a: [
-        'Only in the laboratories of scientists and big universities',
+        'Only in scientists\' laboratories',
         'In translation, film recommendations and spam filtering',
         'Only in brand new video games',
       ],
@@ -887,7 +893,7 @@ export const QUESTIONS = [
       a: [
         'כי מטרה ברורה משנה את מה שייכנס לתשובה',
         'כי זה מקצר את זמן ההמתנה',
-        'כי בלי מטרה ברורה המודל מבקש הבהרה במקום לענות',
+        'כי בלי מטרה המודל מבקש הבהרה',
       ],
       why: 'הסבר לשיעורי בית והסבר להצגה בכיתה נראים אחרת לגמרי. כשכותבים למה צריך את זה, המודל מכוון לשימוש הנכון.',
     },
@@ -896,7 +902,7 @@ export const QUESTIONS = [
       a: [
         'Because a clear purpose changes what goes into the answer',
         'Because it shortens the waiting time',
-        'Because with no purpose the model asks for clarification instead',
+        'Because with no purpose it asks for clarification',
       ],
       why: 'An explanation for homework and one for a class presentation look completely different. Saying why you need it aims the model at the right use.',
     },
@@ -927,7 +933,7 @@ export const QUESTIONS = [
     he: {
       q: 'רוצים לקבל את התשובה בטבלה. מה עושים?',
       a: [
-        'מקווים שהמודל יבחר בטבלה, כי זה הפורמט הכי ברור',
+        'מקווים שהמודל יבחר בטבלה בעצמו',
         'כותבים "מסודר בבקשה"',
         'מבקשים טבלה במפורש, ואילו עמודות שיהיו בה',
       ],
@@ -936,7 +942,7 @@ export const QUESTIONS = [
     en: {
       q: 'You want the answer as a table. What do you do?',
       a: [
-        'Hope the model picks a table, since that is the clearest format',
+        'Hope the model picks a table by itself',
         'Write "make it tidy please"',
         'Ask for a table outright, and which columns it should have',
       ],
@@ -970,7 +976,7 @@ export const QUESTIONS = [
       q: 'יש שלוש שאלות שונות. מה עדיף לעשות?',
       a: [
         'לדחוס את שלושתן למשפט אחד',
-        'לשאול אותן בנפרד, אחת אחרי השנייה',
+        'לשאול אחת אחרי השנייה',
         'לשאול רק את הקלה מביניהן ולוותר על השאר',
       ],
       why: 'בהודעה עמוסה יש סיכוי טוב שחלק מהשאלות ייבלעו. שאלה בכל פעם מקבלת תשובה מלאה, ואפשר להמשיך משם.',
@@ -979,7 +985,7 @@ export const QUESTIONS = [
       q: 'You have three different questions. What is better?',
       a: [
         'Cram all three into one sentence',
-        'Ask them separately, one after another',
+        'Ask them one after another',
         'Ask only the easy one and give up on the rest',
       ],
       why: 'In a crowded message some questions get swallowed. One question at a time gets a full answer, and you can build from there.',
@@ -1034,9 +1040,9 @@ export const QUESTIONS = [
     he: {
       q: 'למה בכלל סופרים טוקנים?',
       a: [
-        'כדי לדעת כמה שאלות נשאלו',
+        'כדי לדעת כמה שאלות נשאלו היום',
         'כדי לתת ציון לאיכות התשובה שהתקבלה',
-        'כי הם מודדים כמה עבודה המודל עשה',
+        'כי הם מודדים כמה עבודה נעשתה',
       ],
       why: 'טוקנים הם יחידת המידה של הטקסט: כמה נקרא וכמה נכתב. לפי זה נמדדים הזמן, העלות והמקום שנשאר בשיחה.',
     },
@@ -1045,7 +1051,7 @@ export const QUESTIONS = [
       a: [
         'To know how many questions were asked',
         'To grade the quality of the answer that came back',
-        'Because they measure how much work the model did',
+        'Because they measure the work done',
       ],
       why: 'Tokens are the unit of text: how much was read and how much was written. Time, cost and remaining room in the chat are all measured by them.',
     },
@@ -1191,7 +1197,7 @@ export const QUESTIONS = [
       a: [
         'אין שום הבדל אמיתי, מדובר בדיוק באותו תהליך',
         'באימון הוא עונה, ובשימוש הוא לומד',
-        'באימון הוא לומד מראש, ובשימוש הוא רק עונה',
+        'באימון הוא לומד, בשימוש הוא עונה',
       ],
       why: 'האימון קרה פעם אחת, הרבה לפני שהמודל הגיע אלינו. שיחה איתו לא מלמדת אותו — היא רק משתמשת במה שכבר נלמד.',
     },
@@ -1200,7 +1206,7 @@ export const QUESTIONS = [
       a: [
         'No real difference — training and using are the same process',
         'In training it answers, in use it learns',
-        'In training it learns ahead of time, in use it only answers',
+        'It learns in training, answers in use',
       ],
       why: 'Training happened once, long before the model reached you. Chatting does not teach it — it only uses what was already learned.',
     },
@@ -1240,7 +1246,7 @@ export const QUESTIONS = [
     en: {
       q: 'How is a language model different from a search engine?',
       a: [
-        'It writes the answer itself instead of showing a list of pages',
+        'It writes the answer itself instead of listing pages',
         'It holds a full, up-to-date copy of the whole internet inside it',
         'It checks every fact on three websites before it answers',
       ],
@@ -1254,7 +1260,7 @@ export const QUESTIONS = [
       a: [
         'את כל מה שנכתב לו אי פעם, בכל השיחות של כל המשתמשים',
         'רק את ההודעה האחרונה שנשלחה אליו ברגע זה',
-        'את השיחה הנוכחית, ועוד דברים שנשמרו לו במיוחד',
+        'את השיחה, ועוד דברים שנשמרו לו',
       ],
       why: 'הזיכרון של המודל הוא הטקסט שמגישים לו בכל פעם: השיחה עד כה, ולפעמים סיכומים שנשמרו בשבילו. מה שלא שם, לא קיים בשבילו.',
     },
@@ -1263,7 +1269,7 @@ export const QUESTIONS = [
       a: [
         'Everything ever written to it, in the chats of every single user',
         'Only the single message that was just sent to it',
-        'The current conversation, plus anything specially saved for it',
+        'The current chat, plus anything saved for it',
       ],
       why: 'The model\'s memory is the text handed to it each time: the chat so far, and sometimes summaries saved for it. What is not in there does not exist for it.',
     },
@@ -1296,7 +1302,7 @@ export const QUESTIONS = [
     he: {
       q: 'איך מבקשים תשובה בסגנון מסוים?',
       a: [
-        'כותבים את הסגנון: מצחיק, רשמי או מסתורי',
+        'כותבים את הסגנון: מצחיק או רשמי',
         'מוסיפים המון אימוג׳ים שמתאימים לסגנון',
         'בוחרים מודל אחר, כי לכל מודל יש סגנון קבוע',
       ],
@@ -1305,7 +1311,7 @@ export const QUESTIONS = [
     en: {
       q: 'How do you ask for an answer in a particular style?',
       a: [
-        'Name the style: funny, formal or mysterious',
+        'Name the style: funny or formal',
         'Add lots of emoji that match the style',
         'Switch models, since each model has one fixed style',
       ],
@@ -1317,9 +1323,9 @@ export const QUESTIONS = [
     he: {
       q: 'מה בודקים בפרומפט לפני ששולחים אותו?',
       a: [
-        'שיש בו לפחות חמישה משפטים',
+        'שיש בו לפחות חמישה משפטים ברורים',
         'שאין בו אף שגיאת כתיב',
-        'שכתוב בו מה רוצים, למי, ובאיזה פורמט',
+        'מה רוצים, למי, ובאיזה פורמט',
       ],
       why: 'כמעט כל תשובה שמחטיאה מפספסת דווקא באחד השלושה. מי שסורק אותם לפני השליחה תופס את זה בחמש שניות.',
     },
@@ -1327,8 +1333,8 @@ export const QUESTIONS = [
       q: 'What do you check in a prompt before sending it?',
       a: [
         'That it has at least five sentences',
-        'That it has no spelling mistakes at all',
-        'That it says what you want, for whom, and in what format',
+        'That it contains no spelling mistakes at all',
+        'What you want, for whom, in what format',
       ],
       why: 'Nearly every answer that misses went wrong on one of those three. Scanning them before you send catches it in five seconds.',
     },
@@ -1405,9 +1411,9 @@ export const QUESTIONS = [
     he: {
       q: 'איך יודעים איזה משני פרומפטים טוב יותר?',
       a: [
-        'לפי זה שנשמע מנומס יותר',
+        'לפי זה שנשמע מנומס ויפה יותר',
         'לפי זה שארוך יותר',
-        'מריצים את שניהם ומשווים את התשובות',
+        'מריצים את שניהם ומשווים',
       ],
       why: 'בפרומפטים קשה מאוד לנחש מראש. ניסוי קטן — אותו נושא, שתי גרסאות — נותן תשובה ודאית תוך דקה.',
     },
@@ -1416,7 +1422,7 @@ export const QUESTIONS = [
       a: [
         'The one that sounds more polite',
         'The one that is longer',
-        'Run both and compare the answers',
+        'Run both and compare',
       ],
       why: 'With prompts, guessing ahead is hard. A tiny experiment — same topic, two versions — settles it in a minute.',
     },
@@ -1513,7 +1519,7 @@ export const QUESTIONS = [
       q: 'ראו תמונה מדהימה ברשת. איך יודעים אם AI יצר אותה?',
       a: [
         'סופרים אצבעות ואותיות — שם AI תמיד נשבר בסוף',
-        'בודקים פרטים מוזרים, ובעיקר מבררים מי פרסם ומאיפה',
+        'בודקים פרטים מוזרים, ומבררים מי פרסם',
         'מחפשים אותה בכלי זיהוי, והתשובה שלו סוגרת את העניין',
       ],
       why: 'סימני האצבעות והאותיות נעלמים ככל שהכלים משתפרים, וגם כלי זיהוי טועה. מקור הפרסום נשאר הרמז החזק ביותר.',
@@ -1522,7 +1528,7 @@ export const QUESTIONS = [
       q: 'You saw an amazing photo online. How do you tell if AI made it?',
       a: [
         'Count the fingers and letters — AI always breaks there',
-        'Look for odd details, and above all trace who posted it',
+        'Look for odd details, and trace who posted it',
         'Run it through a detector tool and take its verdict as final',
       ],
       why: 'Finger and letter glitches fade as tools improve, and detectors get it wrong too. Where a picture came from stays the strongest clue.',
@@ -1544,7 +1550,7 @@ export const QUESTIONS = [
       a: [
         'Ask the model to word the same claim more gently',
         'Accept it, since the model has seen more text than any person',
-        'Do not take it as fact, and talk it over with an adult',
+        'Do not take it as fact — talk to an adult',
       ],
       why: 'Gentler wording does not make a skewed claim true. A model sometimes repeats biases from the text it learned from, and that is a place to stop.',
     },
@@ -1595,27 +1601,6 @@ export const QUESTIONS = [
   },
 
   // ───────────────────────────────────────── tier 3 · what AI is (the finale)
-  {
-    id: 'ai-temperature', tier: 2, topic: 'whatai', correct: 1,
-    he: {
-      q: 'יש הגדרה שקובעת כמה התשובות מפתיעות. מה היא עושה?',
-      a: [
-        'קובעת כמה זמן המודל ישקיע בכל תשובה',
-        'קובעת כמה אקראיות יש בבחירת המילים',
-        'קובעת באיזו שפה תיכתב התשובה',
-      ],
-      why: 'ערך נמוך נותן תשובות זהירות ודומות זו לזו, ערך גבוה נותן תשובות יצירתיות ופחות צפויות. בוחרים לפי המשימה.',
-    },
-    en: {
-      q: 'A setting controls how surprising answers are. What does it do?',
-      a: [
-        'Sets how long the model spends on each answer',
-        'Sets how much randomness there is in picking words',
-        'Sets which language the answer is written in',
-      ],
-      why: 'A low value gives cautious, similar answers; a high value gives creative, less predictable ones. You pick according to the task.',
-    },
-  },
   {
     id: 'ai-step-by-step-gen', tier: 3, topic: 'whatai', correct: 2,
     he: {
@@ -1794,7 +1779,7 @@ export const QUESTIONS = [
       q: 'איך מחליטים כמה הקשר להכניס לפרומפט?',
       a: [
         'את המקסימום שאפשר להכניס, ליתר ביטחון',
-        'מכניסים את מה שמשנה את התשובה, ולא יותר',
+        'מכניסים את מה שמשנה, ולא יותר',
         'את המינימום ההכרחי, מילה או שתיים',
       ],
       why: 'הקשר הוא לא "כמה שיותר" ולא "כמה שפחות". השאלה היחידה היא אם הפרט הזה היה משנה את התשובה בפועל.',
@@ -1803,7 +1788,7 @@ export const QUESTIONS = [
       q: 'How do you decide how much context to put in a prompt?',
       a: [
         'The maximum you can fit, just to be safe',
-        'Include what changes the answer, and nothing more',
+        'Include what changes the answer',
         'The bare minimum — a word or two',
       ],
       why: 'Context is neither "as much as possible" nor "as little as possible". The only question is whether that detail would actually change the answer.',
@@ -1815,8 +1800,8 @@ export const QUESTIONS = [
       q: 'שיחה נעשתה ארוכה מדי. איך ממשיכים בלי לאבד מידע?',
       a: [
         'מוחקים הודעות ישנות אחת אחת',
-        'מתחילים מחדש בלי שום דבר',
-        'מסכמים את העיקר ופותחים שיחה חדשה עם הסיכום',
+        'מתחילים מחדש בלי כלום מהשיחה',
+        'מסכמים ופותחים שיחה חדשה',
       ],
       why: 'סיכום קצר שומר את ההחלטות ומוותר על כל הדרך אליהן. זה מנקה את חלון ההקשר ומשאיר בו רק את מה שצריך.',
     },
@@ -1825,7 +1810,7 @@ export const QUESTIONS = [
       a: [
         'Delete old messages one at a time',
         'Start over with nothing at all',
-        'Summarise the essentials and open a new chat with the summary',
+        'Summarise and open a new chat',
       ],
       why: 'A short summary keeps the decisions and drops the road to them. That clears the context window and leaves only what is needed.',
     },
@@ -1879,9 +1864,9 @@ export const QUESTIONS = [
     he: {
       q: 'התשובה מחטיאה שוב ושוב. מה בודקים קודם?',
       a: [
-        'אם המודל עמוס בבקשות',
+        'אם המודל עמוס בבקשות באותו רגע',
         'אם צריך לעבור לכתוב באנגלית',
-        'אם הפרומפט באמת אומר את מה שחשבנו שהוא אומר',
+        'אם הפרומפט אומר מה שחשבנו',
       ],
       why: 'לרוב הבעיה היא שהבקשה עצמה מעורפלת. קריאה של הפרומפט כאילו מישהו אחר כתב אותו מגלה את זה מהר מאוד.',
     },
@@ -1890,7 +1875,7 @@ export const QUESTIONS = [
       a: [
         'Whether the model is overloaded with requests',
         'Whether you should switch to writing in English',
-        'Whether the prompt really says what you thought it said',
+        'Whether the prompt says what you thought',
       ],
       why: 'Usually the request itself is the vague part. Reading the prompt as though someone else wrote it exposes that very fast.',
     },
@@ -1922,16 +1907,16 @@ export const QUESTIONS = [
       q: 'מתי מפסיקים לשפר ומגישים?',
       a: [
         'אחרי בדיוק עשרה סיבובים',
-        'כשהתשובה עונה על מה שהוגדר מראש כטוב',
-        'כשנגמר הכוח להמשיך לנסות',
+        'כשהיא עונה על מה שהגדרנו',
+        'כשכבר נגמר הכוח להמשיך לנסות',
       ],
       why: 'בלי הגדרה מראש אפשר לשפר עד אינסוף. מדד פשוט שנקבע לפני ההתחלה אומר בדיוק מתי הגענו.',
     },
     en: {
       q: 'When do you stop improving and hand it in?',
       a: [
-        'After exactly ten rounds',
-        'When the answer meets what you defined as good in advance',
+        'After exactly ten rounds of improvement',
+        'When it meets the bar set up front',
         'When you run out of energy to keep trying',
       ],
       why: 'With no definition up front you can polish forever. A simple measure set before you start says exactly when you have arrived.',
@@ -1945,8 +1930,8 @@ export const QUESTIONS = [
       q: 'ה־AI ציטט משפט בשם אדם מפורסם. מה עושים?',
       a: [
         'משתמשים בו, ציטוטים כאלה בדרך כלל מדויקים',
-        'מחפשים את הציטוט המקורי ומוודאים',
-        'מוסיפים מרכאות וזה מספיק',
+        'מחפשים את הציטוט המקורי',
+        'מוסיפים מרכאות, וזה מספיק לגמרי',
       ],
       why: 'ציטוטים ושמות הם מהדברים שמודל ממציא בקלות, כי הם נשמעים נכון. חיפוש קצר מוודא שהמשפט באמת נאמר.',
     },
@@ -1954,7 +1939,7 @@ export const QUESTIONS = [
       q: 'The AI quoted a line by a famous person. What do you do?',
       a: [
         'Use it, quotes like that are usually accurate',
-        'Look up the original quote and verify it',
+        'Look up the original quote',
         'Add quotation marks and that is enough',
       ],
       why: 'Quotes and names are among the easiest things for a model to invent, because they sound right. A quick search confirms it was really said.',
@@ -1965,18 +1950,18 @@ export const QUESTIONS = [
     he: {
       q: 'אמרו ל־AI שהוא טועה והוא מיד הסכים. מה זה אומר?',
       a: [
-        'שהוא באמת טעה',
+        'שהוא באמת טעה בתשובה שנתן',
         'שהוא לומד תוך כדי השיחה',
-        'שהוא נוטה להסכים, אז זה לא מוכיח כלום',
+        'שהוא נוטה להסכים',
       ],
       why: 'מודל מכוון להיות נעים ומועיל, ולכן הוא מתיישר לפי מה שנאמר לו. הסכמה מהירה היא לא ראיה — בודקים במקור.',
     },
     en: {
       q: 'You told the AI it was wrong and it agreed at once. What does that mean?',
       a: [
-        'It really was wrong',
+        'It really was wrong about that',
         'It is learning during the conversation',
-        'It tends to agree, so this proves nothing',
+        'It just tends to agree',
       ],
       why: 'A model is tuned to be pleasant and helpful, so it falls in line with what it is told. Quick agreement is not evidence — check the source.',
     },
@@ -2010,7 +1995,7 @@ export const QUESTIONS = [
       q: 'איך באמת לומדים מהקוד שה־AI כתב?',
       a: [
         'מריצים אותו כמה פעמים ברצף',
-        'מבקשים הסבר על כל חלק ומנסים לשנות בעצמנו',
+        'מבקשים הסבר ומנסים לשנות',
         'שומרים אותו בצד בלי לפתוח',
       ],
       why: 'שינוי קטן שעושים לבד מלמד יותר מכל הסבר. אם משהו נשבר — זה בדיוק הרגע שבו מבינים איך זה עובד.',
@@ -2018,9 +2003,9 @@ export const QUESTIONS = [
     en: {
       q: 'How do you actually learn from the code the AI wrote?',
       a: [
-        'Run it several times in a row',
-        'Ask for an explanation of each part and try changing it yourself',
-        'File it away without opening it',
+        'Run it several times in a row and watch',
+        'Ask, then change something yourself',
+        'File it away somewhere without opening it',
       ],
       why: 'One small change you make yourself teaches more than any explanation. If something breaks, that is the moment you understand how it works.',
     },
@@ -2038,7 +2023,7 @@ export const QUESTIONS = [
     he: {
       q: 'מבקשים מ־AI לבנות משחק. מה הכי חשוב להגיד לו?',
       a: [
-        'שהמשחק צריך לצאת הכי טוב שיש, ברמה של משחקים אמיתיים',
+        'שהמשחק צריך לצאת הכי טוב שיש',
         'בערך כמה שורות קוד לכתוב, וכמה קבצים שיהיו',
         'מה קורה במשחק: מי זז, מי מנצח, ומה רואים על המסך',
       ],
@@ -2047,8 +2032,8 @@ export const QUESTIONS = [
     en: {
       q: 'You ask an AI to build a game. What matters most to tell it?',
       a: [
-        'That the game must turn out as good as real commercial games',
-        'Roughly how many lines of code to write, and how many files',
+        'That the game must be as good as real games',
+        'Roughly how many lines of code to write',
         'What happens in the game: who moves, who wins, what you see',
       ],
       why: 'Software is really just a stack of "what happens when…". Describing that in plain words is already the hard part done.',
@@ -2131,7 +2116,7 @@ export const QUESTIONS = [
     en: {
       q: 'What is the difference between a standing rule and a one-off request?',
       a: [
-        'A standing rule is written once and holds for the rest of the chat',
+        'Written once, it holds for the rest of the chat',
         'No real difference, the model treats both of them the same way',
         'A standing rule only works if it is the first message in the chat',
       ],

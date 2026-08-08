@@ -113,6 +113,30 @@ ok('ids are unique and stable', dupIds.length === 0, dupIds.join(', '));
 ok('no duplicate Hebrew question text', dupHe.length === 0, dupHe.join(', '));
 ok('no duplicate English question text', dupEn.length === 0, dupEn.join(', '));
 
+// Distinct question wording is not distinct teaching. Two questions that end at
+// the same correct answer are one lesson asked twice, and if both are drawable
+// in the same race a child meets the repeat inside a single sitting. Only pairs
+// that can actually co-occur matter: a race draws tiers {1}, {1,2} or {2,3}, so
+// a tier-1 and a tier-3 question never meet and are allowed to overlap.
+{
+  const words = s => new Set(s.replace(/["'׳״,.:—-]/g, ' ').split(/\s+/).filter(w => w.length > 2));
+  const jaccard = (a, b) => {
+    const A = words(a), B = words(b);
+    const shared = [...A].filter(w => B.has(w)).length;
+    return shared / (A.size + B.size - shared);
+  };
+  const clashes = new Set();
+  for (const tiers of [[1], [1, 2], [2, 3]]) {
+    const pool = QUESTIONS.filter(q => tiers.includes(q.tier));
+    for (let i = 0; i < pool.length; i++) for (let j = i + 1; j < pool.length; j++) {
+      const sim = jaccard(pool[i].he.a[pool[i].correct], pool[j].he.a[pool[j].correct]);
+      if (sim >= 0.4) clashes.add(`${[pool[i].id, pool[j].id].sort().join(' ≈ ')} (${sim.toFixed(2)})`);
+    }
+  }
+  ok('no two same-race questions share a correct answer', clashes.size === 0,
+     [...clashes].slice(0, 3).join(' | '));
+}
+
 /* ── answer-position spread ────────────────────────────────────────────────── */
 // quiz.js reshuffles per draw, but the authored spread is the second layer and a
 // bank that drifted to "always index 1" would be a smell worth catching.
@@ -179,6 +203,37 @@ for (const f of FORMULAS) {
   const share = hit ? hitCorrect / hit : 1;
   ok(`${f.name} is not a tell`, share >= f.min,
      `${hitCorrect}/${hit} correct = ${(share * 100).toFixed(0)}%`);
+}
+
+// Yes/no questions: "No" was correct 3/3 and an option opening כן, / Yes, was
+// correct 0/6, so a child could answer every yes/no question in the bank without
+// reading past the first word. Neither polarity may be a reliable bet.
+{
+  const POLES = [
+    { name: 'options opening כן / Yes', he: /^כן[ ,]/, en: /^Yes[ ,]/ },
+    { name: 'options opening לא / No', he: /^(לא|אין)[ ,—]/, en: /^(No|Never)[ ,—]/ },
+  ];
+  for (const p of POLES) {
+    let n = 0, right = 0;
+    for (const q of QUESTIONS) for (const lang of ['he', 'en']) {
+      q[lang].a.forEach((s, i) => { if (p[lang].test(s)) { n++; if (i === q.correct) right++; } });
+    }
+    const share = n ? right / n : 0.33;
+    ok(`${p.name} is not a tell`, n === 0 || (share >= 0.1 && share <= 0.75),
+       `${right}/${n} correct = ${(share * 100).toFixed(0)}%`);
+  }
+}
+
+// Very short options were correct 1 in 40 — a child who crosses out anything
+// under five words eliminates a third of the bank for free.
+{
+  let n = 0, right = 0;
+  for (const q of QUESTIONS) q.he.a.forEach((s, i) => {
+    if (s.split(/\s+/).length > 4) return;
+    n++; if (i === q.correct) right++;
+  });
+  ok('short (≤4 word) Hebrew options are not free eliminations', n === 0 || right / n >= 0.15,
+     `${right}/${n} correct = ${((right / n) * 100).toFixed(0)}%`);
 }
 
 // The "silly option" formula: emphasis-by-punctuation is never the right answer
