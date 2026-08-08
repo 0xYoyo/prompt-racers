@@ -1,0 +1,6 @@
+
+  PLAYABILITY — full Wave-1 slice at 1366x768
+  ──────────────────────────────────────────────────────────────────────
+  [32m✓[0m boots to title                                 [2mmenu[0m
+  [32m✓[0m start button is clickable                      [2mok[0m
+  [32m✓[0m reaches racer select                           [2mselect[0m

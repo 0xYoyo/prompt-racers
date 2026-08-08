@@ -57,6 +57,12 @@ console.log('\n  GARAGE — TOKEN ECONOMY\n  ' + '─'.repeat(74));
   ok('most expensive ask is 21 for every part', highs.every(v => v === 21), JSON.stringify(dearest));
   ok('MAX_COST is still 21', MAX_COST === 21, `MAX_COST=${MAX_COST}, part=${PART_COST}`);
   // Per-part catalogs: no row may be a copy of another part's row.
+  //
+  // This used to hash only label + fragment, and was therefore blind to the line
+  // that actually teaches. 27 distinct subtitles covered 48 cards: "הגבלה אמיתית
+  // שאפשר למדוד" appeared on all four parts' limit rows, and the whole style row
+  // was four templates with the nouns swapped. The second line is where the
+  // lesson lives, so it is hashed on its own too, in BOTH languages.
   let dupes = 0, total = 0;
   for (const s of SLOTS) {
     if (s.key === 'part') continue;
@@ -69,6 +75,20 @@ console.log('\n  GARAGE — TOKEN ECONOMY\n  ' + '─'.repeat(74));
     }
   }
   ok('no two option cards share label + fragment', dupes === 0, `${total} options, ${dupes} duplicates`);
+  for (const field of ['subHe', 'subEn']) {
+    const seen = new Map();
+    const clash = [];
+    for (const s of SLOTS) {
+      for (const o of s.options) {
+        const v = (o[field] || '').trim();
+        if (!v) continue;
+        if (seen.has(v)) clash.push(`${seen.get(v)} = ${o.id}`);
+        seen.set(v, o.id);
+      }
+    }
+    ok(`every card's teaching line (${field}) is its own`, clash.length === 0,
+      `${seen.size} distinct / 52 cards${clash.length ? ' · ' + clash.slice(0, 3).join(' · ') : ''}`);
+  }
   for (const s of SLOTS) {
     if (s.key === 'part') continue;
     const per = KART_SLOTS.map(p => optionsFor(s.key, p).length);
@@ -82,7 +102,22 @@ mkdirSync(tmp, { recursive: true });
 const entry = resolve(tmp, 'garagegate-entry.js');
 writeFileSync(entry, `
 import { bootPreview } from ${JSON.stringify(resolve(root, 'src/core/harness.js'))};
-import { garageScene, freePlayScene } from ${JSON.stringify(resolve(root, 'src/garage/garage.js'))};
+import { garageScene, freePlayScene, setKartPreviewMounter } from ${JSON.stringify(resolve(root, 'src/garage/garage.js'))};
+import { createKart } from ${JSON.stringify(resolve(root, 'src/kart/kartmodel.js'))};
+import { ROSTER } from ${JSON.stringify(resolve(root, 'src/kart/roster.js'))};
+// THE REAL KART, wired the way scenes.js wires it.
+//
+// This bundle used to omit the mounter, so mountKartPreview() fell through to
+// garage.js's in-file placeholder — whose setPart() is an empty function and
+// which has no setParts at all. Every 3D assertion in this file was therefore a
+// regex on a DOM caption, and deleting applyKartPreview() entirely still passed
+// all 68 checks. A gate that renders nothing cannot see a rendering bug, so the
+// gate now renders exactly what the game renders.
+setKartPreviewMounter((container3D, o = {}) => {
+  const kart = createKart({ racer: ROSTER[0], engine: o.engine, parts: o.parts });
+  container3D.add(kart.group);
+  return kart;
+});
 // The gate needs the two seams scenes.js owns: onDone (championship) and
 // onExit (free play). Everything else is the untouched scene.
 window.__DONE = null; window.__EXIT = false;
@@ -311,6 +346,196 @@ if (done) {
     p.flavourKeyHe === `garage.flavour.${p.slotKey}.${p.tier}`, String(p.flavourKeyHe));
   ok('the token reward is a capped bonus', Number.isInteger(done.gain) && done.gain >= 0 && done.gain <= 12,
     String(done.gain));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE 3D PREVIEW — measured in pixels, not in captions.
+//
+// Everything above this line could pass with a kart that never changes. These
+// checks drive the real model to tier 0 and to tier 3 for each of the four
+// slots, screenshot the preview window, and count the pixels that moved. The
+// same-state noise floor is measured in the same run rather than assumed, so a
+// regression to "the caption changed and nothing else did" fails here.
+// ═════════════════════════════════════════════════════════════════════════════
+console.log('\n  GARAGE — THE KART REALLY CHANGES (PIXELS)\n  ' + '─'.repeat(74));
+
+// Per-slot floor. Measured after the chassis kit was made legible; every slot
+// clears its own floor with room, and the same-state noise sits under 1%.
+const MIN_CHANGE = 0.055;          // 5.5% of the preview window must move
+const MAX_NOISE = 0.020;           // two identical frames may differ by 2%
+const NOISE_MULT = 2.5;            // …and a real change must beat the noise 2.5×
+
+/** The extreme selections for a part: everything vaguest, or everything sharpest. */
+function selectionFor(part, sharp) {
+  const sel = { part, goal: null, constraint: null, style: null };
+  for (const k of ['goal', 'constraint', 'style']) {
+    const list = optionsFor(k, part);
+    sel[k] = list.reduce((a, b) => ((sharp ? b.specificity > a.specificity : b.specificity < a.specificity) ? b : a)).id;
+  }
+  return sel;
+}
+
+// HOLD THE FRAME STILL. The kart is projected into the DOM preview window and
+// scaled to fit it, so anything that changes that window's box — a sentence that
+// wraps to a second line, one of Boreg's longer tips — moves and resizes the
+// kart for reasons that have nothing to do with the part. Pinning the two boxes
+// above the window makes the comparison about the model and only the model.
+// (Gate-only CSS, injected with !important so it survives the scene's own sheet
+// being re-appended on every goto.)
+async function pinLayout() {
+  await page.evaluate(() => {
+    if (document.getElementById('gate-pin')) return;
+    const el = document.createElement('style');
+    el.id = 'gate-pin';
+    el.textContent = `.grg-sentence{height:104px!important;overflow:hidden!important}
+      .grg-kart{flex:0 0 300px!important;height:300px!important;
+        max-height:300px!important;min-height:300px!important}`;
+    document.documentElement.appendChild(el);
+  });
+}
+
+async function showSelection(sel) {
+  await page.evaluate(async s => {
+    window.__FREEPLAY = false;
+    await window.__DEBUG.goto('preview', { selection: s, tokens: 99, meet: false, visit: 2 });
+  }, sel);
+  await pinLayout();
+  // Let the model settle so "the kart is still easing into place" is not read as
+  // a change; the garage kart is static once settled, so this makes the floor real.
+  await page.evaluate(() => window.__DEBUG.advance(1.2));
+  await wait(120);
+}
+
+/** Meshes in the live scene — a caption cannot move this number. */
+const meshCount = () => page.evaluate(() => {
+  let n = 0;
+  window.__DEBUG.engine.active.scene.traverse(o => { if (o.isMesh) n++; });
+  return n;
+});
+
+// `node tools/garagetest.mjs --shots` also writes every preview capture to
+// shots/garage-preview-*.png, which is what a critic looks at.
+const DUMP = process.argv.includes('--shots');
+
+/** Grab the preview window's pixels and park them in the page under `tag`. */
+async function snap(tag) {
+  await page.evaluate(() => window.__DEBUG.renderOnce());
+  const rect = await page.evaluate(() => {
+    const r = document.querySelector('.grg-kart').getBoundingClientRect();
+    return { x: Math.round(r.x + 2), y: Math.round(r.y + 2), w: Math.round(r.width - 4), h: Math.round(r.height - 4) };
+  });
+  const png = await page.screenshot({ encoding: 'base64', type: 'png' });
+  if (DUMP) {
+    mkdirSync(resolve(root, 'shots'), { recursive: true });
+    await page.screenshot({
+      path: resolve(root, `shots/garage-preview-${tag}.png`),
+      clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h },
+    });
+  }
+  return page.evaluate(async (b64, r, key) => {
+    const blob = await (await fetch('data:image/png;base64,' + b64)).blob();
+    const bmp = await createImageBitmap(blob);
+    const cv = document.createElement('canvas');
+    cv.width = bmp.width; cv.height = bmp.height;
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(bmp, 0, 0);
+    (window.__SNAP ||= {})[key] = cx.getImageData(r.x, r.y, r.w, r.h);
+    return r;
+  }, png, rect, tag);
+}
+
+/** Fraction of pixels that differ between two parked snapshots. */
+const diffRatio = (a, b) => page.evaluate((ka, kb) => {
+  const A = window.__SNAP[ka], B = window.__SNAP[kb];
+  if (!A || !B || A.width !== B.width || A.height !== B.height) return 1;
+  const da = A.data, db = B.data;
+  let changed = 0;
+  for (let i = 0; i < da.length; i += 4) {
+    const d = Math.max(Math.abs(da[i] - db[i]), Math.abs(da[i + 1] - db[i + 1]), Math.abs(da[i + 2] - db[i + 2]));
+    if (d > 12) changed++;
+  }
+  return changed / (da.length / 4);
+}, a, b);
+
+await boot();
+{
+  // 1. The mounter really is the real kart. The placeholder is 7 meshes; the
+  //    model is ~150. If this ever drops back, every check below is worthless.
+  await showSelection(selectionFor('engine', false));
+  const n0 = await meshCount();
+  ok('the preview mounts the REAL kart, not the placeholder', n0 > 60, `${n0} meshes in the scene`);
+
+  // 2. The noise floor, measured — two captures of the identical state.
+  await snap('noiseA');
+  await snap('noiseB');
+  const noise = await diffRatio('noiseA', 'noiseB');
+  ok('two captures of the SAME state are nearly identical', noise <= MAX_NOISE,
+    `${(noise * 100).toFixed(2)}% (cap ${(MAX_NOISE * 100).toFixed(0)}%)`);
+
+  // 3. Every slot, tier 0 vs tier 3: pixels AND mesh count must both move.
+  const table = [];
+  for (const part of KART_SLOTS) {
+    await showSelection(selectionFor(part, false));
+    const meshLo = await meshCount();
+    const boxLo = await snap(part + '0');
+    await showSelection(selectionFor(part, true));
+    const meshHi = await meshCount();
+    const boxHi = await snap(part + '3');
+    const ratio = await diffRatio(part + '0', part + '3');
+    table.push({ part, ratio, meshLo, meshHi });
+    ok(`${part}: both frames were captured from the same box`,
+      JSON.stringify(boxLo) === JSON.stringify(boxHi), `${boxLo.w}x${boxLo.h} vs ${boxHi.w}x${boxHi.h}`);
+    ok(`${part}: tier 0 → tier 3 repaints the preview`,
+      ratio >= MIN_CHANGE && ratio >= noise * NOISE_MULT,
+      `${(ratio * 100).toFixed(1)}% changed (floor ${(MIN_CHANGE * 100).toFixed(1)}%, noise×${NOISE_MULT} = ${(noise * NOISE_MULT * 100).toFixed(1)}%)`);
+    ok(`${part}: …and the mesh count moves with the tier`, meshLo !== meshHi,
+      `${meshLo} → ${meshHi} meshes`);
+  }
+  console.log('  ' + '·'.repeat(74));
+  for (const r of table) {
+    console.log(`    ${r.part.padEnd(9)} ${(r.ratio * 100).toFixed(1).padStart(5)}% changed   ${r.meshLo} → ${r.meshHi} meshes`);
+  }
+  console.log('  ' + '·'.repeat(74));
+}
+
+// ── the part a child never built must not stay on the kart ───────────────────
+// Build an engine up to tier 3, rail back to step 1 and switch to the wing:
+// the state is {wing:0} but the kart used to still be wearing the tier-3 engine,
+// because applyKartPreview() only ever wrote the slot it was previewing. Every
+// comparison for the rest of that visit was then against a kart the child never
+// asked for.
+console.log('\n  GARAGE — SWITCHING PART LEAVES NO RESIDUE\n  ' + '─'.repeat(74));
+{
+  // What "a fresh wizard on step 2 of a wing" is supposed to look like.
+  await showSelection({ part: 'wing', goal: null, constraint: null, style: null });
+  const clean = await meshCount();
+  await snap('wingClean');
+
+  // Now get there the way a child does.
+  await boot();
+  const partIdx = p => SLOTS[0].options.findIndex(o => o.id === p);
+  await clickCard(partIdx('engine'));
+  for (let step = 1; step < 4; step++) {
+    const cur = await read();
+    const idx = cur.cards.reduce((best, c, i) => (c.disabled ? best : i), 0);   // sharpest affordable
+    await clickCard(idx);
+  }
+  await page.evaluate(() => window.__DEBUG.advance(1.2));
+  const loaded = await meshCount();
+  await clickPill(0);
+  await clickCard(partIdx('wing'));
+  await page.evaluate(() => window.__DEBUG.advance(1.2));
+  await wait(120);
+  const after = await read();
+  const dirty = await meshCount();
+  await snap('wingAfter');
+  const residue = await diffRatio('wingClean', 'wingAfter');
+  ok('the engine really was built up before switching', loaded > clean, `${loaded} vs ${clean} meshes`);
+  ok('switching the part clears the downstream answers', after.blanks === 3, `${after.blanks} blanks`);
+  ok('…and the kart drops the part that is no longer selected', dirty === clean,
+    `${dirty} meshes, a clean wing kart is ${clean}`);
+  ok('…and the preview LOOKS like a clean wing kart', residue < Math.max(MAX_NOISE, 0.02),
+    `${(residue * 100).toFixed(2)}% different from the clean render`);
 }
 
 // ── free play ────────────────────────────────────────────────────────────────

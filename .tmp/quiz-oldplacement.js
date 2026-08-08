@@ -27,7 +27,7 @@
 //
 // ═══════════════════════════════════════════════════ INTEGRATION SEAM (race.js)
 //
-//   import { createQuizSystem } from './quiz.js';
+//   import { createQuizSystem } from '../src/race/quiz.js';
 //
 //   const quiz = createQuizSystem(engine, {
 //     spline, def,                     // from getTrack()/buildTrack()
@@ -79,16 +79,16 @@
 //   quiz:open  quiz:correct  quiz:wrong  quiz:timeout  quiz:close
 // ═════════════════════════════════════════════════════════════════════════════
 import * as THREE from 'three';
-import { bus } from '../core/bus.js';
-import { makeRng } from '../core/rng.js';
-import { h, injectStyles, pushModal, popModal, modalOpen } from '../ui/style.js';
-import { registerStrings, t, num, getLang } from '../ui/i18n.js';
-import { QUESTIONS, questionsForDifficulty, tiersForDifficulty, bankStats } from './quizdata.js';
+import { bus } from '../src/core/bus.js';
+import { makeRng } from '../src/core/rng.js';
+import { h, injectStyles, pushModal, popModal, modalOpen } from '../src/ui/style.js';
+import { registerStrings, t, num, getLang } from '../src/ui/i18n.js';
+import { QUESTIONS, questionsForDifficulty, tiersForDifficulty, bankStats } from '../src/race/quizdata.js';
 // Preview-only (the game imports these long before quiz.js is reached, so this
 // costs the bundle nothing).
-import { getTrack, TrackSpline } from '../track/trackdef.js';
-import { buildTrack } from '../track/trackbuild.js';
-import { applyTheme } from '../gfx/sky.js';
+import { getTrack, TrackSpline } from '../src/track/trackdef.js';
+import { buildTrack } from '../src/track/trackbuild.js';
+import { applyTheme } from '../src/gfx/sky.js';
 
 /* ══════════════════════════════════════════════════════════════════ strings ══ */
 
@@ -102,15 +102,7 @@ registerStrings({
     'quiz.answerMarked': 'התשובה הנכונה מסומנת',
     'quiz.continue': 'ממשיכים לנסוע…',
     'quiz.pressSpace': 'לוחצים רווח כדי להמשיך',
-    // NOT "ממשיכים": that is the pause menu's Resume pill, and with the pause
-    // menu open over a quiz the two gold pills land on top of each other — a
-    // child who pauses mid-question and clicks where they were about to click
-    // gets Resume. Different words, different button.
-    'quiz.continueBtn': 'חוזרים למסלול! (רווח)',
-    // Space is also the drift key. A child still holding it presses Space and
-    // nothing happens (the e.repeat guard, deliberately), and the only other way
-    // out was a mouse target. The auto-repeat itself is the tell, so say so.
-    'quiz.spaceHeld': 'הרווח עדיין לחוץ — משחררים ולוחצים שוב (או Enter)',
+    'quiz.continueBtn': 'ממשיכים! (רווח)',
     'quiz.noPenalty': 'בלי עונש. ממשיכים!',
     'quiz.warm.1': 'לא נורא בכלל — עכשיו יש כאן משהו חדש שיודעים.',
     'quiz.warm.2': 'ניסיון יפה! גם תשובה שלא קלעה מלמדת משהו.',
@@ -119,9 +111,7 @@ registerStrings({
     'quiz.topic.whatai': 'מה זה AI',
     'quiz.topic.prompt': 'פרומפטים',
     'quiz.topic.tokens': 'טוקנים',
-    // A topic name, in the slot where an instruction would sit, right above a
-    // red option: "לנסות שוב" read as advice. Named as a subject instead.
-    'quiz.topic.iterate': 'שיפור בשלבים',
+    'quiz.topic.iterate': 'לנסות שוב',
     'quiz.topic.mistakes': 'לבדוק אחרי ה־AI',
     'quiz.topic.vibe': 'וייב־קודינג',
   },
@@ -134,8 +124,7 @@ registerStrings({
     'quiz.answerMarked': 'The right answer is marked',
     'quiz.continue': 'Back to racing…',
     'quiz.pressSpace': 'Press Space to continue',
-    'quiz.continueBtn': 'Back to the track! (Space)',
-    'quiz.spaceHeld': 'Space is still held — let go and press it again (or Enter)',
+    'quiz.continueBtn': 'Keep racing! (Space)',
     'quiz.noPenalty': 'No penalty. Keep going!',
     'quiz.warm.1': 'No harm done — that is one new thing you now know.',
     'quiz.warm.2': 'Nice try! An answer that misses still teaches something.',
@@ -144,7 +133,7 @@ registerStrings({
     'quiz.topic.whatai': 'What AI is',
     'quiz.topic.prompt': 'Prompts',
     'quiz.topic.tokens': 'Tokens',
-    'quiz.topic.iterate': 'Improving in steps',
+    'quiz.topic.iterate': 'Trying again',
     'quiz.topic.mistakes': 'Checking the AI',
     'quiz.topic.vibe': 'Vibe coding',
   },
@@ -277,40 +266,15 @@ function coneRunway(spline, t, lateral) {
  * @returns {Array<{i, t, lateral, runway, cone, curvature, advancedM, tier}>}
  */
 export function planBeacons(spline, startT = 0, count = BEACONS) {
-  const L = spline.length;
-  const tokens = [];
-  for (let g = 0; g < TOKEN_GROUPS; g++) {
-    tokens.push((((startT + (g + 0.5) / TOKEN_GROUPS) % 1) + 1) % 1);
-  }
-  const span = (L / count) * SEARCH_SPAN;
+  // MUTANT: the pre-fix placement, verbatim — ideal t, alternating side, no
+  // look at what is ahead.
   const out = [];
   for (let i = 0; i < count; i++) {
-    const ideal = (((startT + (i + 0.62) / count) % 1) + 1) % 1;
-    const prefSide = i % 2 === 0 ? -1 : 1;
-    const cands = [];
-    for (let a = 0; a <= span; a += SEARCH_STEP_M) {
-      const t = ((ideal + a / L) % 1 + 1) % 1;
-      const curvature = spline.maxCurvatureAhead(t, LOOK_AHEAD_M / L);
-      const w = spline.widthAt(t);
-      const nearToken = tokens.some(tt => Math.abs(TrackSpline.deltaT(t, tt)) * L < TOKEN_CLEAR_M);
-      // The preferred side first: the left/right alternation is a visual rhythm
-      // worth keeping, but not at the price of putting a child in a wall.
-      for (const side of [prefSide, -prefSide]) {
-        const lateral = side * BEACON_LATERAL * w;
-        cands.push({
-          i, t, lateral, advancedM: a, curvature, nearToken,
-          cone: coneRunway(spline, t, lateral),
-          runway: runwayAhead(spline, t, lateral),
-        });
-      }
-    }
-    const open = c => c.cone >= RUNWAY_MIN_M;
-    const pick =
-      cands.find(c => open(c) && c.curvature <= CURV_MAX && !c.nearToken) ||
-      cands.find(c => open(c) && !c.nearToken) ||
-      cands.find(c => open(c)) ||
-      cands.reduce((m, c) => (c.cone > m.cone ? c : m), cands[0]);
-    out.push(pick);
+    const t = (((startT + (i + 0.62) / count) % 1) + 1) % 1;
+    const w = spline.widthAt(t);
+    out.push({ i, t, lateral: (i % 2 === 0 ? -1 : 1) * w * 0.17, advancedM: 0,
+      curvature: spline.maxCurvatureAhead(t, LOOK_AHEAD_M / spline.length),
+      cone: 0, runway: 0, nearToken: false });
   }
   return out;
 }
@@ -373,9 +337,6 @@ const QUIZ_CSS = `
 .quiz-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;
   min-block-size:16px}
 .quiz-hint{font-size:12px;font-weight:800;color:var(--txt-dim);letter-spacing:.02em}
-/* "you are still holding Space" — the one line that unsticks a keyboard-only
-   player who was drifting when the beacon fired. */
-.quiz-hint.held{color:var(--gold-1)}
 /* Only offered once the feedback is up — while the question is live there is
    nothing to continue to. */
 .quiz-cont{display:none;padding:8px 18px;font-size:clamp(13px,1.8vh,16px)}
@@ -708,7 +669,6 @@ export function createQuizSystem(engine, opts = {}) {
     for (let k = 0; k < 3; k++) optEls[k].txt.textContent = s.a[shown.order[k]];
     elHint.textContent = phase === 'feedback'
       ? t('quiz.pressSpace') : t('quiz.hint', { k: num('1 · 2 · 3') });
-    elHint.classList.remove('held');
     elCont.textContent = t('quiz.continueBtn');
     if (shown.answered != null || shown.timedOut) renderResult();
   }
@@ -759,17 +719,7 @@ export function createQuizSystem(engine, opts = {}) {
     // Auto-repeat is not a press. Space is also the drift key: a child who was
     // holding it when the beacon fired would otherwise have the explanation
     // dismissed for them, by a key they never released.
-    if (e.repeat) {
-      // …but that leaves a keyboard-only dead end: they press the key the panel
-      // told them to press and NOTHING happens, with no way out but the mouse.
-      // The auto-repeat is itself the proof the key is being held, so use it to
-      // say the one thing that unsticks them.
-      if (phase === 'feedback' && (e.code === 'Space' || e.code === 'Enter')) {
-        elHint.textContent = t('quiz.spaceHeld');
-        elHint.classList.add('held');
-      }
-      return;
-    }
+    if (e.repeat) return;
     // Something is layered over us (pause menu, a one-time explainer). Its keys
     // are not ours: without this, 1/2/3 answered — and closed — a question the
     // child could not even see while the pause menu was up. Space would likewise
@@ -792,13 +742,6 @@ export function createQuizSystem(engine, opts = {}) {
   }
 
   function answer(slot) {
-    // The SAME policy the keyboard obeys, enforced in the same place. `onKey`
-    // checked this; the `.quiz-opt` onclick did not, so a programmatic click
-    // answered a question hidden behind the pause menu and started the 3·2·1
-    // underneath it. That it was unreachable with a real mouse was geometry
-    // (the full-screen `.mn-ov` swallows the click), not policy — and geometry
-    // is not what the modal registry exists to rely on (D15/D18).
-    if (modalOpen('quiz')) return;
     if (phase !== 'question' || shown.answered != null) return;
     shown.answered = slot;
     finishQuestion(false);
@@ -826,7 +769,6 @@ export function createQuizSystem(engine, opts = {}) {
     card.classList.add('quiz-answered');
     root.classList.toggle('quiz-good', good);
     elHint.textContent = t('quiz.pressSpace');
-    elHint.classList.remove('held');
     elCont.textContent = t('quiz.continueBtn');
     renderResult();
 
@@ -859,9 +801,6 @@ export function createQuizSystem(engine, opts = {}) {
    * player is looking at the road instead of at a paragraph.
    */
   function dismiss() {
-    // Same reason as answer(): the gold continue button is a pointer path into
-    // the same state machine, and the policy belongs to the registry.
-    if (modalOpen('quiz')) return;
     if (phase !== 'feedback') return;
     hidePanel();
     phase = 'resume';

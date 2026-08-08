@@ -29,11 +29,11 @@ import { h, pushModal, popModal, modalOpen } from '../ui/style.js';
 import { registerStrings, t, num, getLang, isRTL, setLang } from '../ui/i18n.js';
 import { save } from '../core/save.js';
 import {
-  SLOTS, optionById, optionsFor, costOf, sentenceParts, partName, DEFAULT_BUDGET, MAX_COST,
+  SLOTS, KART_SLOTS, optionById, optionsFor, costOf, sentenceParts, partName, DEFAULT_BUDGET, MAX_COST,
   vaguestSelection, bestAffordable, pruneSelection,
 } from './prompts.js';
 import {
-  scorePrompt, scoreFreeText, tokenReward,
+  scorePrompt, scoreFreeText, tokenReward, partStatsFor, applyStats,
   BASE_STATS, STAT_KEYS, LOWER_IS_BETTER, VISUAL_TIER,
 } from './scoring.js';
 import { tipById, tipBody, tipTitle, makeTipVars, stepTip } from './tips.js';
@@ -156,6 +156,8 @@ registerStrings({
     'garage.debrief.x.style.off': 'לא הופיע סגנון, אז בחרתי לבד. סגול, מן הסתם.',
 
     // ── Ghost preview ───────────────────────────────────────────────────────
+    'garage.mini.yours': 'מה שקיבלת',
+    'garage.mini.ghost': 'מה שהיה יוצא אחרת',
     'garage.ghost.title': 'אם הפרומפט היה כללי, זה מה שהיה יוצא',
     'garage.ghost.invite': 'עם אותם טוקנים בדיוק, פרומפט מדויק יותר היה נותן את זה',
     'garage.ghost.note': 'אותו מוסך, אותם טוקנים. מה שהשתנה זה רק הפרומפט.',
@@ -262,6 +264,8 @@ registerStrings({
     'garage.debrief.x.style.on': 'There was a style too, so I had a picture in my head before I started welding.',
     'garage.debrief.x.style.off': 'No style, so I picked one. Purple, obviously.',
 
+    'garage.mini.yours': 'What you got',
+    'garage.mini.ghost': 'What else it could have been',
     'garage.ghost.title': 'If the prompt had been vague, this is what you would have got',
     'garage.ghost.invite': 'For those exact same tokens, a sharper prompt would have got you this',
     'garage.ghost.note': 'Same garage, same tokens. The only thing that changed is the prompt.',
@@ -568,6 +572,21 @@ const GARAGE_CSS = `
 .grg-ministat.good b{color:var(--good)}
 .grg-ministat.bad b{color:var(--bad)}
 .grg-ministat.zero b{color:var(--txt-dim)}
+/* The live kart inside each debrief card — the thing the prompt actually made. */
+.grg-minikart{position:relative;border-radius:var(--r-s);overflow:hidden;
+  background:radial-gradient(120% 95% at 50% 34%,rgba(96,82,132,.40),rgba(10,10,18,.55) 72%);
+  border:1px solid rgba(255,194,71,.24)}
+.grg-minikart.ghost{border:1px dashed rgba(255,255,255,.18);
+  background:radial-gradient(120% 95% at 50% 34%,rgba(70,74,96,.34),rgba(9,9,14,.55) 72%)}
+.grg-minicv{display:block;width:100%;max-width:210px;height:auto;aspect-ratio:264/176;
+  margin-inline:auto}
+.grg-minikart.ghost .grg-minicv{filter:grayscale(.82) brightness(.86)}
+.grg-minicap{position:absolute;inset-inline-start:8px;inset-block-end:7px;
+  font-size:11px;font-weight:900;color:#ffe3ab;padding:3px 9px;border-radius:var(--r-pill);
+  background:rgba(10,8,16,.62);border:1px solid rgba(255,194,71,.26)}
+.grg-minikart.ghost .grg-minicap{color:#d3d8e6;border-color:rgba(255,255,255,.18)}
+@media (max-height:790px){ .grg-minicv{max-width:158px} }
+@media (max-height:700px){ .grg-minicv{max-width:120px} }
 .grg-ghosthead{font-size:12.5px;font-weight:900;color:#c9d2e4;line-height:1.3}
 .grg-ghostnote{font-size:12px;font-weight:700;color:var(--txt-dim);line-height:1.35;margin-top:auto}
 .grg-tierbadge.dim{background:rgba(255,255,255,.12);color:#d8d3c8;box-shadow:none}
@@ -907,6 +926,58 @@ export function garageScene(engine, opts = {}) {
   const lang = L();
   const rtl = isRTL();
 
+  // ── THE KART THE CHILD ALREADY OWNS ────────────────────────────────────────
+  // `BASE_STATS` is the bare kart, before any garage part. From visit 2 that is
+  // no longer the kart on screen: the 3D preview wears `save.read('parts')`
+  // through the mounter, so the panel captioned "הקארט שלך" and the debrief's
+  // "before" column were describing a kart the child has not driven since race 1
+  // — the picture and the numbers disagreed.
+  //
+  // `opts.ownedParts` is the fix, and it is purely additive: `{}` (the default)
+  // reproduces the old behaviour exactly. scenes.js passes save.read('parts').
+  //
+  //   OWNED        {slot: tier} for the slots already installed
+  //   VISUAL_BASE  what every kart slot must wear when it is NOT being previewed
+  //                (kartmodel's own default is tier 1, so an un-owned slot keeps
+  //                 looking the way the mounted kart looked)
+  //   CURRENT      the stat line of that kart — the "before" everywhere
+  const OWNED = {};
+  for (const s of KART_SLOTS) {
+    const v = Number((opts.ownedParts || {})[s]);
+    if (Number.isFinite(v)) OWNED[s] = clamp(Math.round(v), 0, 3);
+  }
+  const VISUAL_BASE = {};
+  for (const s of KART_SLOTS) VISUAL_BASE[s] = OWNED[s] != null ? OWNED[s] : 1;
+  VISUAL_BASE.exhaust = VISUAL_BASE.engine;
+  const OWNED_DELTAS = (() => {
+    const d = {};
+    for (const k of STAT_KEYS) d[k] = 0;
+    for (const s of KART_SLOTS) {
+      if (OWNED[s] == null) continue;
+      const p = partStatsFor(s, OWNED[s]);
+      for (const k of STAT_KEYS) d[k] += p[k] || 0;
+    }
+    return d;
+  })();
+  const CURRENT_STATS = applyStats(BASE_STATS, OWNED_DELTAS);
+
+  /**
+   * What the child's kart actually gains, given what it already wears. Fitting a
+   * tier-3 engine over a tier-2 engine is the DIFFERENCE between the two, not the
+   * tier-3 row of the table — otherwise every visit re-promises the upgrades the
+   * kart is already carrying.
+   */
+  function displayDeltas(res) {
+    const out = {};
+    const has = res && res.deltas && Object.keys(res.deltas).length > 0;
+    const slot = res?.slotKey;
+    const prev = has && slot && OWNED[slot] != null ? partStatsFor(slot, OWNED[slot]) : null;
+    for (const k of STAT_KEYS) {
+      out[k] = (has ? res.deltas[k] || 0 : 0) - (prev ? prev[k] || 0 : 0);
+    }
+    return out;
+  }
+
   // ── state ──────────────────────────────────────────────────────────────────
   const st = {
     // pruneSelection drops any row whose option belongs to a different part —
@@ -965,6 +1036,79 @@ export function garageScene(engine, opts = {}) {
   const kartAnchor = new THREE.Group();
   scene.add(kartAnchor);
   const kartApi = mountKartPreview(kartAnchor, { engine, visualTiers: VISUAL_TIER });
+
+  // ── THE TWO LIVE KARTS IN THE DEBRIEF ──────────────────────────────────────
+  // The reveal is the moment the game says "look what your prompt made" — and it
+  // used to throw a scrim over the only 3D on the screen, so the one thing the
+  // child had just earned was the one thing they could not see.
+  //
+  // These two cannot be projected into the DOM the way the side window is: the
+  // reveal is a modal and the DOM sits ABOVE the canvas. So each is rendered
+  // into a small offscreen target and blitted into a real <canvas> inside its
+  // card. The scene exposes render(), which engine.draw() prefers over its
+  // default pass, so one screenshot still contains everything.
+  const MINI_W = 264, MINI_H = 176;
+  let mini = null;
+  function ensureMini() {
+    if (mini || !engine.renderer) return mini;
+    const target = new THREE.WebGLRenderTarget(MINI_W, MINI_H);
+    target.texture.colorSpace = THREE.SRGBColorSpace;
+    const mscene = new THREE.Scene();
+    mscene.add(new THREE.HemisphereLight(0xffd9a0, 0x25203a, 1.0));
+    const mk = new THREE.DirectionalLight(0xffd0a0, 2.4); mk.position.set(3, 5, 4); mscene.add(mk);
+    const mr = new THREE.DirectionalLight(0x7fa8ff, 0.95); mr.position.set(-4, 2.5, -3); mscene.add(mr);
+    const mcam = new THREE.PerspectiveCamera(30, MINI_W / MINI_H, 0.1, 60);
+    mcam.position.set(3.1, 2.0, 4.9);
+    mcam.lookAt(0, 0.5, 0);
+    const slots = [0, 1].map(() => {
+      const g = new THREE.Group();
+      mscene.add(g);
+      return { g, api: mountKartPreview(g, { engine, visualTiers: VISUAL_TIER }) };
+    });
+    mini = { target, mscene, mcam, slots, buf: new Uint8Array(MINI_W * MINI_H * 4) };
+    return mini;
+  }
+
+  /** A live <canvas> wearing exactly `res`'s tier. i=0 the real part, i=1 the ghost. */
+  function miniCanvasFor(i, res) {
+    const m = ensureMini();
+    if (!m) return null;
+    const s = m.slots[i];
+    const cv = h('canvas.grg-minicv', { 'aria-hidden': 'true' });
+    cv.width = MINI_W; cv.height = MINI_H;
+    s.canvas = cv;
+    s.ctx = cv.getContext('2d');
+    s.img = s.ctx.createImageData(MINI_W, MINI_H);
+    s.api?.setPart?.(res.slotKey, res.visualTier);
+    s.api?.setParts?.(previewParts(res));
+    return cv;
+  }
+
+  function renderMini(tSec) {
+    const m = mini;
+    if (!m) return;
+    const live = m.slots.filter(s => s.canvas && s.canvas.isConnected && s.ctx);
+    if (!live.length) return;
+    const gl = engine.renderer;
+    const prevTarget = gl.getRenderTarget();
+    const prevAlpha = gl.getClearAlpha();
+    gl.setClearAlpha(0);
+    for (const s of m.slots) s.g.visible = false;
+    for (const s of live) {
+      s.g.visible = true;
+      s.g.rotation.y = tSec * 0.4 + 0.55;
+      gl.setRenderTarget(m.target);
+      gl.render(m.mscene, m.mcam);
+      gl.readRenderTargetPixels(m.target, 0, 0, MINI_W, MINI_H, m.buf);
+      s.g.visible = false;
+      // readRenderTargetPixels hands back bottom-up rows; a 2D canvas is top-down.
+      const src = m.buf, dst = s.img.data, row = MINI_W * 4;
+      for (let y = 0; y < MINI_H; y++) dst.set(src.subarray((MINI_H - 1 - y) * row, (MINI_H - y) * row), y * row);
+      s.ctx.putImageData(s.img, 0, 0);
+    }
+    gl.setRenderTarget(prevTarget);
+    gl.setClearAlpha(prevAlpha);
+  }
 
   const floorMat = new THREE.MeshStandardMaterial({ color: 0x2e2437, roughness: 0.95 });
   const floorGeo = new THREE.CircleGeometry(2.2, 32);
@@ -1061,15 +1205,28 @@ export function garageScene(engine, opts = {}) {
   // exposes setPart(slotKey, visualTier), and the real kart model (wired in by
   // scenes.js) exposes setParts({slot: tier}). The garage used to call only the
   // first, so with the real kart mounted the preview never changed at all.
-  function applyKartPreview(r) {
+  //
+  // It writes ALL FOUR SLOTS on every call, never just the one being previewed.
+  // Writing only the new slot left the previous part bolted on: build an engine
+  // up to tier 3, rail back to step 1, switch to "wing", and the state says
+  // {wing:0} while the kart still wears the tier-3 engine — a part the child
+  // never built, silently contaminating every comparison for the rest of the
+  // visit. Un-previewed slots go back to VISUAL_BASE (what the child owns).
+  function previewParts(res) {
+    const parts = { ...VISUAL_BASE };
     const slot = st.sel.part;
-    if (!slot) return;
+    if (slot) {
+      parts[slot] = res.tier;
+      if (slot === 'engine') parts.exhaust = res.tier;
+    }
+    return parts;
+  }
+
+  function applyKartPreview(r) {
     const res = r || liveResult();
-    kartApi?.setPart?.(slot, res.visualTier);
-    kartApi?.setParts?.({
-      [slot]: res.tier,
-      ...(slot === 'engine' ? { exhaust: res.tier } : {}),
-    });
+    const slot = st.sel.part;
+    if (slot) kartApi?.setPart?.(slot, res.visualTier);
+    kartApi?.setParts?.(previewParts(res));
   }
 
   function startBuild() {
@@ -1422,10 +1579,12 @@ export function garageScene(engine, opts = {}) {
   }
 
   function paintStats(r) {
+    const dd = displayDeltas(r);
     for (const k of STAT_KEYS) {
       const n = statNodes[k]; if (!n) continue;
-      const base = BASE_STATS[k];
-      const next = clamp(base + (r.deltas[k] || 0), 0, 100);
+      // The bar starts from the kart the child OWNS, not from the factory kart.
+      const base = CURRENT_STATS[k];
+      const next = clamp(base + (dd[k] || 0), 0, 100);
       const lo = Math.min(base, next), hi = Math.max(base, next);
       const gained = LOWER_IS_BETTER[k] ? next < base : next > base;
       n.cur.style.width = lo + '%';
@@ -1435,7 +1594,7 @@ export function garageScene(engine, opts = {}) {
       // green "recovered" segment sitting after the current fill.
       if (LOWER_IS_BETTER[k] && gained) { n.cur.style.width = next + '%'; n.up.style.width = (base - next) + '%'; }
       n.val.textContent = num(next);
-      const d = r.deltas[k] || 0;
+      const d = dd[k] || 0;
       const good = LOWER_IS_BETTER[k] ? d < 0 : d > 0;
       n.delta.className = 'grg-delta ' + (d === 0 ? 'zero' : good ? 'good' : 'bad');
       n.delta.textContent = d === 0 ? '—' : num((d > 0 ? '+' : '') + d);
@@ -1545,7 +1704,7 @@ export function garageScene(engine, opts = {}) {
     // {gain}/{loss} are read out of the deltas the child is looking at right
     // now, and the "and it cost you…" clause only appears when something really
     // did get worse — see tips.js for the same rule.
-    const vars = makeTipVars(st.sel, r.deltas || {}, lang);
+    const vars = makeTipVars(st.sel, displayDeltas(r), lang);
     vars.cost = t(vars.loss ? 'garage.debrief.cost.some' : 'garage.debrief.cost.none', { loss: vars.loss });
     const g = r.specs?.goal || 0;
     const c = r.specs?.constraint || 0;
@@ -1599,13 +1758,20 @@ export function garageScene(engine, opts = {}) {
   }
 
   function partCard(res, o = {}) {
+    const d = o.deltas || res.deltas || {};
     return h('div.grg-partcard' + (o.ghost ? '.ghost' : ''), null,
       h(o.ghost ? 'div.grg-ghosthead' : 'div.label', null,
         o.ghost ? o.title : t('garage.reveal.title')),
+      // THE KART ITSELF. Everything else on this screen is a number about the
+      // kart; this is the kart. See miniKarts() — it is a live render, wearing
+      // exactly this tier, not an illustration.
+      o.canvas ? h('div.grg-minikart' + (o.ghost ? '.ghost' : ''), null,
+        o.canvas,
+        h('div.grg-minicap', null, o.ghost ? t('garage.mini.ghost') : t('garage.mini.yours'))) : null,
       h('div.grg-tierbadge' + (o.ghost ? '.dim' : ''), null, t('garage.tier.' + res.tier)),
       h('div.display.grg-partname', null, partName(res.slotKey, res.tier, lang)),
       !o.ghost && h('div.grg-flavour', null, t(res.flavourKeyHe)),
-      h('div.grg-mini', null, ...STAT_KEYS.map(k => miniStat(k, res.deltas[k] || 0))),
+      h('div.grg-mini', null, ...STAT_KEYS.map(k => miniStat(k, d[k] || 0))),
       o.ghost && h('div.grg-ghostnote', null, o.note));
   }
 
@@ -1614,9 +1780,11 @@ export function garageScene(engine, opts = {}) {
   // kart they now have, which is the thing the whole visit was for.
   function beforeAfter(r) {
     const row = h('div.grg-ba');
+    const dd = displayDeltas(r);
     for (const k of STAT_KEYS) {
-      const before = BASE_STATS[k];
-      const d = r.deltas[k] || 0;
+      // "Before" is the kart that just drove the last race, upgrades and all.
+      const before = CURRENT_STATS[k];
+      const d = dd[k] || 0;
       const after = clamp(before + d, 0, 100);
       const good = LOWER_IS_BETTER[k] ? d < 0 : d > 0;
       row.appendChild(h('div.grg-bacell', null,
@@ -1638,7 +1806,16 @@ export function garageScene(engine, opts = {}) {
     // up running backwards (see scenes.js onDone).
     const install = h('button.btn', {
       type: 'button',
-      onclick: () => opts.onDone?.({ ...r, selection: { ...st.sel }, cost: spent() }, gain),
+      onclick: () => opts.onDone?.({
+        ...r,
+        // Both of these describe the CHILD's kart, not a factory one: `deltas`
+        // is what this build actually changes on top of what they own, `stats`
+        // is the kart they drive away in.
+        deltas: displayDeltas(r),
+        stats: applyStats(CURRENT_STATS, displayDeltas(r)),
+        selection: { ...st.sel },
+        cost: spent(),
+      }, gain),
     }, t('garage.reveal.install'));
     const again = h('button.btn' + (freePlay ? '' : '.ghost'), {
       type: 'button',
@@ -1665,9 +1842,11 @@ export function garageScene(engine, opts = {}) {
           // The thing they received, and — dimmed beside it — the thing a
           // different prompt would have handed them instead.
           h('div.grg-cardrow', null,
-            partCard(r),
+            partCard(r, { deltas: displayDeltas(r), canvas: miniCanvasFor(0, r) }),
             partCard(ghost.res, {
               ghost: true,
+              deltas: displayDeltas(ghost.res),
+              canvas: miniCanvasFor(1, ghost.res),
               title: t(ghost.invite ? 'garage.ghost.invite' : 'garage.ghost.title'),
               note: t(ghost.invite ? 'garage.ghost.noteInvite' : 'garage.ghost.note'),
             })),
@@ -1755,6 +1934,12 @@ export function garageScene(engine, opts = {}) {
   let time = 0;
   return {
     scene, camera,
+    // The debrief's two karts have to be blitted BEFORE the main pass, or the
+    // last thing drawn into the canvas would be the offscreen scene.
+    render() {
+      if (mini && st.phase === 'reveal') renderMini(time);
+      engine.renderer.render(scene, camera);
+    },
     update(dt) {
       time += dt;
       layoutKart();
@@ -1776,6 +1961,12 @@ export function garageScene(engine, opts = {}) {
       root.remove();
       document.getElementById('grg-style')?.remove();
       kartApi?.dispose?.();
+      if (mini) {
+        for (const s of mini.slots) s.api?.dispose?.();
+        mini.target.dispose();
+        mini.mscene.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+        mini = null;
+      }
       bgTex.dispose(); floorGeo.dispose(); floorMat.dispose();
       scene.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
     },

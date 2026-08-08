@@ -1066,6 +1066,69 @@ export function createKart(opts = {}) {
     }
   }
 
+  // The chassis slot's SILHOUETTE payload: a roll hoop behind the driver.
+  //
+  // Skirts and a diffuser sit low, in the kart's own shadow, and half of them
+  // hide behind the rear tyres — measured against the garage's preview window,
+  // chassis 0 → 3 moved 2.4% of the pixels against a noise floor of ~2%, i.e.
+  // the one slot whose upgrade a child could not see at all. A hoop is the
+  // opposite kind of shape: it stands clear of the bodywork against open
+  // background, so its height, width and material carry the tier from every
+  // angle the game ever shows, including the small side window in the garage.
+  function rollHoop(g, w, top, tube, matUp, matTop, brace) {
+    const seg = LOW ? 5 : 8;
+    const z = 0.62, footY = 0.44;
+    for (const sx of [-1, 1]) {
+      const post = mesh(G(new THREE.CylinderGeometry(tube, tube * 1.12, top - footY, seg)), matUp, g,
+        [sx * w, (top + footY) / 2, z], [0, 0, -sx * 0.06]);
+      post.castShadow = shadows;
+      if (brace) {
+        const bl = 0.52;
+        const arm = mesh(G(new THREE.CylinderGeometry(tube * 0.72, tube * 0.72, bl, seg)), matUp, g,
+          [sx * (w + 0.05), top - 0.30, z + bl * 0.42], [0.86, 0, -sx * 0.12]);
+        arm.castShadow = shadows;
+      }
+    }
+    const bar = mesh(G(new THREE.CylinderGeometry(tube, tube, w * 2, seg)), matTop || matUp, g,
+      [0, top, z], [0, 0, Math.PI / 2]);
+    bar.castShadow = shadows;
+    return bar;
+  }
+
+  // …and the chassis slot's FRONT-visible payload. The garage previews the kart
+  // nose-on, which is the one angle from which skirts, diffuser and hoop all but
+  // vanish; a front splitter is the widest thing on the kart at exactly that
+  // angle, so its span and its end fins carry the tier there.
+  function splitter(g, w, panelMat, edgeMat, nFins) {
+    const z = -1.44, y = 0.135;
+    const blade = mesh(G(roundedBox(w, 0.045, 0.30, 0.018)), panelMat, g, [0, y, z], [0.06, 0, 0]);
+    blade.castShadow = shadows;
+    mesh(G(roundedBox(w * 0.96, 0.035, 0.06, 0.014)), edgeMat, g, [0, y + 0.05, z - 0.12]);
+    for (let i = 0; i < nFins; i++) {
+      const sx = i % 2 ? 1 : -1;
+      const f = 0.30 + 0.16 * Math.floor(i / 2);
+      mesh(G(roundedBox(0.03, 0.15, 0.24, 0.012)), edgeMat, g, [sx * w * f, y + 0.08, z], [0, sx * 0.12, 0]);
+    }
+    return blade;
+  }
+
+  // Rear fender flares. The garage's preview window looks straight at the back of
+  // the kart, where the skirts hide behind the tyres and the diffuser hides in
+  // the tail's own shadow — so the tier ramp also runs across the top of the rear
+  // wheels, which is open background from that angle and from the chase camera.
+  function flares(g, y, w, panelMat, edgeMat) {
+    for (const sx of [-1, 1]) {
+      const top = mesh(G(roundedBox(w, 0.055, 0.80, 0.025)), panelMat, g,
+        [sx * (REAR_X + 0.02), y, REAR_Z], [0, 0, -sx * 0.09]);
+      top.castShadow = shadows;
+      mesh(G(roundedBox(0.05, 0.20, 0.72, 0.02)), edgeMat, g,
+        [sx * (REAR_X + w * 0.48), y - 0.09, REAR_Z], [0, 0, -sx * 0.09]);
+      // inboard stay, tying the flare back to the bodywork
+      mesh(G(roundedBox(0.20, 0.045, 0.09, 0.018)), edgeMat, g,
+        [sx * (REAR_X - w * 0.5 - 0.06), y - 0.03, REAR_Z + 0.24], [0, 0, -sx * 0.09]);
+    }
+  }
+
   function buildChassisKit(tier) {
     const g = slotGrp.chassis;
     if (tier === 0) {
@@ -1084,9 +1147,20 @@ export function createKart(opts = {}) {
       wobblers.push(Object.assign(drag, { userData: { junk: true } }));
       for (const a of [0.8, -0.8]) mesh(G(roundedBox(0.20, 0.05, 0.03, 0.008)), M.tape, g, [-0.58, 0.40, -0.12], [0, Math.PI / 2, a]);
       mesh(G(roundedBox(0.26, 0.05, 0.03, 0.008)), M.tape, g, [0.16, 0.20, 1.06], [0, 0, 0.3]);
+      // Where the roll hoop should be: one rusted stub leaning out of its socket,
+      // with the other side snapped off and taped over. Reads as "there is
+      // supposed to be something here" — the shape the next three tiers finish.
+      const stub = mesh(G(new THREE.CylinderGeometry(0.026, 0.030, 0.46, LOW ? 5 : 8)), M.rust, g,
+        [-0.30, 0.66, 0.62], [0.16, 0, 0.42]);
+      wobblers.push(Object.assign(stub, { userData: { junk: true } }));
+      mesh(G(new THREE.CylinderGeometry(0.030, 0.030, 0.07, LOW ? 5 : 8)), M.tape, g, [0.30, 0.47, 0.62]);
+      mesh(G(roundedBox(0.30, 0.05, 0.03, 0.008)), M.tape, g, [-0.28, 0.55, 0.60], [0, 0, 1.1]);
     } else if (tier === 1) {
       for (const sx of [-1, 1]) mesh(G(roundedBox(0.07, 0.14, 0.96, 0.03)), M.bodyDark, g, [sx * 0.55, 0.21, -0.05]);
       diffuser(g, 0.86, 3, M.bodyDark, M.dark, 0.06);
+      rollHoop(g, 0.30, 1.14, 0.030, M.frame, M.frame, false);
+      splitter(g, 0.94, M.bodyDark, M.dark, 0);
+      flares(g, 0.90, 0.34, M.bodyDark, M.dark);
     } else if (tier === 2) {
       for (const sx of [-1, 1]) {
         mesh(G(roundedBox(0.10, 0.18, 1.16, 0.045)), M.accent, g, [sx * 0.56, 0.21, -0.02]);
@@ -1097,6 +1171,13 @@ export function createKart(opts = {}) {
       }
       mesh(G(roundedBox(1.02, 0.05, 0.26, 0.02)), M.bodyDark, g, [0, 0.19, -1.24]);
       diffuser(g, 1.12, 5, M.bodyDark, M.accent, 0.04);
+      // taller, braced, and the top bar goes accent-coloured: same shape, plainly
+      // one step up
+      rollHoop(g, 0.355, 1.35, 0.036, M.frame, M.accent, true);
+      mesh(G(roundedBox(0.62, 0.05, 0.05, 0.02)), M.accent, g, [0, 1.06, 0.62]);
+      splitter(g, 1.20, M.bodyDark, M.accent, 2);
+      flares(g, 0.97, 0.46, M.body, M.accent);
+      for (const sx of [-1, 1]) mesh(G(roundedBox(0.30, 0.035, 0.16, 0.015)), M.accent, g, [sx * 0.44, 0.40, -1.10], [0, 0, sx * 0.30]);
     } else {
       for (const sx of [-1, 1]) {
         mesh(G(roundedBox(0.12, 0.20, 1.30, 0.06)), M.accent, g, [sx * 0.57, 0.22, -0.02]);
@@ -1109,6 +1190,19 @@ export function createKart(opts = {}) {
       }
       mesh(G(roundedBox(1.10, 0.05, 0.30, 0.02)), M.chromeHi, g, [0, 0.17, -1.28]);
       diffuser(g, 1.38, 7, M.chromeHi, M.gold, 0.02);
+      // Hero hoop: full-height polished cage with a gold crown bar, an X brace
+      // in the opening and a light line along the top edge.
+      rollHoop(g, 0.40, 1.54, 0.042, M.chromeHi, M.gold, true);
+      for (const s of [-1, 1]) {
+        mesh(G(new THREE.CylinderGeometry(0.022, 0.022, 0.92, LOW ? 5 : 8)), M.chromeHi, g,
+          [0, 0.98, 0.615], [0, 0, s * 0.72]);
+      }
+      const crown = mesh(G(roundedBox(0.80, 0.035, 0.06, 0.015)), M.glow, g, [0, 1.60, 0.62]);
+      coreGlow.push(crown);
+      splitter(g, 1.50, M.chromeHi, M.gold, 4);
+      flares(g, 1.04, 0.58, M.chromeHi, M.gold);
+      const lip = mesh(G(roundedBox(1.34, 0.03, 0.05, 0.012)), M.glow, g, [0, 0.10, -1.56]);
+      coreGlow.push(lip);
       const under = mesh(G(new THREE.PlaneGeometry(1.1, 2.2)), M.glow, g, [0, 0.06, 0], [-Math.PI / 2, 0, 0]);
       under.castShadow = false;
       coreGlow.push(under);
