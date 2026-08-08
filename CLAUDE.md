@@ -51,15 +51,23 @@ quality toggle.
 
 ```bash
 npm run build        # → dist/index.html (add -- --dev for readable output)
-npm run gate         # build + tests + compliance + playability — run before shipping
+npm run gate         # everything below, in order — run before shipping
 npm test             # unit tests
 npm run verify       # compliance: zero network, no assets, no personal data
 npm run flow         # end-to-end synthetic-input drive of the real build
-npm run layout       # every screen at 6 resolutions; fails on clipped controls
+npm run modal        # modal-registry policy (quiz freeze, pause, one-time popups)
+npm run garage       # garage wizard behaviour + economy
+npm run select       # racer select: per-racer karts, no auto-start (~90s)
+npm run layout       # 5 scenes x 6 resolutions; fails on clipped controls
 npm run progress     # regenerate progress.html
 node tools/preview.mjs --mod src/<mod>.js --fn preview --out shots/x.png
 node tools/shot.mjs --scene race --track 0 --t 25 --out shots/race.png
-node tools/modaltest.mjs # modal-registry policy checks
+node tools/flowtest.mjs --only=play|champ|seam   # one gate group, in seconds
+
+`layoutcheck.mjs` needs arguments — bare `node tools/layoutcheck.mjs` exits 2 with a
+usage line. Use `--dist --scene <name>` or `--mod src/x.js [--fn preview]`.
+A gate only counts if it fails against the broken code: before trusting a new one,
+verify it bites (copy the current file to `.tmp/` and restore from there — never git).
 ```
 
 ## Code rules

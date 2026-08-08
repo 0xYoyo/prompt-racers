@@ -429,10 +429,17 @@ const MENU_CSS = `
 /* Unselected karts are scrimmed rather than desaturated: a CSS filter cannot
    reach pixels drawn on the canvas below, and a dark veil is the clearest
    "these are the ones you did NOT pick" a 8-year-old can read at a glance. */
+/* .40, not the .52 this started at: the whole point of the screen is that a
+   child can tell eight racers apart at a glance, and a veil heavy enough to
+   settle the "which one is picked" question was also heavy enough to turn the
+   other seven into silhouettes. The selected card carries a gold ring, a lift,
+   a tick and the "זה אני" badge — the veil only has to be the quietest of the
+   four cues, not the loudest. Measured by tools/selecttest.mjs, which fails if
+   any two card windows stop being visually distinguishable. */
 .mn-view::after{content:"";position:absolute;inset:0;border-radius:inherit;
-  background:rgba(7,6,13,.52);opacity:0;transition:opacity .18s var(--ease)}
+  background:rgba(7,6,13,.40);opacity:0;transition:opacity .18s var(--ease)}
 .mn-card.dim .mn-view::after{opacity:1}
-.mn-card.dim:hover .mn-view::after{opacity:.45}
+.mn-card.dim:hover .mn-view::after{opacity:.30}
 .mn-body{position:relative;padding:8px 10px 11px;border-radius:0 0 var(--r-m) var(--r-m);
   background:linear-gradient(180deg,rgba(38,36,54,.86),rgba(14,13,22,.94));
   backdrop-filter:blur(7px);
@@ -469,6 +476,23 @@ const MENU_CSS = `
   transition:width .5s var(--ease);box-shadow:0 0 10px -2px currentColor}
 .mn-go{margin-block-start:clamp(6px,1.6vh,16px)}
 .mn-go .btn{box-shadow:0 6px 0 #a4620a,0 0 40px -6px rgba(255,194,71,.75),0 12px 26px rgba(0,0,0,.5),0 1px 0 rgba(255,255,255,.6) inset}
+/* Racer select is the tallest screen in the game — eight cards, a CTA and a key
+   legend — and it was overflowing the stage by 6px at 1366x768, 23px at
+   1280x720 and 46px at 1024x640, which pushed the legend clean off the bottom.
+   The layout gate did not see it because it only fails on clipped INTERACTIVE
+   elements and a key hint is a span.
+   Everything given back below is chrome: stage gaps, card padding, stat spacing.
+   The kart windows are deliberately untouched — a child telling eight racers
+   apart at 1024x640 is the entire purpose of the screen, and shrinking the one
+   thing it exists for to save a legend would be the wrong trade. */
+@media (max-height:790px){
+  .mn-select .mn-stage{gap:clamp(4px,1vh,12px);padding:clamp(8px,2vh,20px)}
+  .mn-select .mn-body{padding:6px 9px 8px}
+  .mn-select .mn-stats{margin-block-start:5px;gap:3px}
+  .mn-select .mn-ctag{min-height:0}
+  .mn-select .mn-picked{margin-block-start:2px}
+  .mn-select .mn-go{margin-block-start:clamp(4px,1vh,10px)}
+}
 
 /* ---------- results ---------- */
 .mn-rows{min-height:0;overflow-y:auto;overflow-x:hidden}
@@ -1372,6 +1396,10 @@ export function racerSelectScene(engine, opts = {}) {
 
     const focusStart = () => goBtn?.focus({ preventScroll: true });
 
+    // Scopes the short-viewport compaction above to this screen only — every
+    // other menu shares .mn-stage and none of them is anywhere near overflowing.
+    api.root.classList.add('mn-select');
+
     const build = () => {
       cards = RACERS.map(makeCard);
       grid = h('div.mn-grid', { role: 'radiogroup', 'aria-label': t('menu.select.title') }, ...cards);
@@ -1500,6 +1528,11 @@ export function racerSelectScene(engine, opts = {}) {
           }));
         },
         selectedRacerId: () => racerAt(index).id,
+        // Turntable angles, in roster order. tools/selecttest.mjs samples these
+        // across a step to prove the LOW tier really does animate only the
+        // picked kart — a claim a comment cannot make and a screenshot of a
+        // static frame cannot disprove.
+        kartSpins: () => slots.map(s => s.spin.rotation.y),
       },
     };
   });

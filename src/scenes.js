@@ -212,7 +212,15 @@ setBackdrop(() => {
 export const SCENES = {
   menu: (eng, o) => titleScene(eng, o),
 
-  select: (eng, o) => racerSelectScene(eng, o),
+  // The screen opens on whoever the child last drove. menus.js reads `racerId`
+  // out of opts and never touches the save itself (it must stay previewable in
+  // isolation), so filling it in is this layer's job — same pattern as every
+  // other scene here. Without it, coming back from a race always reset the
+  // highlight to ניצוץ, which reads as "the game forgot who I am".
+  select: (eng, o = {}) => racerSelectScene(eng, {
+    ...o,
+    racerId: o.racerId ?? (o.fresh ? undefined : save.read('racerId')),
+  }),
 
   race: (eng, o = {}) => {
     // Clamp: a caller that asks for race 4 of a 3-race championship (the old
