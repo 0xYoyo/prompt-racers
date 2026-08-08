@@ -307,3 +307,72 @@ each piece lands rather than trusting an uncommitted working tree, because "seve
 plus one dirty tree" makes every accident unbounded. The earlier critic instruction to
 "temporarily copy the old file into place" is withdrawn: it is the same manoeuvre one step
 away from the destructive version.
+
+## D26 — One word for the way home, and the verb stays where the action differs
+Every exit in the game landed on the same screen and the game called it four things:
+`חזרה` (racer select, garage, free play), `לתפריט` (results), `לתפריט הראשי` (podium),
+`למסך הבית` (certificate, pause). All correct; all learned separately by a child who
+should only have to learn one. Unified on **`למסך הבית` / `Main Menu`** — a concrete noun
+a child already owns from phones, over the shorter `חזרה`, which names no destination and
+beside "אליפות חדשה" on the podium would have read as "back to what?". English took
+`Main Menu` rather than glossing the Hebrew as `Home screen`, because that is what an
+English game calls it. The one verb kept is pause's `יציאה` / `Quit to`: that exit
+abandons a race in progress, so the destination noun is unified and the action word is
+not. Cost one number — the garage's home-pill lane went 104 → 156px, because at 104px the
+longer label printed through "המוסך".
+
+## D27 — The HUD spoke a different register from the rest of the game
+The house voice is impersonal plural (`בוחרים`, `סיימתם`, `שלכם`), and the rule exists
+because it is gender-neutral: half the audience is girls and a masculine imperative
+excludes them. An audit of every Hebrew string for masculine imperatives came back clean
+— the single hit, `בורג, תבנה!`, is addressed to Boreg, who is a male character.
+
+What the audit did find is that the HUD and the garage addressed the child in second-person
+**singular** (`סיימת`, `ניצחת`, `הפרומפט שלך`) while every menu, the results sheet and the
+podium used the plural. Both forms are gender-neutral *in writing*, which is why six
+builders and five critics all passed over it: nothing was wrong, there were simply two
+voices in one game. Fourteen strings moved to the plural. The same pass closed three
+vocabulary splits where one thing had two names: the drift gauge said `דריפט` while three
+menu strings said `החלקה`; How-to-Play promised a `דחיפה` where the HUD flashes `טורבו`;
+and the quiz promised `Turbo` in English where the HUD flashes `BOOST!`.
+
+## D28 — Quiz pacing re-measured against a stopwatch, and nothing retuned
+D16's metric — "fraction of the race spent slowed" — cannot exist under D20's freeze,
+because race time does not advance at all while a panel is up. Re-measured as wall clock
+on the built game: a typical child (6s to answer, 5s to read) is interrupted **10 / 8 / 7**
+times across the three races for **132 / 105 / 92 seconds**, against 143 / 167 / 148
+seconds of driving — 38–48% of wall clock, at 13.2s per interruption. A quick reader pays
+6.2s each, a slow reader 26.1s.
+
+**No number was changed.** The rate is 2.3–3.3 questions per lap against `quiz.js`'s own
+stated target of 2–3, and every candidate lever is a written D16/D20 decision. Whether 40%
+of wall clock in panels *feels* draggy is a playtest question, not a measurable one.
+
+Two things the measurement overturned, though, and they are why this entry exists. First,
+the long-standing belief that an autopilot lap triggers no beacons was wrong — it was the
+first-token explainer holding the modal registry for the whole race; with it dismissed the
+racing line hits 7–10 beacons. Second, **D16's asymmetric cooldown now runs backwards**.
+It was written so that engaging buys more questions and disengaging buys clean racing.
+Under a freeze no panel can be driven past — every one must be acknowledged with Space —
+so ignoring costs *more* wall clock (6–7 × ~25s) than engaging (10 × 13.2s). The constants
+are untouched and the behaviour is not what their rationale describes.
+
+## D29 — A gate that cannot see a term must say so in its own name
+The end-to-end token-yield assertion reads `6 ≤ tokens ≤ 28` and has passed since it was
+written. Its driver holds a throttle key down the racing line and has never once triggered
+a quiz beacon, so `tokensFromQuiz` has printed **0** on every run in the project's history.
+The band passes precisely because the term that breaks it is absent: measured properly, a
+child who answers well banks ~51 tokens in race 1 against a 21-token maximum garage spend,
+so the garage's central lesson is false for exactly the engaged child the game is for.
+
+Two ways to respond, and the choice is the decision. Retuning `REWARD_TOKENS` at the end of
+a wave, without the ability to measure the result end to end, would have been tuning blind
+against a gate that cannot check the work. Instead the blindness was made **impossible to
+misread**: the assertion is renamed to say the quiz is not covered, a companion assertion
+fails the day the driver *does* start hitting beacons (so the band gets widened
+deliberately rather than silently), and `tests/economy.test.mjs` pins every constant the
+economy is made of and prints the real totals. That last test is a characterisation test,
+not a balance test — it asserts the imbalance **exists**, so fixing the economy turns it
+red and the fixer must come back and update it. A green tick that means less than it looks
+like is worse than a red one, and this wave produced three of them (the garage's 3D
+checks, modaltest's Escape checks, this).

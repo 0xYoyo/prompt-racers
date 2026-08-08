@@ -181,8 +181,20 @@ try {
   const econ = await page.evaluate(() => window.__LAST_RESULT__ || null);
   if (econ) {
     console.log(`        \x1b[2mtokens: ${econ.tokensFromPickups} pickups + ${econ.tokensFromQuiz} quiz + ${econ.tokensFinishBonus} finish = ${econ.tokens}\x1b[0m`);
-    step('race token yield stays near the garage budget', econ.tokens >= 6 && econ.tokens <= 28,
-      `${econ.tokens} banked vs ~21 max garage spend`);
+    // NAME WHAT THIS COVERS. This driver holds a throttle key and takes the
+    // straight-ahead line, so it collects pickups and finishes but has never in
+    // its life triggered a quiz beacon — `tokensFromQuiz` has printed 0 on every
+    // run since the assertion was written. The band below is therefore a claim
+    // about pickups and the finish bonus ONLY, and it passes because the term
+    // that breaks it is absent: a real child who answers well banks roughly
+    // twice this. Renamed rather than widened, so nobody reads a green tick here
+    // as "the economy is fine" — the measurement and the fix are in GAPS.md.
+    step('pickup + finish token yield stays near the garage budget (QUIZ NOT COVERED)',
+      econ.tokens >= 6 && econ.tokens <= 28,
+      `${econ.tokens} banked vs ~21 max garage spend · quiz term unmeasured (${econ.tokensFromQuiz})`);
+    step('the quiz term really is missing from the line above, not merely zero',
+      econ.tokensFromQuiz === 0,
+      'if this fails the driver now hits beacons — widen the band above to include them');
   }
 
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('promptracers.v1') || '{}'));
