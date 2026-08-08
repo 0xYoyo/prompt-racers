@@ -129,7 +129,7 @@ registerStrings({
     'quiz.badge': 'Prompt question',
     'quiz.hint': 'Choose with {k}',
     'quiz.correct': 'Correct!',
-    'quiz.reward': 'Turbo and {n} tokens',
+    'quiz.reward': 'Boost and {n} tokens',
     'quiz.timeUp': 'Time is up',
     'quiz.answerMarked': 'The right answer is marked',
     'quiz.continue': 'Back to racing…',

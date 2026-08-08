@@ -44,7 +44,7 @@ registerStrings({
     'menu.pause.sub': 'The race is waiting',
     'menu.pause.resume': 'Resume',
     'menu.pause.settings': 'Settings',
-    'menu.pause.quit': 'Quit to Home',
+    'menu.pause.quit': 'Quit to Main Menu',
     'menu.pause.hint': 'Press Esc to get back to the race',
     'menu.pause.quitAsk': 'Leave the race?',
     'menu.pause.quitWarn': 'This race stops and starts over next time. Tokens and parts already saved stay saved.',

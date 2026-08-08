@@ -57,7 +57,7 @@ registerStrings({
     // possible. The line above then simply is not true, and a screen that says
     // something a child can see is false stops being believed about anything.
     'garage.boreg': 'בורג',
-    'garage.sentence.label': 'הפרומפט שלך לבורג',
+    'garage.sentence.label': 'הפרומפט שלכם לבורג',
     'garage.stats.label': 'איך זה ישפיע על הקארט',
     'garage.stat.speed': 'מהירות',
     // 'תאוצה' — the same word the select screen and the roster use. This panel
@@ -82,17 +82,17 @@ registerStrings({
     'garage.practice.tokens': 'טוקני אימון',
     // ── The live kart window ────────────────────────────────────────────────
     'garage.preview.live': 'תצוגה חיה',
-    'garage.preview.empty': 'הקארט שלך',
+    'garage.preview.empty': 'הקארט שלכם',
     'garage.beforeafter': 'הקארט לפני ואחרי',
     'garage.tier.0': 'דרגה ‎0 — עובד, בערך',
     'garage.tier.1': 'דרגה ‎1 — בסדר גמור',
     'garage.tier.2': 'דרגה ‎2 — מכויל',
     'garage.tier.3': 'דרגה ‎3 — מדויק בטירוף',
-    'garage.reveal.title': 'בורג בנה לך',
-    'garage.reveal.ask': 'זה היה הפרומפט שלך',
+    'garage.reveal.title': 'בורג בנה לכם',
+    'garage.reveal.ask': 'זה היה הפרומפט שלכם',
     'garage.reveal.spec': 'כמה פירוט היה בכל חלק של הפרומפט',
     'garage.reveal.deltas': 'מה השתנה בקארט',
-    'garage.reveal.tokens': 'הרווחת {n} טוקנים',
+    'garage.reveal.tokens': 'הרווחתם {n} טוקנים',
     'garage.reveal.install': 'התקנה והמשך',
     'garage.reveal.again': 'פרומפט אחר',
     'garage.expert.toggle': 'מצב מומחה',
@@ -156,7 +156,7 @@ registerStrings({
     'garage.debrief.x.style.off': 'לא הופיע סגנון, אז בחרתי לבד. סגול, מן הסתם.',
 
     // ── Ghost preview ───────────────────────────────────────────────────────
-    'garage.mini.yours': 'מה שקיבלת',
+    'garage.mini.yours': 'מה שקיבלתם',
     'garage.mini.ghost': 'מה שהיה יוצא אחרת',
     'garage.ghost.title': 'אם הפרומפט היה כללי, זה מה שהיה יוצא',
     'garage.ghost.invite': 'עם אותם טוקנים בדיוק, פרומפט מדויק יותר היה נותן את זה',
@@ -167,7 +167,7 @@ registerStrings({
     'garage.freeplay.note': 'טוקנים על חשבון בורג — אפשר לנסות כמה פרומפטים שרוצים',
     'garage.freeplay.kicker': 'מתאמנים על פרומפטים, בלי מרוץ',
     'garage.freeplay.again': 'עוד פרומפט',
-    'garage.freeplay.exit': 'חזרה לתפריט',
+    'garage.freeplay.exit': 'למסך הבית',
     'garage.freeplay.unlimited': 'ללא הגבלה',
   },
   en: {
@@ -274,7 +274,7 @@ registerStrings({
     'garage.freeplay.note': 'tokens are on Boreg — try as many prompts as you like',
     'garage.freeplay.kicker': 'Practising prompts, no race attached',
     'garage.freeplay.again': 'Another prompt',
-    'garage.freeplay.exit': 'Back to menu',
+    'garage.freeplay.exit': 'Main Menu',
     'garage.freeplay.unlimited': 'unlimited',
   },
 });

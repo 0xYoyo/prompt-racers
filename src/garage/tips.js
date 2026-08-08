@@ -37,7 +37,7 @@ export const TIPS = [
     trigger: 'goal specificity >= 2 (the goal names a moment on the track)',
     titleHe: 'מתי ואיפה',
     titleEn: 'When and where',
-    bodyHe: 'בפרומפט שלך היה רגע מדויק — "{goal}" — ולכן בורג ידע איזה חלק בדיוק לחזק. פרומפט מדויק, חלק מדויק.',
+    bodyHe: 'בפרומפט שלכם היה רגע מדויק — "{goal}" — ולכן בורג ידע איזה חלק בדיוק לחזק. פרומפט מדויק, חלק מדויק.',
     bodyEn: 'Your prompt named an exact moment — "{goal}" — so Boreg knew exactly what to strengthen. Precise prompt, precise part.',
   },
   {
@@ -119,7 +119,7 @@ export const TIPS = [
   {
     id: 'expert.intro', visit: 3,
     trigger: 'player opened expert mode',
-    titleHe: 'עכשיו במילים שלך',
+    titleHe: 'עכשיו במילים שלכם',
     titleEn: 'Now in your own words',
     bodyHe: 'עכשיו כותבים לבורג ישירות. כדאי לזכור את ארבעת החלקים: מה, מתי, מה אסור להרוס ואיך זה נראה — וזה גם משלם יותר טוקנים.',
     bodyEn: 'Now you write to Boreg directly. Keep the four pieces in mind: what, when, what must not break, how it looks — and it pays more tokens too.',

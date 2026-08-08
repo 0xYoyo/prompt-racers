@@ -137,14 +137,19 @@ registerStrings({
     'menu.howto': 'איך משחקים',
     'menu.freePlay': 'המוסך של בורג',
     'menu.settings': 'הגדרות',
-    'menu.back': 'חזרה',
+    // ONE word for the one destination. Every "way out" in the game lands on
+    // this screen, and it used to be called four different things — חזרה here
+    // and in the garage, לתפריט on results, לתפריט הראשי on the podium,
+    // למסך הבית on the certificate and in pause. All correct, all learned
+    // separately by a child who should only ever learn one.
+    'menu.back': 'למסך הבית',
     'menu.enterHint': 'לוחצים Enter כדי להתחיל',
     'menu.key.steer': 'היגוי',
     'menu.key.gas': 'גז',
     'menu.key.drift': 'החלקה',
     'menu.key.pause': 'הפסקה',
     'menu.key.select': 'בחירה',
-    'menu.key.back': 'חזרה',
+    'menu.key.back': 'למסך הבית',
 
     'menu.select.title': 'מי נוסע?',
     // Two steps, said in the order a child does them. The old copy ("ולוחצים
@@ -170,7 +175,7 @@ registerStrings({
     'menu.results.bestlap': 'ההקפה המהירה שלכם',
     'menu.results.garage': 'למוסך',
     'menu.results.next': 'המרוץ הבא',
-    'menu.results.menu': 'לתפריט',
+    'menu.results.menu': 'למסך הבית',
     'menu.results.youPlaced': 'סיימתם במקום ה{p}',
     'menu.results.tokenHint': 'טוקנים הם הדלק של המוסך — קונים איתם שדרוגים',
 
@@ -182,7 +187,7 @@ registerStrings({
     'menu.podium.points': 'נק׳',
     'menu.podium.total': 'סך הנקודות שלכם',
     'menu.podium.again': 'אליפות חדשה',
-    'menu.podium.menu': 'לתפריט הראשי',
+    'menu.podium.menu': 'למסך הבית',
 
     'menu.set.title': 'הגדרות',
     'menu.set.lang': 'שפה',
@@ -206,7 +211,7 @@ registerStrings({
     'menu.how.driveT': 'נוהגים',
     'menu.how.driveB': 'חצים ימינה ושמאלה מסובבים, חץ למעלה נותן גז.',
     'menu.how.driftT': 'מחליקים',
-    'menu.how.driftB': 'רווח בתוך סיבוב = החלקה, ובסוף מקבלים דחיפה.',
+    'menu.how.driftB': 'רווח בתוך סיבוב = החלקה, ובסוף מקבלים טורבו.',
     'menu.how.tokenT': 'אוספים טוקנים',
     'menu.how.tokenB': 'כל מרוץ מזכה בטוקנים לפי המקום שסיימתם בו.',
     'menu.how.garageT': 'משדרגים במוסך',
@@ -223,14 +228,14 @@ registerStrings({
     'menu.howto': 'How to Play',
     'menu.freePlay': "Boreg's Garage",
     'menu.settings': 'Settings',
-    'menu.back': 'Back',
+    'menu.back': 'Main Menu',
     'menu.enterHint': 'Press Enter to start',
     'menu.key.steer': 'Steer',
     'menu.key.gas': 'Accelerate',
     'menu.key.drift': 'Drift',
     'menu.key.pause': 'Pause',
     'menu.key.select': 'Select',
-    'menu.key.back': 'Back',
+    'menu.key.back': 'Main Menu',
 
     'menu.select.title': 'Choose Your Racer',
     'menu.select.sub': 'Pick with the mouse or the arrow keys — then press the big button',
@@ -430,8 +435,10 @@ const MENU_CSS = `
 /* The race's own lap card owns the top corner, so the race copy drops below it. */
 #ui .mn-home.below{inset-block-start:calc(18px + 4.7em)}
 /* The garage top bar starts in that corner; give the button its own lane rather
-   than floating on top of the title. */
-#ui .grg-root .grg-top{padding-inline-start:104px}
+   than floating on top of the title. Widened 104 → 156px when the label became
+   "למסך הבית" / "Main Menu": the pill is a word longer than "חזרה" / "Back" and
+   at 104px it printed straight through "המוסך". */
+#ui .grg-root .grg-top{padding-inline-start:156px}
 /* Anything that owns the screen hides it: a dialog, a garage scrim (Boreg's
    introduction, the token explainer, the reveal) all have their own way out, and
    a button floating over a modal is exactly the "covered control" this audit was

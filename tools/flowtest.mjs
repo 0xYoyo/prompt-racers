@@ -989,13 +989,13 @@ try {
     await page.evaluate(() => window.__DEBUG.goto('select', {}));
     await settle(900);
     await atScene('select', 'racer select');
-    let p = await probe('button.mn-back', 'חזרה');
+    let p = await probe('button.mn-back', 'למסך הבית');
     assertHome('racer select', p);
     r = await esc();
     step('N: racer select — Escape goes home', r.scene === 'menu', JSON.stringify(r));
     await page.evaluate(() => window.__DEBUG.goto('select', {}));
     await settle(900);
-    p = await probe('button.mn-back', 'חזרה');
+    p = await probe('button.mn-back', 'למסך הבית');
     await clickAt(p);
     await settle(900);
     step('N: racer select — the back button lands on the main menu', (await scene()) === 'menu', await scene());
@@ -1041,13 +1041,13 @@ try {
     await settle(1200);
     await atScene('freeplay', 'free play');
     await alive('free play');
-    p = await probe('button.mn-home', 'חזרה');
+    p = await probe('button.mn-home', 'למסך הבית');
     assertHome('free play', p);
     r = await esc();
     step('N: free play — Escape goes home', r.scene === 'menu', JSON.stringify(r));
     await page.evaluate(() => window.__DEBUG.goto('freeplay', { freePlay: true }));
     await settle(1200);
-    p = await probe('button.mn-home', 'חזרה');
+    p = await probe('button.mn-home', 'למסך הבית');
     await clickAt(p);
     await settle(900);
     step('N: free play — the back button lands on the main menu', (await scene()) === 'menu', await scene());
@@ -1061,7 +1061,7 @@ try {
     step('N: garage (championship) — is the real garage, not the sandbox',
       await page.evaluate(() => !!document.querySelector('.grg-root') &&
         !(document.querySelector('.grg-bignum')?.textContent || '').includes('∞')), '');
-    p = await probe('button.mn-home', 'חזרה');
+    p = await probe('button.mn-home', 'למסך הבית');
     assertHome('garage (championship)', p);
     await clickAt(p);
     await settle(1000);
@@ -1165,7 +1165,7 @@ try {
     await settle(900);
     await atScene('results', 'results');
     await alive('results');
-    p = await probe('button', 'לתפריט');
+    p = await probe('button', 'למסך הבית');
     assertHome('results', p);
     r = await esc();
     step('N: results — Escape goes home', r.scene === 'menu', JSON.stringify(r));
@@ -1174,7 +1174,7 @@ try {
       standings: ORDER.map((id, j) => ({ racerId: id, place: j + 1, isPlayer: id === 'nitzotz' })),
     });
     await settle(900);
-    await clickAt(await probe('button', 'לתפריט'));
+    await clickAt(await probe('button', 'למסך הבית'));
     await settle(900);
     step('N: results — the menu button lands on the main menu', (await scene()) === 'menu', await scene());
 
@@ -1187,7 +1187,7 @@ try {
     await settle(1000);
     await atScene('podium', 'podium');
     await alive('podium');
-    p = await probe('button', 'לתפריט הראשי');
+    p = await probe('button', 'למסך הבית');
     assertHome('podium', p);
     // The certificate is the pay-off screen, and the one most likely to trap a
     // child: it is a modal over the podium, so it needs BOTH a way back to the
@@ -1239,7 +1239,7 @@ try {
     }));
     step('N: garage after the final race — reroutes to the podium, not a black screen',
       rerouted.podium && !rerouted.garage, `scene=${await scene()} ${JSON.stringify(rerouted)}`);
-    assertHome('garage → podium', await probe('button', 'לתפריט הראשי'));
+    assertHome('garage → podium', await probe('button', 'למסך הבית'));
 
     await shot('flow-13-nav-walk.png');
     step('N: no page errors during the whole navigation walk', errs.length === errsBefore,

@@ -113,7 +113,7 @@ registerStrings({
     'learn.cert.seal': 'Prompt Racers',
     'learn.cert.foot': 'This certificate is stored on this computer only — no name, no account.',
     'learn.cert.close': 'Close',
-    'learn.cert.menu': 'Home screen',
+    'learn.cert.menu': 'Main Menu',
 
     'learn.fact.title': 'Did you know?',
     'learn.fact.1': 'A language model does not "know" facts — it guesses which word fits best next.',
@@ -246,7 +246,11 @@ const LEARN_CSS = `
 .lr-seal .s2{font-size:11px;font-weight:800;color:#e0b978;letter-spacing:.1em}
 .rtl .lr-seal .s2{letter-spacing:.02em}
 .lr-cert-acts{display:flex;gap:9px;flex-wrap:wrap;justify-content:flex-end;flex:1 1 auto}
-.lr-cert-acts .btn{font-size:14px;padding:10px 22px}
+/* 36px tall against 46–52px on every other screen — passing the layout gate's
+   24px floor, but small for an 8-year-old on the one screen that is meant to
+   feel like an award, and visibly lighter than the podium buttons it sits over.
+   16px/13px lands at ~45px, inside the range the rest of the game uses. */
+.lr-cert-acts .btn{font-size:16px;padding:13px 26px}
 .lr-note{flex:none;text-align:center;font-size:11px;line-height:1.35;color:var(--txt-dim);
   margin-block-start:6px}
 
