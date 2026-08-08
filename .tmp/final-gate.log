@@ -419,3 +419,54 @@ all checks passed
   ok    src/ui/style.js                    6KB
 
 all modules bundle cleanly
+
+  CONTEST COMPLIANCE
+  ────────────────────────────────────────────────────────────────────────
+  [32m✓[0m single self-contained file                  [2m1.22 MB[0m
+  [32m✓[0m no external src/href in HTML                
+  [32m✓[0m no http(s) URLs in bundle                   
+  [32m✓[0m no asset files in src/                      
+  [32m✓[0m no embedded base64 media                    [2m0 found[0m
+  [32m✓[0m no network APIs in src/                     
+  [32m✓[0m no Math.random in src/ (determinism)        
+  [32m✓[0m no existing-IP references in source         
+  [32m✓[0m zero runtime network requests (all scenes)  [2mmenu, select, race, garage, results, podium[0m
+  [32m✓[0m boots with no console/page errors           
+  [32m✓[0m localStorage limited to one namespaced key  
+  [32m✓[0m no cookies set                              
+  [32m✓[0m defaults to Hebrew RTL                      [2mrtl/he[0m
+  ────────────────────────────────────────────────────────────────────────
+  13/13 passed
+
+
+  AUDIO — real built game, real gesture, measured output
+  ────────────────────────────────────────────────────────────────────────
+  [32m✓[0m audio module is present in the bundle                
+  [32m✓[0m audio singleton reachable in the running game        
+  [32m✓[0m not muted from a previous session                    [2mmuted=false[0m
+  [32m✓[0m AudioContext reaches "running" after one click       [2msuspended → running in 120ms[0m
+  [32m✓[0m master gain is open                                  [2m0.90[0m
+  [31m✗[0m idle bus is quiet (proves the meter is honest)       [2mrms 0.02604[0m
+  [32m✓[0m engine (kart:engine bus events) produces output      [2mrms 0.0757  peak 0.136[0m
+  [32m✓[0m drift scrape (drift:start / drift:charge) produces output [2mrms 0.1058  peak 0.339[0m
+  [32m✓[0m token pickup (token:pickup) produces output          [2mrms 0.0431  peak 0.226[0m
+  [32m✓[0m UI (ui:confirm / ui:select) produces output          [2mrms 0.0151  peak 0.191[0m
+  [32m✓[0m quiz stingers (quiz:correct / quiz:wrong) produces output [2mrms 0.0326  peak 0.326[0m
+  [32m✓[0m music — oasis produces output                        [2mrms 0.0328  peak 0.527[0m
+  [32m✓[0m music — circuit produces output                      [2mrms 0.0468  peak 0.715[0m
+  [32m✓[0m music — cloud produces output                        [2mrms 0.0379  peak 0.587[0m
+  [32m✓[0m music theme switches per track                       [2mthemeId=cloud[0m
+  [32m✓[0m every emitted game event reaches a sound             [2m24 events heard[0m
+  [32m✓[0m reaches the race scene                               [2mrace[0m
+  [32m✓[0m race audio is non-silent                             [2mrms 0.1202[0m
+  [32m✓[0m race audio does not clip                             [2mpeak 0.717[0m
+  [32m✓[0m engine voice is live during the race                 
+  [32m✓[0m race music is playing in the track theme             [2mrace/oasis[0m
+  [32m✓[0m context still running after the race                 [2mrunning[0m
+  [32m✓[0m no runaway voice growth                              [2mpeak 38 voices, 0 dropped[0m
+  [2mplayed 105 sounds, 14 voices live at the end[0m
+  [32m✓[0m no page errors while the audio ran                   
+  ────────────────────────────────────────────────────────────────────────
+
+  [31m1 audio check(s) failed[0m
+

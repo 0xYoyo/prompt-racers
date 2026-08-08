@@ -133,6 +133,15 @@ try {
   });
 
   // ── 2. silence floor: with nothing playing, the bus must be quiet ──────────
+  // Leave the title screen first. Its backdrop is a REAL raceScene (that is the
+  // whole point of it — you can see the game happening behind the logo), so it
+  // emits `kart:engine` every frame and re-enables the engine voice on the frame
+  // after `__hush()` disables it. Whether this assertion saw silence therefore
+  // depended on rAF timing: it read 0.00000 most runs and 0.026–0.049 when a
+  // frame landed inside the measurement window. Racer select has karts but no
+  // running simulation, so nothing re-arms behind the meter.
+  await page.evaluate(() => window.__DEBUG.goto('select'));
+  await sleep(400);
   await page.evaluate(() => window.__hush());
   const quiet = await page.evaluate(() => window.__measure(400));
   ok('idle bus is quiet (proves the meter is honest)', quiet.rms < RMS_FLOOR, `rms ${quiet.rms.toFixed(5)}`);

@@ -218,11 +218,15 @@ while the rpm ramp was still near-silent. It now emits at 60Hz from an idle rpm 
 which is what `race.js` actually does. Three consecutive runs: 0.0761 / 0.0757 / 0.0740,
 against 0.0000–0.0815 before.
 
-**Still open — the idle-bus assertion.** "idle bus is quiet" failed once at `rms 0.04910`
-against a 0.004 floor, then passed on every run since (0.00000 each time, including the
-three above). Something can leave a voice ringing past `__hush()`'s 450ms settle. Not
-reproduced since the engine fix, and it may share the same root — but it was a different
-assertion on a different run, so it is not proven fixed. Watch it.
+**Also fixed — the idle-bus assertion, and it was not a threshold problem.** "idle bus is
+quiet" failed intermittently (`rms 0.04910`, later `0.02604`) against a 0.004 floor.
+Cause: the test measured silence while sitting on the **title screen, whose backdrop is a
+real `raceScene`** — that is the point of it, you can see the game running behind the logo
+— so it emits `kart:engine` every frame and re-enables the engine voice on the frame after
+`__hush()` disables it. Whether the bus was quiet depended on whether an rAF landed inside
+the measurement window. The test now moves to racer select first (karts, no simulation).
+Three consecutive runs at exactly 0.00000. Worth remembering as a class: **a "silence"
+measurement taken on a screen that is secretly running the game is not measuring silence.**
 
 ### `engine.resize()` was window-only; now element-observed, but scenes were never audited
 `engine.width`/`height` and the renderer's backing store sat at their boot values for as
