@@ -108,7 +108,9 @@ const COMBO_WINDOW = 2.2;     // seconds to chain a pickup
 /**
  * @param {object} engine
  * @param {object} opts  { track, racerId, difficulty, laps, parts, seed,
- *                         onComplete(result), freeCam }
+ *                         askedIds, onComplete(result), freeCam }
+ *   askedIds — question ids already asked this championship; passed straight to
+ *   the quiz system so no question repeats across the three races.
  */
 export function raceScene(engine, opts = {}) {
   const trackId = opts.track ?? 0;
@@ -180,6 +182,9 @@ export function raceScene(engine, opts = {}) {
   // Backdrops render the beacons but never open a panel.
   const quiz = createQuizSystem(engine, {
     spline, def, difficulty, rng, mount: engine.ui, enabled: !backdrop,
+    // Questions already asked earlier in this championship. scenes.js collects
+    // them from `quiz:open` and hands them back so race 2 never repeats race 1.
+    askedIds: opts.askedIds,
   });
   if (quiz?.group) scene.add(quiz.group);
 
@@ -213,12 +218,14 @@ export function raceScene(engine, opts = {}) {
     wrongWayT: 0,
     lastCountdownBeat: -1,
     paused: false,
+    quizFrozen: false,    // a quiz panel owns the world (question/feedback/3·2·1)
     progress: 0,          // laps + fraction, monotonic
     prevT: player.lapT,
     cp: 0,                // next checkpoint index
     cpHits: 0,
   };
   const CP = track.checkpoints || [];
+  const lapTracker = CP.length ? createLapTracker(CP, player.lapT) : null;
   const results = [];     // finish order as karts complete
 
   chase.snap(player);
@@ -244,7 +251,12 @@ export function raceScene(engine, opts = {}) {
   function setPaused(p) {
     S.paused = !!p;
     simAcc = 0;                       // never bank time across a pause
-    if (input) input.enabled = !p;
+    // Resuming from the pause menu must NOT hand input back if a quiz panel is
+    // still frozen underneath it — that was the exact D15 trap (a modal the
+    // child is still reading, with the race live behind it). The quiz's own
+    // time scale keeps the sim stopped either way; this keeps the keyboard
+    // consistent with it.
+    if (input) input.enabled = !p && !S.quizFrozen;
     if (p && input) input.softReset();   // keep held keys; see input.js
   }
 
@@ -294,15 +306,15 @@ export function raceScene(engine, opts = {}) {
     if (Math.abs(d) < 0.3) S.progress += d;
     S.prevT = player.lapT;
 
-    if (racing && CP.length) {
+    if (racing && lapTracker) {
       // Checkpoints must be taken in order — this is what stops a player from
-      // reversing over the line to farm laps, and from cutting the infield.
-      const want = CP[S.cp];
-      if (Math.abs(TrackSpline.deltaT(player.lapT, want)) < 0.02) {
-        S.cp = (S.cp + 1) % CP.length;
-        S.cpHits++;
-        if (S.cp === 0 && S.cpHits >= CP.length) onLapComplete();
-      }
+      // reversing over the line to farm laps, and from cutting the infield. The
+      // lap itself is credited on the START/FINISH crossing, and nowhere else;
+      // see createLapTracker.
+      const ev = lapTracker.step(player.lapT);
+      S.cp = lapTracker.next;
+      S.cpHits = lapTracker.hits;
+      if (ev === 'lap') onLapComplete();
     }
 
     // Wrong-way: sustained negative progress while moving.
@@ -345,6 +357,22 @@ export function raceScene(engine, opts = {}) {
     const scale = quiz
       ? quiz.update(dtReal, player, { racing: S.phase === 'racing' && !S.finished })
       : 1;
+
+    // A quiz panel freezes the world outright (scale 0). Treat that stretch the
+    // way a pause is treated at the input boundary: `enabled` off so nothing
+    // leaks into the frame we resume on, but the SET of physically-held keys is
+    // left alone, so a child holding accelerate through a question still has
+    // throttle when the 3·2·1 finishes (D12 — this is the same trap the token
+    // explainer sprang, and the same mechanism that fixed it).
+    const frozen = !!quiz?.frozen;
+    if (frozen !== S.quizFrozen) {
+      S.quizFrozen = frozen;
+      simAcc = 0;                                  // never bank time across it
+      if (input && !S.paused) {
+        input.enabled = !frozen;
+        if (frozen) input.softReset();
+      }
+    }
 
     if (!S.paused) {
       simAcc += dtReal * scale;
@@ -410,7 +438,8 @@ export function raceScene(engine, opts = {}) {
       if (!best[key] || ms < best[key]) save.set({ bestLap: { ...best, [key]: ms } });
     }
     S.lapTime = 0;
-    S.cpHits = 0;
+    // (S.cp / S.cpHits are mirrored from lapTracker every frame; it resets its
+    // own counter on the line crossing that got us here.)
 
     if (S.lap >= laps) return finishPlayer();
 
@@ -595,7 +624,10 @@ export function raceScene(engine, opts = {}) {
     resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); chase.resize?.(w, h); hud?.resize?.(w); },
     // Exposed for the pause overlay and the debug harness.
     get state() { return S; },
-    player, field, track, hud, input, chase,
+    // `quiz` is exposed so a gate can open/inspect a question directly instead
+    // of driving an autopilot lap until a beacon happens to fire (which cost
+    // tools/modaltest.mjs ~40s per check and made the freeze untestable).
+    player, field, track, hud, input, chase, quiz,
     playerMesh, aiKarts,   // exposed for the automated P0 gates (orientation, steering)
     setPaused,
     dispose() {
@@ -611,6 +643,63 @@ export function raceScene(engine, opts = {}) {
       track.dispose();
       rig.dispose?.();
       scene.clear();
+    },
+  };
+}
+
+// ── LAP / FINISH DETECTION ──────────────────────────────────────────────────
+// Item 13: the lap used to be credited EARLY — visibly before the chequered
+// line and the gantry, which trackbuild anchors at `def.startT` exactly. Two
+// independent causes, both here, neither in the artwork:
+//
+//   1. The lap fired on the LAST checkpoint, not on the line. The old code
+//      incremented `cp` and then asked `cp === 0 && cpHits >= CP.length`, which
+//      is true the instant checkpoint 15 of 16 is taken — a full 1/16 of a lap
+//      (~46–66m depending on the track) before the flag.
+//   2. Checkpoints were taken on PROXIMITY (`|deltaT| < 0.02`), so each one,
+//      the line included, fired 0.02 of a lap early — another ~15–21m.
+//
+// Both are replaced by a crossing test: a checkpoint is taken at the frame the
+// kart's lap fraction passes THROUGH it going forward, and the lap is credited
+// on the crossing of checkpoint 0 — which is `startT`, which is where the line
+// is drawn. Residual error is one fixed step of travel (≤0.6m at top speed),
+// against ~60–85m before. Pinned by tests/finishline.test.mjs.
+//
+// Ordering is still enforced (no reversing over the line to farm laps, no
+// cutting the infield): only the next expected checkpoint is armed, and a lap
+// is credited only if every one of the others was taken since the last line
+// crossing.
+//
+/**
+ * @param {number[]} checkpoints  ordered lap fractions; [0] IS the start/finish line
+ * @param {number}   startLapT    the kart's lap fraction right now (grid position)
+ * @returns {{step:Function, next:number, hits:number}} step(lapT) → ''|'cp'|'lap'
+ */
+export function createLapTracker(checkpoints, startLapT = 0) {
+  const CP = checkpoints;
+  let next = 0;                                   // index of the armed checkpoint
+  let hits = 0;                                   // non-line checkpoints since the line
+  let prevD = TrackSpline.deltaT(startLapT, CP[0]);
+
+  return {
+    get next() { return next; },
+    get hits() { return hits; },
+    step(lapT) {
+      const d = TrackSpline.deltaT(lapT, CP[next]);
+      // Forward crossing only, and only a plausible one: a respawn teleports the
+      // lap fraction, and `deltaT` wraps, so a jump is never a crossing.
+      const crossed = prevD < 0 && d >= 0 && (d - prevD) < 0.25;
+      prevD = d;
+      if (!crossed) return '';
+      const wasLine = next === 0;
+      next = (next + 1) % CP.length;
+      prevD = TrackSpline.deltaT(lapT, CP[next]);  // re-arm against the new target
+      if (!wasLine) { hits++; return 'cp'; }
+      // Crossing the line: a lap only if the whole lap was actually driven.
+      // (The first crossing of a race is the start, with hits === 0.)
+      const full = hits >= CP.length - 1;
+      hits = 0;
+      return full ? 'lap' : 'cp';
     },
   };
 }

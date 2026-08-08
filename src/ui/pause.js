@@ -212,8 +212,13 @@ export function attachPauseControl(opts = {}) {
     // its own button and its own Escape, so nothing is unreachable.
     //
     // Named explicitly rather than "is anything open": a QUIZ panel must still
-    // be pausable over, because the quiz only slows the world, it does not stop
-    // it — refusing there would leave a child unable to pause for 20 seconds.
+    // be pausable over. Wave 2's reason was that the quiz only slowed the world;
+    // Wave 3 freezes it, and the reason became the opposite one — the quiz's
+    // feedback now waits for Space with no time limit, so a quiz panel can be
+    // the last thing on screen indefinitely and Settings/Quit must stay
+    // reachable from it. The quiz holds its own freeze while the pause menu sits
+    // on top, and race.js's setPaused() will not hand input back underneath it.
+    // See the policy block in ui/style.js.
     if (modalHas('token') || modalHas('meet')) return;
     freeze(true);
     bus.emit('race:pause');                       // audio ducks on this

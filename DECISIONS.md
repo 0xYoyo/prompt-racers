@@ -166,7 +166,7 @@ punishment: the reward for engaging is *more* questions, not fewer. Cutting the
 timer alone would have hit the slow reader, who is the one person the timer was
 explicitly written not to hurt.
 
-## D15 — Token economy thinned at the source, and the garage rebate capped below the spend
+## D17 — Token economy thinned at the source, and the garage rebate capped below the spend
 Measurement (not intuition) showed the garage's lesson had stopped being true: a race
 banked ~36 tokens against a 21-token maximum spend, and `tokenReward` refunded 18 against
 a ~13 spend, so every visit profited and the wallet compounded. Two fixes:
@@ -182,7 +182,10 @@ a ~13 spend, so every visit profited and the wallet compounded. Two fixes:
 A winning run now banks ~20 against a 21 maximum, so even a strong player must choose.
 Pinned by a token-yield gate in `flowtest.mjs` that prints the full breakdown each run.
 
-## D16 — Modal traffic control lives in `ui/style.js`
+## D18 — Modal traffic control lives in `ui/style.js`
+(duplicate numbering fixed in Wave 3: the smoothing-pass entries formerly labelled
+D15/D16 are now D17/D18; cross-references to the modal policy mean D15/D18, and to
+quiz pacing mean D16.)
 Three things can interrupt a race (token explainer, Boreg's intro, quiz panels) plus the
 pause overlay. Nothing coordinated them, and three real failures resulted — a token popup
 opening over a live quiz whose timer kept running, digit keys answering a hidden quiz

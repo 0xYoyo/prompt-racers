@@ -1,6 +1,7 @@
 // Shared boot + capture harness, used by both the real entry point and by the
 // isolated module previews that builders/critics screenshot.
 import { engine } from './engine.js';
+import { bus } from './bus.js';
 import { Raycaster, Vector3, Quaternion } from 'three';
 import { audio } from '../audio/audio.js';   // re-exported for the gates; main.js owns the real import
 import { save } from './save.js';
@@ -28,6 +29,11 @@ export function installDebug() {
     },
     renderOnce() { engine.draw(); },
     state: () => ({ scene: engine.activeName, fps: engine.fps, quality: engine.q.name }),
+    // The gates need to inject the events a subsystem reacts to without having
+    // to produce the gameplay that normally raises them — the crowd's cheer, for
+    // one, cannot otherwise be made live during the countdown, which is exactly
+    // the moment its clock jumps backwards.
+    bus,
   };
   window.__DEBUG = D;
   // Handles the automated P0 gates need (tools/flowtest.mjs). Read-only; no game

@@ -124,6 +124,43 @@ export function injectStyles() {
 //   off();                           // on close (popModal('quiz') also works)
 //   if (modalOpen('quiz')) return;   // "is anything OTHER than me open?"
 //   if (modalOpen()) return;         // "is anything at all open?"
+//
+// ── THE POLICY (Wave 3; supersedes the D15/D18 table) ────────────────────────
+// The registry is a Set of ids and nothing more; the policy is a design choice
+// and lives here, next to it, because it is otherwise spread across four files.
+// Ids in play: 'quiz', 'pause', 'token' (first-token explainer), 'meet' (Boreg).
+//
+//   quiz        DEFERS behind anything else. Its beacon respawns, so nothing is
+//               lost — the question simply comes later. (quiz.js: openQuestion)
+//   token/meet  DEFER behind anything else; the save flag is untouched, so the
+//               next token shows the explainer. (garage.js)
+//   pause       May open over a QUIZ. May NOT open over token/meet.
+//
+// The pause-over-quiz rule survived Wave 3 but for the opposite reason, and the
+// reason is worth writing down because it flipped:
+//
+//   Wave 2: the quiz only SLOWED the world, so refusing to pause would have left
+//           a child unable to stop a moving kart for twenty seconds.
+//   Wave 3: the quiz FREEZES the world (zero fixed steps) and its feedback waits
+//           for Space with no time limit at all. So the race is no longer the
+//           thing a child needs rescuing from — but "no time limit" means a quiz
+//           panel can be the last thing on screen indefinitely, and Settings and
+//           Quit have to be reachable from there. Refusing Esc would make the
+//           one key a child already knows do nothing, in the one state they can
+//           be stuck in. So: Esc over an open quiz opens the pause menu ON TOP,
+//           the quiz stays exactly as it is underneath, and Esc again returns to
+//           it. token/meet are still refused: they freeze the sim too, but they
+//           are one-time, short, and have their own button and their own Escape.
+//
+// Three consequences that are load-bearing, each of which was a real bug once:
+//   • `1/2/3` must not answer, and Space must not dismiss, a quiz that is behind
+//     the pause menu — quiz.js's key handler returns early on modalOpen('quiz').
+//   • The quiz's own clocks (answer timer, resume countdown) must not advance
+//     behind the pause menu — same check, in quiz.update().
+//   • Resuming from the pause menu must NOT hand input back if a quiz is still
+//     frozen underneath. race.js's setPaused() consults its own quizFrozen flag
+//     rather than assuming pause is the only thing that can hold the world.
+// Pinned by tools/modaltest.mjs.
 // ─────────────────────────────────────────────────────────────────────────────
 const _modals = new Set();
 

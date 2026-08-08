@@ -15,8 +15,9 @@ import { garageScene, freePlayScene, setKartPreviewMounter } from './garage/gara
 import { sentenceText } from './garage/prompts.js';
 import {
   titleScene, racerSelectScene, resultsScene, podiumScene, setBackdrop,
+  setSelectKartMounter, setSelectEnvironment,
 } from './ui/menus.js';
-import { createKart } from './kart/kartmodel.js';
+import { createKart, makeKartEnvironment } from './kart/kartmodel.js';
 import { ROSTER } from './kart/roster.js';
 import { TRACKS } from './track/trackdef.js';
 import { getLang } from './ui/i18n.js';
@@ -33,12 +34,41 @@ const MIN_GARAGE_BUDGET = 4;
 // The garage and podium both want a real kart rendered inside them, but neither
 // may import kartmodel (they would stop being independently previewable). They
 // expose a mounter seam; we fill it here.
-setKartPreviewMounter((container3D, o = {}) => {
+//
+// `racerId` and `parts` default to the PLAYER's, which is right for the garage
+// and wrong everywhere else: the podium shows three different racers, and the
+// two opponents own no garage parts. Any caller rendering somebody else's kart
+// must therefore pass both explicitly — see SCENES.podium.
+function makeKartFor(o = {}) {
   const racer = ROSTER.find(r => r.id === (o.racerId || save.read('racerId'))) || ROSTER[0];
-  const kart = createKart({ racer, parts: o.parts ?? save.read('parts'), engine });
+  return createKart({
+    racer, parts: o.parts ?? save.read('parts'), engine,
+    // Undefined leaves createKart on its own engine.q-derived defaults.
+    lod: o.lod, shadows: o.shadows,
+  });
+}
+
+setKartPreviewMounter((container3D, o = {}) => {
+  const kart = makeKartFor(o);
   container3D.add(kart.group);
   return kart;
 });
+
+// Racer select: eight live karts, one per card. Same seam, same reason (menus.js
+// must not import kartmodel or it stops rendering standalone under
+// tools/preview.mjs) — but here the racerId is ALWAYS explicit and the name is
+// written from the racer createKart actually resolved, never from the id we were
+// handed. Eight cards quietly wearing the player's kart is the exact failure
+// makeKartFor's save-backed default invites, and tools/selecttest.mjs reads
+// these names back off the scene graph to prove it did not happen.
+// Nothing on this screen casts or receives a shadow, so shadow casting is off.
+setSelectKartMounter((holder, o = {}) => {
+  const kart = makeKartFor({ ...o, parts: o.parts || {}, shadows: false });
+  kart.group.name = 'kart:' + kart.racer.id;
+  holder.add(kart.group);
+  return kart;
+});
+setSelectEnvironment(makeKartEnvironment);
 
 /** Track id or index → the name shown to the player, in the current language. */
 function trackNameOf(which) {
@@ -52,17 +82,100 @@ function trackNameOf(which) {
 const races = () => save.read('results') || [];
 const nextRaceIndex = () => Math.min(TRACKS.length - 1, Number(save.read('championshipRace')) || 0);
 const championshipDone = () => (Number(save.read('championshipRace')) || 0) >= TRACKS.length;
+/** A championship is "in progress or finished" once its first race is on the books. */
+const hasChampionshipSave = () =>
+  (Number(save.read('championshipRace')) || 0) > 0 || races().filter(Boolean).length > 0;
+const playerRacerId = () => save.read('racerId') || ROSTER[0].id;
+
+// ── the quiz's cross-race memory ───────────────────────────────────────────
+// `quizdata.questionsForDifficulty(difficulty, exclude)` can filter out
+// already-seen questions, and race.js forwards an `askedIds` opt into the quiz
+// system — but nothing was ever SETTING it, so the parameter was inert and race
+// 2 could re-ask race 1's questions. The ledger is the only layer that outlives
+// a single race, so the memory belongs here.
+//
+// Ids are harvested from the finished scene's own `quiz.askedIds` rather than by
+// subscribing to `quiz:open`, deliberately: the title-screen backdrop is a real
+// raceScene and would otherwise pour its questions into the championship's
+// memory from the menu. Cleared by resetChampionship() in menus.js.
+const askedQuestionIds = () => {
+  const v = save.read('championshipAsked');
+  return Array.isArray(v) ? v.filter(id => typeof id === 'string') : [];
+};
+
+function rememberAskedIds(ids) {
+  if (!ids?.length) return;
+  const merged = new Set(askedQuestionIds());
+  for (const id of ids) if (typeof id === 'string') merged.add(id);
+  save.set({ championshipAsked: [...merged] });
+}
+const racerDisplayName = r =>
+  (getLang() === 'en' ? (r?.nameEn || r?.nameHe) : (r?.nameHe || r?.nameEn)) || '';
+
+/**
+ * CANONICAL CHAMPIONSHIP STANDINGS SHAPE — one shape, defined here, read
+ * verbatim by the podium (table AND header) and the certificate. It used to be
+ * `{racerId, points, racer}` with the name nested one level down and no place at
+ * all, so the podium's flat reads rendered "undefined" and its header recomputed
+ * the player's position by itself and disagreed with its own table.
+ *
+ * Every entry is:
+ *   {
+ *     place,      // 1..8, final and unambiguous — the tie-break below decides it
+ *     racerId,    // roster id
+ *     racer,      // the roster row (colours, stats)
+ *     name,       // display name, already resolved for the current language
+ *     points,     // championship points
+ *     wins,       // number of race wins (1st places)
+ *     bestFinal,  // finishing place in the LAST race run (99 if they did not run)
+ *     isPlayer,   // true for exactly one entry
+ *   }
+ * The array is sorted best → worst, so `standings[i].place === i + 1` always.
+ *
+ * TIE-BREAK (compareStandings, below): points, then race wins, then the final
+ * race's finishing place, and if all three are level the PLAYER takes the higher
+ * spot. Anything that needs "where did the player come" must read
+ * `standings.find(s => s.isPlayer).place` — never recompute it.
+ */
+export function compareStandings(a, b) {
+  if (b.points !== a.points) return b.points - a.points;
+  if (b.wins !== a.wins) return b.wins - a.wins;
+  if (a.bestFinal !== b.bestFinal) return a.bestFinal - b.bestFinal;
+  if (a.isPlayer !== b.isPlayer) return a.isPlayer ? -1 : 1;
+  return 0;   // still level: roster order, via the stable sort
+}
 
 export function totalPoints() {
-  const totals = new Map(ROSTER.map(r => [r.id, 0]));
-  for (const race of races()) {
-    for (const s of race?.standings || []) {
-      totals.set(s.racerId, (totals.get(s.racerId) || 0) + (POINTS[s.place - 1] || 0));
+  const run = races().filter(Boolean);
+  const playerId = playerRacerId();
+  const acc = new Map(ROSTER.map(r => [r.id, { points: 0, wins: 0, bestFinal: 99 }]));
+
+  for (const race of run) {
+    for (const s of race.standings || []) {
+      const e = acc.get(s.racerId);
+      if (!e) continue;
+      e.points += POINTS[s.place - 1] || 0;
+      if (s.place === 1) e.wins++;
     }
   }
-  return [...totals.entries()]
-    .map(([racerId, points]) => ({ racerId, points, racer: ROSTER.find(r => r.id === racerId) }))
-    .sort((a, b) => b.points - a.points);
+  // "Best final-race place" is literally the last race on the books, so a dead
+  // heat is broken by who was quicker when it mattered most.
+  for (const s of run[run.length - 1]?.standings || []) {
+    const e = acc.get(s.racerId);
+    if (e) e.bestFinal = s.place || 99;
+  }
+
+  const rows = [...acc.entries()].map(([racerId, e]) => {
+    const racer = ROSTER.find(r => r.id === racerId);
+    return {
+      racerId, racer, name: racerDisplayName(racer),
+      points: e.points, wins: e.wins, bestFinal: e.bestFinal,
+      isPlayer: racerId === playerId,
+    };
+  });
+  rows.sort(compareStandings);
+  rows.forEach((r, i) => { r.place = i + 1; });
+  return rows;
 }
 
 // race.js announces a finish BOTH on the bus and through onComplete. The bus
@@ -102,7 +215,10 @@ export const SCENES = {
   select: (eng, o) => racerSelectScene(eng, o),
 
   race: (eng, o = {}) => {
-    const trackIndex = o.track ?? nextRaceIndex();
+    // Clamp: a caller that asks for race 4 of a 3-race championship (the old
+    // "continue" button did exactly that once the ledger was full) used to index
+    // past TRACKS and boot a scene with no track — a black screen with no way out.
+    const trackIndex = Math.max(0, Math.min(TRACKS.length - 1, o.track ?? nextRaceIndex()));
     if (o.racerId) save.set({ racerId: o.racerId });
     const s = raceScene(eng, {
       ...o,
@@ -111,7 +227,15 @@ export const SCENES = {
       // Difficulty escalates across the championship: gentle → challenging.
       difficulty: o.difficulty ?? (1 + trackIndex),
       parts: o.parts ?? save.read('parts'),
+      // Everything this championship has already asked, so the quiz can draw
+      // around it. quizdata falls back to the full pool if excluding would
+      // leave fewer than MIN_POOL questions, so this can never starve a race.
+      askedIds: o.askedIds ?? askedQuestionIds(),
       onComplete(result) {
+        // Bank the questions before the ledger moves on, so race 2's draw sees
+        // race 1's. Harvested from the scene rather than the result object
+        // because a race can be replayed and only the finished run counts.
+        rememberAskedIds(s?.quiz?.askedIds);
         recordRace(result);
         engine.goto('results', { ...result, isChampionship: true });
       },
@@ -197,17 +321,69 @@ export const SCENES = {
     });
   },
 
-  // Sandbox garage reachable from the home menu ("המוסך של בורג"): unlimited
-  // practice tokens, nothing persisted to the championship.
-  freeplay: (eng, o = {}) => freePlayScene(eng, { ...o, onExit: () => engine.goto('menu') }),
+  // The home menu's garage entry. Two different screens hide behind one button:
+  //   • no championship save  → the SANDBOX (unlimited practice tokens, nothing
+  //     persisted) — a child who has never raced still gets to meet Boreg.
+  //   • a championship exists → the REAL garage: the actual kart, the actual
+  //     wallet, upgrades that persist. A player mid-championship who opened this
+  //     from home used to land in the sandbox, spend a prompt, and find their
+  //     wallet and their kart untouched.
+  // Once every race is run, SCENES.garage forwards to the podium, so the
+  // end-of-championship rule still holds through this door too.
+  freeplay: (eng, o = {}) => {
+    if (hasChampionshipSave()) {
+      const { freePlay, ...rest } = o;   // strip the sandbox flag: this is the real thing
+      void freePlay;
+      return SCENES.garage(eng, rest);
+    }
+    return freePlayScene(eng, { ...o, onExit: () => engine.goto('menu') });
+  },
 
-  podium: (eng, o = {}) => podiumScene(eng, {
-    ...o,
-    standings: totalPoints(),
-    races: races(),
-    bestPrompt: save.read('bestPrompt') || null,
-    championship: (Number(save.read('championshipsDone')) || 0) + 1,
-  }),
+  podium: (eng, o = {}) => {
+    // The podium is where a championship is banked. Counted exactly once per
+    // ledger (the child can revisit the podium as often as they like), and
+    // `championshipCounted` is cleared by resetChampionship() in ui/menus.js.
+    if (championshipDone() && !save.read('championshipCounted')) {
+      save.set({
+        championshipsDone: (Number(save.read('championshipsDone')) || 0) + 1,
+        championshipCounted: true,
+      });
+    }
+    const standings = totalPoints();
+    const me = standings.find(s => s.isPlayer);
+    const scene = podiumScene(eng, {
+      ...o,
+      standings,
+      races: races(),
+      bestPrompt: save.read('bestPrompt') || null,
+      championship: Math.max(1, Number(save.read('championshipsDone')) || 1),
+      totalPoints: me?.points ?? 0,
+    });
+
+    // Real karts on the three steps. Each step gets ITS OWN racer — the mounter
+    // defaults to the player, which put three copies of the player's kart on the
+    // podium — and only the player's step wears the player's garage parts, since
+    // the opponents never visit the garage.
+    const myParts = save.read('parts') || {};
+    const karts = [];
+    for (const entry of standings.slice(0, 3)) {
+      const kart = makeKartFor({ racerId: entry.racerId, parts: entry.isPlayer ? myParts : {} });
+      // The kart model is -Z forward (D9); the podium steps face the camera at +Z.
+      kart.group.name = 'kart:' + entry.racerId;   // read back by the flow gate
+      kart.group.rotation.y = Math.PI + (entry.place === 1 ? 0 : (entry.place === 3 ? 0.30 : -0.30));
+      // The real model is wider than the block placeholder was; 0.78 keeps all
+      // four wheels on a 2.3m step instead of hanging over the edge.
+      kart.group.scale.setScalar(0.78);
+      if (scene.mountKartOnPodium?.(entry.place, kart.group)) karts.push(kart);
+      else kart.dispose?.();
+    }
+    const disposeScene = scene.dispose.bind(scene);
+    scene.dispose = () => {
+      for (const k of karts) { try { k.dispose?.(); } catch (e) { console.error(e); } }
+      disposeScene();
+    };
+    return scene;
+  },
 };
 
 // Keep the ledger honest even if a scene emits completion without the callback.

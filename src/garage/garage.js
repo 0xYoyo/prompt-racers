@@ -29,14 +29,14 @@ import { h, pushModal, popModal, modalOpen } from '../ui/style.js';
 import { registerStrings, t, num, getLang, isRTL, setLang } from '../ui/i18n.js';
 import { save } from '../core/save.js';
 import {
-  SLOTS, optionById, costOf, sentenceParts, partName, DEFAULT_BUDGET, MAX_COST,
-  vaguestSelection, bestAffordable,
+  SLOTS, optionById, optionsFor, costOf, sentenceParts, partName, DEFAULT_BUDGET, MAX_COST,
+  vaguestSelection, bestAffordable, pruneSelection,
 } from './prompts.js';
 import {
   scorePrompt, scoreFreeText, tokenReward,
   BASE_STATS, STAT_KEYS, LOWER_IS_BETTER, VISUAL_TIER,
 } from './scoring.js';
-import { tipById, tipBody, tipTitle, makeTipVars } from './tips.js';
+import { tipById, tipBody, tipTitle, makeTipVars, stepTip } from './tips.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Strings (all under the `garage.` prefix)
@@ -53,17 +53,11 @@ registerStrings({
     'garage.budget': 'תקציב',
     'garage.spent': 'עולה',
     'garage.left': 'נשארו',
-    'garage.budget.note': 'לא מספיק לכול — צריך לבחור איפה להשקיע',
     // Shown instead when the wallet actually covers the most expensive prompt
     // possible. The line above then simply is not true, and a screen that says
     // something a child can see is false stops being believed about anything.
-    'garage.budget.plenty': 'הפעם יש מספיק לכול — אז שווה ללכת על הפרומפט הכי מדויק',
     'garage.boreg': 'בורג',
-    'garage.intro.1': 'אני בורג, ואני בונה בדיוק מה שכתוב בפרומפט. בדיוק. אז בואו נרכיב יחד פרומפט טוב.',
-    'garage.intro.2': 'חזרתם! היום לומדים את הסוד שלי — מה אסור להרוס. זה מה שהופך חלק טוב לחלק מעולה.',
-    'garage.intro.3': 'המרוץ האחרון. כבר ידוע הכול: מה, מתי, מה אסור להרוס ואיך זה ייראה. קדימה, בואו נראה.',
     'garage.sentence.label': 'הפרומפט שלך לבורג',
-    'garage.sentence.hint': 'שורה אחרי שורה — הפרומפט נבנה מול העיניים',
     'garage.stats.label': 'איך זה ישפיע על הקארט',
     'garage.stat.speed': 'מהירות',
     // 'תאוצה' — the same word the select screen and the roster use. This panel
@@ -75,13 +69,21 @@ registerStrings({
     'garage.stat.weightNote': 'פחות = טוב יותר',
     'garage.quality': 'איכות הפרומפט',
     'garage.build': 'בורג, תבנה!',
-    'garage.buildBlocked': 'צריך לבחור בכל ארבע השורות',
+    'garage.buildBlocked': 'עוד לא סיימנו את ארבעת השלבים',
     'garage.building': 'בורג בונה…',
-    'garage.reset': 'מתחילים מחדש',
     'garage.frag': 'ייכנס לפרומפט',
-    'garage.step.change': 'שינוי',
-    'garage.step.next': 'בהמשך',
     'garage.step.of': 'שלב {n} מתוך ‎4',
+    'garage.step.back': 'שלב אחורה',
+    // ── Mode badge (championship vs practice sandbox) ───────────────────────
+    'garage.mode.champ': 'אליפות',
+    'garage.mode.practice': 'אימון',
+    'garage.mode.champ.sub': 'החלק נשמר לקארט',
+    'garage.mode.practice.sub': 'תרגול חופשי, שום דבר לא נשמר',
+    'garage.practice.tokens': 'טוקני אימון',
+    // ── The live kart window ────────────────────────────────────────────────
+    'garage.preview.live': 'תצוגה חיה',
+    'garage.preview.empty': 'הקארט שלך',
+    'garage.beforeafter': 'הקארט לפני ואחרי',
     'garage.tier.0': 'דרגה ‎0 — עובד, בערך',
     'garage.tier.1': 'דרגה ‎1 — בסדר גמור',
     'garage.tier.2': 'דרגה ‎2 — מכויל',
@@ -108,14 +110,8 @@ registerStrings({
     // Shown before the first choice, when there is no real tip to give yet. It
     // used to reprint garage.sentence.hint, which sits about 20px away on the
     // same screen — the card read as a bug rather than as an invitation.
-    'garage.tip.waiting': 'בוחרים משהו בשורה הראשונה, ואני אסביר בדיוק מה זה שינה בקארט.',
     'garage.visit': 'ביקור {n} מתוך ‎3',
     'garage.free': 'חינם',
-    'garage.recipe.label': 'מתכון לפרומפט טוב',
-    'garage.recipe.what': 'מה בדיוק',
-    'garage.recipe.when': 'מתי ואיפה',
-    'garage.recipe.limit': 'מה אסור להרוס',
-    'garage.recipe.look': 'איך זה ייראה',
 
     // ── Boreg introduces himself as an AI (first visit only) ────────────────
     'garage.meet.kicker': 'רגע לפני שמתחילים',
@@ -166,10 +162,8 @@ registerStrings({
     'garage.ghost.noteInvite': 'אותו מוסך, אותם טוקנים — רק פרומפט מדויק יותר. שווה לנסות עוד אחד.',
 
     // ── Free play ───────────────────────────────────────────────────────────
-    'garage.freeplay.chip': 'מצב תרגול',
     'garage.freeplay.note': 'טוקנים על חשבון בורג — אפשר לנסות כמה פרומפטים שרוצים',
     'garage.freeplay.kicker': 'מתאמנים על פרומפטים, בלי מרוץ',
-    'garage.freeplay.intro': 'המוסך פתוח סתם ככה! כאן הטוקנים עליי, שום דבר לא נשמר, ואפשר לנסות פרומפטים עד שמשתעממים.',
     'garage.freeplay.again': 'עוד פרומפט',
     'garage.freeplay.exit': 'חזרה לתפריט',
     'garage.freeplay.unlimited': 'ללא הגבלה',
@@ -180,14 +174,8 @@ registerStrings({
     'garage.budget': 'Budget',
     'garage.spent': 'Costs',
     'garage.left': 'Left',
-    'garage.budget.note': 'never enough for everything — choose where it counts',
-    'garage.budget.plenty': 'enough for everything this time — so go for the sharpest prompt',
     'garage.boreg': 'Boreg',
-    'garage.intro.1': "I'm Boreg, and I build exactly what the prompt says. Exactly. So let's put together a good prompt.",
-    'garage.intro.2': "You're back! Today we learn my secret — what must NOT break. That is what makes a part great.",
-    'garage.intro.3': 'Final race. It is all known by now: what, when, what must not break, and how it looks.',
     'garage.sentence.label': 'Your prompt for Boreg',
-    'garage.sentence.hint': 'one row at a time — the prompt builds in front of you',
     'garage.stats.label': 'Effect on your kart',
     'garage.stat.speed': 'Speed',
     'garage.stat.accel': 'Accel',
@@ -196,13 +184,19 @@ registerStrings({
     'garage.stat.weightNote': 'less is better',
     'garage.quality': 'Prompt quality',
     'garage.build': 'Boreg, build it!',
-    'garage.buildBlocked': 'Answer all four rows',
+    'garage.buildBlocked': 'Finish all four steps first',
     'garage.building': 'Boreg is building…',
-    'garage.reset': 'Start over',
     'garage.frag': 'goes into the prompt',
-    'garage.step.change': 'Change',
-    'garage.step.next': 'next',
     'garage.step.of': 'Step {n} of 4',
+    'garage.step.back': 'One step back',
+    'garage.mode.champ': 'Championship',
+    'garage.mode.practice': 'Practice',
+    'garage.mode.champ.sub': 'this part goes on your kart',
+    'garage.mode.practice.sub': 'free practice, nothing is saved',
+    'garage.practice.tokens': 'practice tokens',
+    'garage.preview.live': 'Live preview',
+    'garage.preview.empty': 'Your kart',
+    'garage.beforeafter': 'Your kart before and after',
     'garage.tier.0': 'Tier 0 — works, sort of',
     'garage.tier.1': 'Tier 1 — perfectly fine',
     'garage.tier.2': 'Tier 2 — tuned',
@@ -226,14 +220,8 @@ registerStrings({
     'garage.expert.check.filler': 'No empty words',
     'garage.expert.bonus': '1.6× tokens',
     'garage.tip.label': 'Tip from Boreg',
-    'garage.tip.waiting': 'Pick something in the first row and I will explain exactly what it changed on the kart.',
     'garage.visit': 'Visit {n} of 3',
     'garage.free': 'free',
-    'garage.recipe.label': 'Recipe for a good prompt',
-    'garage.recipe.what': 'What exactly',
-    'garage.recipe.when': 'When and where',
-    'garage.recipe.limit': 'What must not break',
-    'garage.recipe.look': 'How it looks',
 
     'garage.meet.kicker': 'Before we start',
     'garage.meet.title': 'Hello, I am Boreg',
@@ -279,10 +267,8 @@ registerStrings({
     'garage.ghost.note': 'Same garage, same tokens. The only thing that changed is the prompt.',
     'garage.ghost.noteInvite': 'Same garage, same tokens — just a sharper prompt. Worth another go.',
 
-    'garage.freeplay.chip': 'Practice mode',
     'garage.freeplay.note': 'tokens are on Boreg — try as many prompts as you like',
     'garage.freeplay.kicker': 'Practising prompts, no race attached',
-    'garage.freeplay.intro': 'The garage is open just for fun! Tokens are on me, nothing is saved, and you can try prompts until you get bored.',
     'garage.freeplay.again': 'Another prompt',
     'garage.freeplay.exit': 'Back to menu',
     'garage.freeplay.unlimited': 'unlimited',
@@ -322,10 +308,9 @@ const GARAGE_CSS = `
 
 .grg-body{flex:1;display:flex;gap:18px;min-height:0}
 .grg-main{flex:1.66;display:flex;flex-direction:column;gap:13px;min-width:0}
-.grg-side{flex:1;max-width:372px;display:flex;flex-direction:column;gap:13px;min-width:0}
+.grg-side{flex:1;max-width:372px;display:flex;flex-direction:column;gap:13px;min-width:0;min-height:0}
 
-/* Boreg's line */
-.grg-boreg{display:flex;align-items:center;gap:13px;padding:10px 16px}
+/* Boreg's robot face — used by his card and by the introduction overlay. */
 .grg-face{width:44px;height:44px;flex:none;border-radius:14px;position:relative;
   background:linear-gradient(180deg,#8fa4c8,#5c6b8f);
   box-shadow:0 2px 0 rgba(255,255,255,.25) inset,0 6px 14px rgba(0,0,0,.45)}
@@ -336,7 +321,6 @@ const GARAGE_CSS = `
   background:#8fa4c8;border-radius:2px}
 .grg-antenna::after{content:"";position:absolute;top:-6px;left:-3px;width:9px;height:9px;
   border-radius:50%;background:var(--gold-2);box-shadow:0 0 10px var(--gold-2)}
-.grg-boreg-line{font-size:15px;font-weight:700;line-height:1.35}
 
 /* The sentence — the centrepiece. */
 .grg-sentence{padding:14px 20px 16px;position:relative;overflow:hidden;
@@ -354,25 +338,53 @@ const GARAGE_CSS = `
   box-shadow:0 0 20px rgba(255,194,71,.4)}
 .grg-fill{border-radius:7px;padding:0 3px;background:rgba(255,194,71,.13)}
 
-/* Steps — each row owns a colour identity (header gradient, number chip,
+/* Steps — each step owns a colour identity (card header gradient, number chip,
    selection bloom), so "which question is this" reads from across the room. */
 .grg-hue-part{--rc1:#63a6e6;--rc2:#2f5f9e;--rcg:rgba(99,166,230,.5);--rci:#bcdcff}
 .grg-hue-goal{--rc1:#f79055;--rc2:#b8442a;--rcg:rgba(247,144,85,.5);--rci:#ffd2b4}
 .grg-hue-limit{--rc1:#5fc884;--rc2:#2c7a4e;--rcg:rgba(95,200,132,.46);--rci:#bdf0cf}
 .grg-hue-style{--rc1:#ac7ce6;--rc2:#5d3ba0;--rcg:rgba(172,124,230,.5);--rci:#dcc8ff}
-.grg-steps{display:flex;flex-direction:column;gap:12px;flex:1;min-height:0;justify-content:flex-start}
-.grg-step{border-radius:var(--r-m)}
-.grg-step-head{display:flex;align-items:center;gap:10px}
-.grg-n{width:26px;height:26px;flex:none;border-radius:9px;font-size:13px;font-weight:900;
+
+/* ── THE WIZARD ─────────────────────────────────────────────────────────────
+   One question fills the board. A progress rail across the top says where we
+   are and walks back; the pinned sentence above it grows with every answer. */
+.grg-wiz{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px;padding:13px 16px 15px}
+.grg-rail{display:flex;align-items:center;gap:9px;flex:none}
+.grg-pill{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer;
+  font-family:var(--font);text-align:start;color:var(--txt-dim);
+  padding:7px 11px;border-radius:var(--r-pill);
+  background:rgba(255,255,255,.05);border:1px solid var(--stroke);
+  transition:background .15s,border-color .15s,color .15s}
+.grg-pill span{font-size:12.5px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grg-pill i{width:20px;height:20px;flex:none;border-radius:50%;display:flex;
+  align-items:center;justify-content:center;font-style:normal;font-size:11.5px;font-weight:900;
+  color:#0f1018;background:rgba(255,255,255,.2)}
+.grg-pill.done{color:var(--rci);border-color:var(--rcg);background:rgba(255,255,255,.07)}
+.grg-pill.done i{background:linear-gradient(180deg,var(--rc1),var(--rc2))}
+.grg-pill.now{color:#fff6e2;border-color:var(--gold-2);background:rgba(255,194,71,.14);
+  box-shadow:0 0 20px rgba(255,194,71,.22)}
+.grg-pill.now i{background:linear-gradient(180deg,var(--gold-1),var(--gold-3))}
+.grg-pill.lock{opacity:.45;cursor:default}
+.grg-pill:not(.lock):hover{background:rgba(255,255,255,.13)}
+.grg-pill:focus-visible{outline:3px solid var(--info);outline-offset:2px}
+
+.grg-step-head{display:flex;align-items:center;gap:10px;flex:none}
+.grg-n{width:28px;height:28px;flex:none;border-radius:9px;font-size:14px;font-weight:900;
   color:#0f1018;background:linear-gradient(180deg,var(--rc1),var(--rc2));
   display:flex;align-items:center;justify-content:center;
   box-shadow:0 0 14px var(--rcg),0 1px 0 rgba(255,255,255,.35) inset}
-.grg-slot-title{font-size:16px;font-weight:900;color:var(--txt)}
-.grg-slot-teach{font-size:12.5px;font-weight:700;color:var(--txt-dim)}
+.grg-slot-title{font-size:19px;font-weight:900;color:var(--txt)}
+.grg-slot-teach{font-size:12.5px;font-weight:700;color:var(--txt-dim);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grg-stepno{margin-inline-start:auto;flex:none;font-size:11.5px;font-weight:900;color:var(--txt-dim)}
+.grg-back{flex:none;font-family:var(--font);cursor:pointer;font-size:12.5px;font-weight:800;
+  color:var(--txt);padding:7px 15px;border-radius:var(--r-pill);
+  background:rgba(255,255,255,.07);border:1px solid var(--stroke-hi)}
+.grg-back:hover{background:rgba(255,255,255,.16)}
+.grg-back:focus-visible{outline:3px solid var(--info);outline-offset:2px}
+.grg-back:disabled{opacity:.3;cursor:default}
 
-/* active step */
-.grg-step.active{flex:0 1 auto;min-height:0;margin-block:auto;display:flex;flex-direction:column;gap:11px}
-.grg-opts{display:flex;gap:13px;flex:1;min-height:186px;max-height:268px}
+.grg-opts{display:flex;gap:13px;flex:1 1 auto;min-height:170px;max-height:380px;margin-block:auto}
 /* expert mode only needs the "which part" row, so it gets a compact variant */
 .grg-opts.compact{flex:none;min-height:0;max-height:none}
 .grg-opts.compact .grg-opt-head{min-height:54px}
@@ -382,7 +394,7 @@ const GARAGE_CSS = `
   background:linear-gradient(180deg,rgba(32,32,46,.94),rgba(12,12,19,.96));
   border:2px solid rgba(255,255,255,.09);box-shadow:0 10px 22px rgba(0,0,0,.5);
   transition:transform .14s var(--ease),border-color .14s,box-shadow .14s}
-.grg-opt-head{position:relative;min-height:92px;display:flex;align-items:center;
+.grg-opt-head{position:relative;flex:0 0 32%;min-height:80px;max-height:124px;display:flex;align-items:center;
   padding:11px 15px;background:linear-gradient(155deg,var(--rc1),var(--rc2));
   box-shadow:0 2px 0 rgba(255,255,255,.22) inset}
 .grg-opt-head::after{content:"";position:absolute;inset:0;opacity:.16;pointer-events:none;
@@ -390,7 +402,7 @@ const GARAGE_CSS = `
 .grg-opt-he{position:relative;font-size:16.5px;font-weight:900;line-height:1.22;color:#fff;
   text-shadow:0 2px 6px rgba(0,0,0,.45)}
 .grg-opt-body{padding:12px 15px 13px;display:flex;flex-direction:column;gap:10px;flex:1}
-.grg-opt-sub{font-size:12.5px;font-weight:700;color:#b6b0a7;line-height:1.38}
+.grg-opt-sub{font-size:13.5px;font-weight:700;color:#c3bcb1;line-height:1.42}
 /* The exact words this card will drop into the sentence. Reading it is the
    point: the child sees their own Hebrew sentence being assembled, word by word. */
 .grg-opt-frag{margin-block-start:auto;font-size:12.5px;font-weight:800;line-height:1.35;
@@ -415,27 +427,8 @@ const GARAGE_CSS = `
   box-shadow:0 0 8px rgba(255,214,107,.5)}
 .grg-cost.free{color:var(--txt-dim)}
 
-/* done step — one compact line with a Change button */
-.grg-step.done{display:flex;align-items:center;gap:11px;padding:8px 13px;flex:none;
-  background:linear-gradient(180deg,rgba(34,34,48,.72),rgba(16,16,24,.78));
-  border:1px solid var(--stroke);border-inline-start:4px solid var(--rc1)}
-.grg-done-title{font-size:12.5px;font-weight:800;color:var(--txt-dim);flex:none}
-.grg-done-pick{font-size:14.5px;font-weight:900;color:var(--rci);min-width:0;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.grg-change{margin-inline-start:auto;flex:none;font-family:var(--font);cursor:pointer;
-  font-size:12px;font-weight:800;color:var(--txt);padding:6px 14px;border-radius:var(--r-pill);
-  background:rgba(255,255,255,.07);border:1px solid var(--stroke-hi)}
-.grg-change:hover{background:rgba(255,255,255,.15)}
-.grg-change:focus-visible{outline:3px solid var(--info);outline-offset:2px}
-
-/* upcoming step — a quiet placeholder so the child sees the shape of the task */
-.grg-step.todo{display:flex;align-items:center;gap:11px;padding:8px 13px;flex:none;opacity:.42;
-  border:1px dashed var(--stroke-hi)}
-.grg-step.todo .grg-n{background:rgba(255,255,255,.12);color:var(--txt-dim);box-shadow:none}
-.grg-todo-tag{margin-inline-start:auto;font-size:11px;font-weight:800;color:var(--txt-dim)}
-
 /* Side column */
-.grg-kart{flex:1;min-height:168px;max-height:270px;position:relative;overflow:hidden;
+.grg-kart{flex:1 1 0;min-height:92px;max-height:420px;position:relative;overflow:hidden;
   background:radial-gradient(120% 90% at 50% 30%,rgba(80,70,110,.34),rgba(12,12,20,.42) 70%)}
 .grg-panel-pad{padding:12px 15px}
 .grg-statrow{display:flex;align-items:center;gap:9px}
@@ -458,9 +451,14 @@ const GARAGE_CSS = `
   background:linear-gradient(90deg,var(--gold-3),var(--gold-1));transition:width .4s var(--ease);
   box-shadow:0 0 14px rgba(255,194,71,.55)}
 
-/* Tip card */
+/* Boreg's card — one idea, about the step you are on */
 .grg-tip{padding:12px 15px;border-inline-start:4px solid var(--gold-2)}
-.grg-side>.grg-tip{flex:1;min-height:124px}
+.grg-side>.grg-tip{flex:none;min-height:0;display:flex;flex-direction:column;gap:6px}
+.grg-boregtop{display:flex;align-items:center;gap:11px}
+.grg-boregcard .grg-face{width:38px;height:38px;border-radius:12px}
+.grg-boregcard .grg-face::before,.grg-boregcard .grg-face::after{top:13px;width:7px;height:9px}
+.grg-boregcard .grg-face::before{left:8px}.grg-boregcard .grg-face::after{right:8px}
+.grg-boregcard .grg-tip-title{margin-top:1px}
 .grg-tip-label{font-size:11px;font-weight:900;letter-spacing:.02em;color:var(--gold-1)}
 .grg-tip-title{font-size:15.5px;font-weight:900;margin-top:2px}
 .grg-tip-body{font-size:13px;font-weight:600;line-height:1.45;color:#e6e0d3;margin-top:4px}
@@ -489,10 +487,6 @@ const GARAGE_CSS = `
 .grg-bonus{font-size:11px;font-weight:900;color:var(--token);
   background:rgba(255,214,107,.12);border-radius:var(--r-pill);padding:4px 10px}
 .grg-expertbox{padding:13px 15px;display:flex;flex-direction:column;gap:9px;flex:1;min-height:0}
-.grg-recipe{padding:13px 15px;display:flex;flex-direction:column;gap:9px;flex:none}
-.grg-recipe-row{display:flex;gap:8px;flex-wrap:wrap}
-.grg-recipe-chip{font-size:13px;font-weight:800;padding:8px 14px;border-radius:var(--r-pill);
-  color:#ffe3ab;background:rgba(255,194,71,.10);border:1px solid rgba(255,194,71,.28)}
 .grg-ta{width:100%;flex:1;min-height:150px;resize:none;font-family:var(--font);font-size:15.5px;
   font-weight:700;line-height:1.4;color:var(--txt);padding:11px 13px;border-radius:var(--r-s);
   background:rgba(10,10,16,.6);border:2px solid var(--stroke-hi)}
@@ -597,28 +591,68 @@ const GARAGE_CSS = `
 .grg-rev-scroll{overflow:auto;min-height:0;display:flex;flex-direction:column;gap:10px;
   padding-inline-end:4px}
 
-/* ── Free play + the bottom recipe strip that fills the lower band ───────── */
+/* ── Mode badge: championship vs practice ───────────────────────────────── */
+.grg-mode{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:900;
+  padding:6px 14px;border-radius:var(--r-pill);color:var(--gold-1);
+  background:rgba(255,194,71,.12);border:1px solid rgba(255,194,71,.34)}
+.grg-mode i{width:9px;height:9px;border-radius:50%;flex:none;background:var(--gold-2);
+  box-shadow:0 0 10px var(--gold-2)}
+.grg-mode.practice{color:#bdf0cf;background:rgba(95,200,132,.14);border-color:rgba(95,200,132,.4)}
+.grg-mode.practice i{background:#5fc884;box-shadow:0 0 10px rgba(95,200,132,.8)}
+.grg-mode em{font-style:normal;font-weight:800;opacity:.8}
 .grg-visit.practice{color:#bdf0cf;background:rgba(95,200,132,.14);border-color:rgba(95,200,132,.36)}
-.grg-recipe.strip{flex-direction:row;align-items:center;gap:14px;padding:10px 15px;flex:none}
-.grg-recipe.strip .grg-recipe-row{flex:1}
-.grg-recipe.strip .grg-recipe-chip{font-size:12.5px;padding:7px 12px}
+
+/* Live part label over the kart window — says WHAT is being previewed there. */
+.grg-kartcap{position:absolute;inset-inline-start:11px;inset-block-end:10px;
+  display:flex;align-items:center;gap:7px;max-width:calc(100% - 22px);
+  font-size:11.5px;font-weight:900;color:#ffe3ab;padding:5px 11px;border-radius:var(--r-pill);
+  background:rgba(10,8,16,.66);border:1px solid rgba(255,194,71,.3)}
+.grg-kartcap b{font-weight:900;color:#fff6e2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Before → after, in the debrief. The whole promise of the garage in one row. */
+.grg-ba{display:flex;gap:8px}
+.grg-bacell{flex:1;min-width:0;padding:8px 10px;border-radius:var(--r-s);
+  background:rgba(255,255,255,.05);border:1px solid var(--stroke);
+  display:flex;flex-direction:column;gap:3px}
+.grg-baname{font-size:11px;font-weight:900;color:var(--txt-dim)}
+.grg-barow{display:flex;align-items:baseline;gap:6px;font-weight:900}
+.grg-bafrom{font-size:15px;color:var(--txt-dim)}
+.grg-baarrow{font-size:12px;color:var(--txt-dim)}
+.grg-bato{font-size:19px;color:var(--txt)}
+.grg-bato.good{color:var(--good)}.grg-bato.bad{color:var(--bad)}
 
 /* Small school-laptop panels (1024x640 and friends). Without this the option
-   cards of the open row fall off the bottom edge — i.e. the child cannot answer
+   cards of the open step fall off the bottom edge — i.e. the child cannot answer
    the question they are being asked. Detail text goes first, the cards stay. */
 @media (max-height:700px){
-  .grg-opts{min-height:132px;max-height:190px}
-  .grg-opt-head{min-height:46px}
-  .grg-opt-he{font-size:15px}
+  .grg-opts{min-height:120px}
+  .grg-opt-head{min-height:44px}
+  .grg-opt-he{font-size:14.5px}
   .grg-opt-sub{display:none}
   .grg-opt-body{padding:9px 12px 10px;gap:7px}
-  .grg-opt-frag{font-size:11.5px;padding:6px 9px}
-  .grg-recipe.strip{display:none}
-  .grg-boreg{padding:6px 13px}
-  .grg-boreg-line{font-size:13px}
+  .grg-opt-frag{margin-block-start:auto;font-size:11.5px;padding:6px 9px}
   .grg-sentence{padding:9px 16px 11px}
   .grg-slot-teach{display:none}
+  .grg-slot-title{font-size:16px}
+  .grg-wiz{padding:10px 13px 12px;gap:9px}
+  .grg-kart{min-height:78px;max-height:140px}
+  .grg-tip-body{font-size:12px}
   .grg-expertbar{gap:8px}
+  .grg-build{padding:12px 18px;font-size:17px}
+  /* The side column is the tight one on a 640px panel: kart, Boreg, the stat
+     bars and the build CTA all have to fit without the CTA sliding off. */
+  .grg-side{gap:9px}
+  .grg-sentence-txt{font-size:17.5px}
+  .ltr .grg-sentence-txt{font-size:16.5px}
+  .grg-panel-pad{padding:8px 12px}
+  .grg-statrow{gap:7px}
+  .grg-track{height:9px}
+  .grg-statname{font-size:11px}
+  .grg-tip{padding:9px 12px}
+  .grg-boregcard .grg-face{width:30px;height:30px;border-radius:10px}
+  .grg-boregcard .grg-face::before,.grg-boregcard .grg-face::after{top:10px;width:6px;height:8px}
+  .grg-boregcard .grg-face::before{left:6px}.grg-boregcard .grg-face::after{right:6px}
+  .grg-tip-title{font-size:14px}
 }
 
 @media (max-height:790px){
@@ -627,13 +661,13 @@ const GARAGE_CSS = `
   .grg-meet-p{font-size:15px}
   .grg-dbtxt{font-size:12.5px}
   .grg-partcard .grg-partname{font-size:23px}
-  .grg-recipe.strip{padding:7px 13px}
-  .grg-sentence-txt{font-size:22px}
-  .ltr .grg-sentence-txt{font-size:20px}
-  .grg-opt-head{min-height:66px}
-  .grg-opt-he{font-size:16px}
-  .grg-root{gap:11px;padding:14px 20px 15px}
+  .grg-sentence-txt{font-size:21px}
+  .ltr .grg-sentence-txt{font-size:19px}
+  .grg-opt-head{min-height:62px}
+  .grg-opt-he{font-size:15.5px}
+  .grg-root{gap:10px;padding:13px 20px 14px}
   .grg-body{gap:14px}
+  .grg-kart{min-height:92px;max-height:190px}
 }
 `;
 
@@ -875,8 +909,15 @@ export function garageScene(engine, opts = {}) {
 
   // ── state ──────────────────────────────────────────────────────────────────
   const st = {
-    sel: { part: opts.selection?.part || null, goal: opts.selection?.goal || null,
-      constraint: opts.selection?.constraint || null, style: opts.selection?.style || null },
+    // pruneSelection drops any row whose option belongs to a different part —
+    // a preview or a deep link cannot hand us a wing's limit inside an engine ask.
+    sel: pruneSelection({
+      part: opts.selection?.part || null, goal: opts.selection?.goal || null,
+      constraint: opts.selection?.constraint || null, style: opts.selection?.style || null,
+    }),
+    // WIZARD: which of the four questions is on screen right now. This is the
+    // whole navigation model — one question owns the board, the rail walks back.
+    step: 0,
     phase: 'select',            // select | building | reveal
     expert: !!opts.expert,
     freeText: opts.freeText || '',
@@ -890,6 +931,11 @@ export function garageScene(engine, opts = {}) {
     // visit ever (free play counts — a child may well open the sandbox first).
     meet: opts.meet != null ? !!opts.meet : shouldShowBoregIntro(),
   };
+  // Open on the first unanswered question (which is step 1 for a fresh visit,
+  // and the row a preview/deep-link left empty otherwise).
+  st.step = SLOTS.findIndex(s => !st.sel[s.key]);
+  if (st.step === -1) st.step = SLOTS.length - 1;
+  if (opts.step != null) st.step = clamp(opts.step | 0, 0, SLOTS.length - 1);
 
   // ── 3D ─────────────────────────────────────────────────────────────────────
   const scene = new THREE.Scene();
@@ -956,15 +1002,28 @@ export function garageScene(engine, opts = {}) {
     ? scoreFreeText(st.freeText, st.sel.part || 'engine', ctx())
     : scorePrompt(st.sel, ctx()));
 
-  /** Index of the row the player is answering right now. */
-  function activeIndex() {
-    const i = SLOTS.findIndex(s => !st.sel[s.key]);
-    return i === -1 ? SLOTS.length - 1 : i;   // all answered → keep the last open
+  /** The step the wizard is showing. */
+  const activeIndex = () => clamp(st.step, 0, SLOTS.length - 1);
+  /** The furthest step the child has unlocked: one past the last answered row. */
+  function reachable() {
+    let i = 0;
+    while (i < SLOTS.length && st.sel[SLOTS[i].key]) i++;
+    return Math.min(i, SLOTS.length - 1);
   }
 
   function affordable(slotKey, opt) {
     const cur = optionById(slotKey, st.sel[slotKey]);
     return spent() - (cur ? cur.cost : 0) + opt.cost <= budget;
+  }
+
+  /** Jump to a step. Forward only as far as the answers reach — no skipping. */
+  function gotoStep(i) {
+    if (st.phase !== 'select') return;
+    const target = clamp(i, 0, Math.max(reachable(), 0));
+    if (target === st.step) return;
+    st.step = target;
+    st.focusHint = '1:0';
+    render();
   }
 
   function choose(slotKey, opt) {
@@ -973,24 +1032,44 @@ export function garageScene(engine, opts = {}) {
     if (st.meet) { popModal('meet'); st.meet = false; markBoregIntroSeen(); }
     if (st.phase !== 'select') return;
     if (!affordable(slotKey, opt)) return;
-    st.sel[slotKey] = st.sel[slotKey] === opt.id ? null : opt.id;
-    // Tips fire live so the lesson lands at the moment of the choice. Marking the
-    // card seen HERE is what stops pickTips' fresh-first ordering from serving the
-    // same card on every single click.
-    const r = liveResult();
-    if (r.tips.length) {
-      st.activeTip = r.tips[0];
-      if (!st.seenTips.includes(r.tips[0])) st.seenTips.push(r.tips[0]);
-    }
-    st.focusHint = `${activeIndex()}:0`;
+    st.sel[slotKey] = opt.id;
+    // Rows 2–4 belong to a specific part, so changing the part in step 1 empties
+    // whatever was chosen for the previous one rather than leaving a wing's limit
+    // inside an engine's prompt.
+    if (slotKey === 'part') st.sel = pruneSelection(st.sel);
+    // The pinned sentence has just grown; move to the next question. The last
+    // step stays put so the child can read the finished sentence and hit build.
+    const i = SLOTS.findIndex(s => s.key === slotKey);
+    if (i >= 0 && i < SLOTS.length - 1 && affordableStep(i + 1)) st.step = i + 1;
+    st.focusHint = '1:0';
     render();
   }
 
-  function clearSlot(slotKey) {
-    if (st.phase !== 'select') return;
-    st.sel[slotKey] = null;
-    st.focusHint = `${activeIndex()}:0`;
-    render();
+  /** Can any option in this step be paid for? (Free options exist in rows 2–4.) */
+  function affordableStep(i) {
+    const slot = SLOTS[i];
+    if (!slot) return false;
+    return optionsFor(slot.key, st.sel.part).some(o => affordable(slot.key, o));
+  }
+
+  // ── LIVE PART PREVIEW ──────────────────────────────────────────────────────
+  // The kart in the side window wears the part the CURRENT prompt would produce,
+  // and re-wears it the moment a card changes — so "a sharper prompt makes a
+  // better part" is something the child watches happen rather than reads about.
+  //
+  // Two calls because there are two mounters: the garage's own placeholder
+  // exposes setPart(slotKey, visualTier), and the real kart model (wired in by
+  // scenes.js) exposes setParts({slot: tier}). The garage used to call only the
+  // first, so with the real kart mounted the preview never changed at all.
+  function applyKartPreview(r) {
+    const slot = st.sel.part;
+    if (!slot) return;
+    const res = r || liveResult();
+    kartApi?.setPart?.(slot, res.visualTier);
+    kartApi?.setParts?.({
+      [slot]: res.tier,
+      ...(slot === 'engine' ? { exhaust: res.tier } : {}),
+    });
   }
 
   function startBuild() {
@@ -1007,7 +1086,7 @@ export function garageScene(engine, opts = {}) {
     st.buildsThisVisit++;
     const r = st.result;
     if (r.tips.length) { st.activeTip = r.tips[0]; if (!st.seenTips.includes(r.tips[0])) st.seenTips.push(r.tips[0]); }
-    kartApi?.setPart?.(r.slotKey, r.visualTier);
+    applyKartPreview(r);
     render();
   }
 
@@ -1018,7 +1097,12 @@ export function garageScene(engine, opts = {}) {
     root.replaceChildren();
     navGrid = [];
     root.appendChild(topBar());
+    // The assembled sentence is PINNED above everything, full width: it is the
+    // one thing on this screen that must never move or scroll away, because it
+    // is the thing the child is building.
+    root.appendChild(sentenceBoard());
     root.appendChild(bodyRow());
+    applyKartPreview();
     if (st.phase === 'reveal' && st.result) root.appendChild(revealOverlay());
     if (st.meet) root.appendChild(meetOverlay());
     if (navKey && st.phase === 'select') {
@@ -1059,6 +1143,18 @@ export function garageScene(engine, opts = {}) {
         h('div.grg-meet-actions', null, go)));
   }
 
+  // ── MODE ───────────────────────────────────────────────────────────────────
+  // Two garages share this scene: the championship one, whose part is bolted
+  // onto the kart the child races next, and the practice sandbox, where tokens
+  // are Boreg's and nothing is kept. Which one you are standing in has to be
+  // legible in one glance, so it is a badge and not a sentence.
+  function modeBadge() {
+    return h('div.grg-mode' + (freePlay ? '.practice' : ''), null,
+      h('i'),
+      h('span', null, t(freePlay ? 'garage.mode.practice' : 'garage.mode.champ')),
+      h('em', null, '· ' + t(freePlay ? 'garage.mode.practice.sub' : 'garage.mode.champ.sub')));
+  }
+
   function topBar() {
     return h('header.grg-top',
       null,
@@ -1066,12 +1162,9 @@ export function garageScene(engine, opts = {}) {
         null,
         h('div.grg-kicker', null, t(freePlay ? 'garage.freeplay.kicker' : 'garage.kicker')),
         h('div.display.grg-title', null, t('garage.title'))),
-      freePlay
-        ? h('div.grg-visit.practice', null, t('garage.freeplay.chip'))
-        : h('div.grg-visit', null, t('garage.visit', { n: num(visit) })),
+      modeBadge(),
+      freePlay ? null : h('div.grg-visit', null, t('garage.visit', { n: num(visit) })),
       h('div.grg-spacer'),
-      h('div.grg-budgetnote', null, t(freePlay ? 'garage.freeplay.note'
-        : budget >= MAX_COST ? 'garage.budget.plenty' : 'garage.budget.note')),
       h('div.panel.grg-budget',
         null,
         h('div.grg-coin'),
@@ -1082,7 +1175,9 @@ export function garageScene(engine, opts = {}) {
             : h('div.display.grg-bignum.num', null, num(remaining()))),
         h('div', { style: { width: '1px', height: '28px', background: 'var(--stroke-hi)' } }),
         h('div', null,
-          h('div.grg-sub', null, t('garage.budget')),
+          // In practice mode the wallet is Boreg's, and saying so where the
+          // number lives is the only place a child will read it.
+          h('div.grg-sub', null, t(freePlay ? 'garage.practice.tokens' : 'garage.budget')),
           h('div' + (freePlay ? '' : '.num'), { style: { fontSize: '18px', color: 'var(--txt-dim)', fontWeight: '900' } },
             freePlay ? t('garage.freeplay.unlimited') : num(budget)))));
   }
@@ -1094,34 +1189,8 @@ export function garageScene(engine, opts = {}) {
   function mainCol() {
     return h('div.grg-main',
       null,
-      boregLine(),
-      sentenceBoard(),
-      st.expert ? expertBox() : slotList(),
-      // The four ideas of a good prompt, kept on screen the whole time. In
-      // guided mode this also fills the band the one-row-at-a-time reveal used
-      // to leave empty at the bottom of the board.
-      st.expert ? null : recipeStrip(),
+      st.expert ? expertBox() : wizard(),
       expertBar());
-  }
-
-  function recipeStrip() {
-    return h('div.panel.grg-recipe.strip', null,
-      h('div.label', { style: { color: 'var(--gold-1)', flex: 'none' } }, t('garage.recipe.label')),
-      h('div.grg-recipe-row', null,
-        ...['what', 'when', 'limit', 'look'].map((k, i) =>
-          h('span.grg-recipe-chip', null, num(i + 1) + '. ' + t('garage.recipe.' + k)))));
-  }
-
-  function boregLine() {
-    return h('div.panel.grg-boreg',
-      null,
-      h('div.grg-face', null, h('div.grg-antenna')),
-      h('div', null,
-        h('div.label', null, t('garage.boreg')),
-        h('div.grg-boreg-line', null,
-          st.phase === 'building' ? t('garage.building')
-            : freePlay ? t('garage.freeplay.intro')
-              : t(`garage.intro.${visit}`))));
   }
 
   /** The live sentence. `nowSlot` gets a lit-up blank so the eye knows where it is. */
@@ -1151,38 +1220,65 @@ export function garageScene(engine, opts = {}) {
     const nowSlot = SLOTS[activeIndex()]?.key;
     return h('div.grg-sentence',
       null,
-      h('div.row', { style: { justifyContent: 'space-between', marginBottom: '5px' } },
-        h('div.label', { style: { color: 'var(--gold-1)' } }, t('garage.sentence.label')),
-        h('div.grg-sub', null, t('garage.sentence.hint'))),
+      h('div.label', { style: { color: 'var(--gold-1)', marginBottom: '5px' } },
+        t('garage.sentence.label')),
       st.expert
         ? h('div.grg-sentence-txt', null, st.freeText || t('garage.expert.ph'))
         : sentenceNode(st.sel, { nowSlot: st.phase === 'select' ? nowSlot : null }));
   }
 
-  // ── the four steps ─────────────────────────────────────────────────────────
-  // One expanded row at a time. Answered rows collapse into a single line that
-  // still says what was chosen, and re-opens with one click.
-  function slotList() {
-    const wrap = h('div.grg-steps');
-    const active = activeIndex();
+  // ── THE WIZARD ─────────────────────────────────────────────────────────────
+  // One question owns the board. The rail above it is both a progress indicator
+  // and the way back: an answered step is a live button, the current one is lit,
+  // anything further on is locked (you cannot answer question 3 before 2 — the
+  // options in rows 2–4 depend on which part row 1 chose).
+  function wizard() {
+    const i = activeIndex();
+    const slot = SLOTS[i];
+    return h('div.panel.grg-wiz' + hueClass(slot.hue), null,
+      rail(),
+      stepHead(slot, i),
+      optionRow(slot, i));
+  }
+
+  function rail() {
+    const here = activeIndex();
+    const reach = reachable();
+    const row = h('div.grg-rail');
     SLOTS.forEach((slot, i) => {
-      if (i === active) wrap.appendChild(activeStep(slot, i));
-      else if (st.sel[slot.key]) wrap.appendChild(doneStep(slot, i));
-      else wrap.appendChild(todoStep(slot, i));
+      const done = !!st.sel[slot.key];
+      const cls = i === here ? '.now' : done ? '.done' : i <= reach ? '' : '.lock';
+      const locked = i > reach;
+      const pill = h('button.grg-pill' + cls + hueClass(slot.hue), {
+        type: 'button',
+        disabled: locked ? true : null,
+        'aria-current': i === here ? 'step' : null,
+        onclick: () => gotoStep(i),
+      }, h('i', null, done && i !== here ? '✓' : num(i + 1)),
+      h('span', null, pick(slot, 'step')));
+      row.appendChild(nav(pill, 0, i));
     });
-    return wrap;
+    return row;
   }
 
   function stepHead(slot, i) {
+    const back = h('button.grg-back', {
+      type: 'button',
+      disabled: i === 0 ? true : null,
+      onclick: () => gotoStep(i - 1),
+    }, '‹ ' + t('garage.step.back'));
     return h('div.grg-step-head', null,
       h('div.grg-n.num', null, num(i + 1)),
       h('div.grg-slot-title', null, lang === 'en' ? slot.en : slot.he),
-      h('div.grg-slot-teach', null, pick(slot, 'teach')));
+      h('div.grg-slot-teach', null, pick(slot, 'teach')),
+      h('div.grg-stepno', null, t('garage.step.of', { n: num(i + 1) })),
+      nav(back, 2, 0));
   }
 
-  function activeStep(slot, i) {
+  function optionRow(slot, i) {
     const opts = h('div.grg-opts');
-    slot.options.forEach((o, j) => {
+    const list = optionsFor(slot.key, st.sel.part);
+    list.forEach((o, j) => {
       const chosen = st.sel[slot.key] === o.id;
       const can = affordable(slot.key, o);
       const btn = h('button.grg-opt' + (can ? '' : '.locked'), {
@@ -1200,31 +1296,9 @@ export function garageScene(engine, opts = {}) {
         o.cost > 0
           ? h('div.grg-cost', null, h('i'), h('span.num', null, num(o.cost)))
           : h('div.grg-cost.free', null, t('garage.free'))));
-      opts.appendChild(nav(btn, i, j));
+      opts.appendChild(nav(btn, 1, j));
     });
-    return h('div.grg-step.active' + hueClass(slot.hue), null, stepHead(slot, i), opts);
-  }
-
-  function doneStep(slot, i) {
-    const o = optionById(slot.key, st.sel[slot.key]);
-    const change = h('button.grg-change', {
-      type: 'button', onclick: () => clearSlot(slot.key),
-    }, t('garage.step.change'));
-    return h('div.grg-step.done' + hueClass(slot.hue), null,
-      h('div.grg-n.num', null, num(i + 1)),
-      h('div.grg-done-title', null, lang === 'en' ? slot.en : slot.he),
-      h('div.grg-done-pick', null, pickLabel(o)),
-      o.cost > 0
-        ? h('div.grg-cost', { style: { marginBlockStart: '0' } }, h('i'), h('span.num', null, num(o.cost)))
-        : h('div.grg-cost.free', { style: { marginBlockStart: '0' } }, t('garage.free')),
-      nav(change, i, 0));
-  }
-
-  function todoStep(slot, i) {
-    return h('div.grg-step.todo' + hueClass(slot.hue), null,
-      h('div.grg-n.num', null, num(i + 1)),
-      h('div.grg-done-title', null, lang === 'en' ? slot.en : slot.he),
-      h('div.grg-todo-tag', null, t('garage.step.next')));
+    return opts;
   }
 
   // `pick` needs an `He`/`En` suffix; option label fields are plain he/en.
@@ -1242,7 +1316,7 @@ export function garageScene(engine, opts = {}) {
     }, h('span.grg-sw'), h('span', null, t('garage.expert.toggle')));
     return h('div.grg-expertbar',
       null,
-      nav(toggle, 4, 0),
+      nav(toggle, 2, 1),
       h('span.grg-badge', null, t('garage.expert.badge')),
       h('span.grg-bonus', null, t('garage.expert.bonus')));
   }
@@ -1271,21 +1345,17 @@ export function garageScene(engine, opts = {}) {
       partRow.appendChild(nav(btn, 0, j));
     });
     // Expert mode still needs to know WHICH part is being built.
-    return h('div.grg-steps',
+    return h('div.panel.grg-wiz.grg-hue-part',
       null,
-      h('div.grg-step.grg-hue-part', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
-        stepHead(SLOTS[0], 0),
-        partRow),
-      h('div.panel.grg-expertbox', null,
+      h('div.grg-step-head', null,
+        h('div.grg-n.num', null, num(1)),
+        h('div.grg-slot-title', null, lang === 'en' ? SLOTS[0].en : SLOTS[0].he),
+        h('div.grg-slot-teach', null, pick(SLOTS[0], 'teach'))),
+      partRow,
+      h('div.grg-expertbox', { style: { padding: '0' } },
         h('div.label', null, t('garage.expert.label')),
         nav(ta, 1, 0),
-        checkRow),
-      // The same four ideas the guided slots teach, kept visible as a reminder.
-      h('div.panel.grg-recipe', null,
-        h('div.label', { style: { color: 'var(--gold-1)' } }, t('garage.recipe.label')),
-        h('div.grg-recipe-row', null,
-          ...['what', 'when', 'limit', 'look'].map((k, i) =>
-            h('span.grg-recipe-chip', null, num(i + 1) + '. ' + t('garage.recipe.' + k))))));
+        checkRow));
   }
 
   function syncExpert() {
@@ -1301,16 +1371,30 @@ export function garageScene(engine, opts = {}) {
   }
 
   function sideCol() {
-    // No caption. A real kart mounts here via setKartPreviewMounter(), so the
-    // old "כאן ייכנס הקארט" tag was a build note sitting on top of the finished
-    // thing it was a note about.
-    kartWindow = h('div.panel.grg-kart');
-    return h('aside.grg-side', null, kartWindow, statsPanel(), tipCard(), buildRow());
+    // A real kart mounts here via setKartPreviewMounter() and wears the part the
+    // current prompt would produce (see applyKartPreview). The caption names what
+    // is being previewed, because a kart that silently changes shape is a mystery
+    // rather than a lesson.
+    const r = liveResult();
+    const cap = st.sel.part
+      ? h('div.grg-kartcap', null,
+        h('span', null, t('garage.preview.live')),
+        h('b', null, partName(st.sel.part, r.tier, lang)))
+      : h('div.grg-kartcap', null, h('span', null, t('garage.preview.empty')));
+    kartWindow = h('div.panel.grg-kart', null, cap);
+    return h('aside.grg-side', null, kartWindow, boregCard(), statsPanel(), buildRow());
   }
+
+  // Before a part is chosen there is nothing to preview, and the bars must not
+  // quietly show what an ENGINE would do — the screen would be answering a
+  // question the child has not been asked yet.
+  const shownResult = () => (st.expert || st.sel.part
+    ? liveResult()
+    : { ...liveResult(), deltas: {}, score: 0 });
 
   let statNodes = {}, qualNodes = {};
   function statsPanel() {
-    const r = liveResult();
+    const r = shownResult();
     statNodes = {};
     const rows = STAT_KEYS.map(k => {
       const cur = h('span.grg-cur'), up = h('span.grg-up'), dn = h('span.grg-dn');
@@ -1368,19 +1452,35 @@ export function garageScene(engine, opts = {}) {
     return { title: tipTitle(tip, lang), body: tipBody(tip, lang, vars) };
   }
 
-  function tipCard() {
-    const tip = tipById(st.activeTip);
-    if (!tip) {
-      return h('div.panel.grg-tip', { style: { opacity: '.72' } },
-        h('div.grg-tip-label', null, t('garage.tip.label')),
-        h('div.grg-tip-body', null, t('garage.tip.waiting')));
+  // ── BOREG'S CARD — the only prose on the board ─────────────────────────────
+  // Exactly one idea at a time, and always about the moment the child is in:
+  // the step they are on and the card they just picked inside it. It is rebuilt
+  // from (step, selection) on every render, so there is no way for yesterday's
+  // tip to survive into today's question — the class of bug that made the old
+  // side column read as broken.
+  function boregCard() {
+    let key, title, body;
+    if (st.phase === 'building') {
+      key = 'building'; title = t('garage.building'); body = '';
+    } else if (st.expert) {
+      const tip = tipById('expert.intro');
+      key = 'expert';
+      const p = tipParts(tip, liveResult());
+      title = p.title; body = p.body;
+    } else {
+      const slot = SLOTS[activeIndex()];
+      const tip = stepTip(slot.key, st.sel, lang);
+      key = tip.id; title = tip.title; body = tip.body;
     }
-    const p = tipParts(tip, st.result || liveResult());
-    return h('div.panel-lift.grg-tip.pop-in',
-      null,
-      h('div.grg-tip-label', null, t('garage.tip.label')),
-      h('div.grg-tip-title', null, p.title),
-      h('div.grg-tip-body', null, p.body));
+    // data-tip lets the gate assert the tip actually changed, without parsing prose.
+    return h('div.panel-lift.grg-tip.grg-boregcard.pop-in',
+      { 'data-tip': key },
+      h('div.grg-boregtop', null,
+        h('div.grg-face', null, h('div.grg-antenna')),
+        h('div', null,
+          h('div.grg-tip-label', null, t('garage.boreg')),
+          h('div.grg-tip-title', null, title))),
+      body ? h('div.grg-tip-body', null, body) : null);
   }
 
   let buildBtn = null;
@@ -1391,7 +1491,7 @@ export function garageScene(engine, opts = {}) {
       onclick: startBuild,
     }, r.complete ? t('garage.build') : t('garage.buildBlocked'));
     paintBuildBtn(r);
-    return h('div', null, nav(buildBtn, 4, 1));
+    return h('div', null, nav(buildBtn, 2, 2));
   }
 
   function paintBuildBtn(r) {
@@ -1509,6 +1609,26 @@ export function garageScene(engine, opts = {}) {
       o.ghost && h('div.grg-ghostnote', null, o.note));
   }
 
+  // Before → after, per stat. The part card already carries the deltas, but a
+  // delta is a number about a number; "52 → 62" is the kart the child had and the
+  // kart they now have, which is the thing the whole visit was for.
+  function beforeAfter(r) {
+    const row = h('div.grg-ba');
+    for (const k of STAT_KEYS) {
+      const before = BASE_STATS[k];
+      const d = r.deltas[k] || 0;
+      const after = clamp(before + d, 0, 100);
+      const good = LOWER_IS_BETTER[k] ? d < 0 : d > 0;
+      row.appendChild(h('div.grg-bacell', null,
+        h('div.grg-baname', null, t('garage.stat.' + k)),
+        h('div.grg-barow', null,
+          h('span.grg-bafrom.num', null, num(before)),
+          h('span.grg-baarrow', null, rtl ? '←' : '→'),
+          h('span.grg-bato' + (d === 0 ? '' : good ? '.good' : '.bad') + '.num', null, num(after)))));
+    }
+    return row;
+  }
+
   function revealOverlay() {
     const r = st.result;
     const gain = tokenReward(r.score, st.expert);
@@ -1551,6 +1671,8 @@ export function garageScene(engine, opts = {}) {
               title: t(ghost.invite ? 'garage.ghost.invite' : 'garage.ghost.title'),
               note: t(ghost.invite ? 'garage.ghost.noteInvite' : 'garage.ghost.note'),
             })),
+          h('div.label', null, t('garage.beforeafter')),
+          beforeAfter(r),
           h('div.label', null, t('garage.debrief.title')),
           debriefPanel(r)),
         h('div.grg-revactions', null,
@@ -1624,7 +1746,7 @@ export function garageScene(engine, opts = {}) {
     if (st.result.complete) {
       st.phase = 'reveal';
       if (!st.activeTip && st.result.tips.length) st.activeTip = st.result.tips[0];
-      kartApi?.setPart?.(st.result.slotKey, st.result.visualTier);
+      applyKartPreview(st.result);
     }
   }
 
@@ -1686,8 +1808,18 @@ export function preview(engine, o = {}) {
   return garageScene(engine, {
     visit: 2,
     meet: false,
-    selection: { part: 'engine', goal: 'accel-corner', constraint: null, style: null },
+    selection: { part: 'engine', goal: 'engine.exit', constraint: null, style: null },
     tip: 'spec.when-where',
+    ...o,
+  });
+}
+
+/** The very first thing a child sees in the garage: step 1, nothing chosen. */
+export function previewStart(engine, o = {}) {
+  return garageScene(engine, {
+    visit: 1,
+    meet: false,
+    selection: { part: null, goal: null, constraint: null, style: null },
     ...o,
   });
 }
@@ -1697,7 +1829,7 @@ export function previewReveal(engine, o = {}) {
     visit: 2,
     meet: false,
     phase: 'reveal',
-    selection: { part: 'tires', goal: 'accel-brake', constraint: 'light', style: 'desert' },
+    selection: { part: 'tires', goal: 'tires.late', constraint: 'tires.wear', style: 'tires.stripe' },
     ...o,
   });
 }
@@ -1708,7 +1840,7 @@ export function previewRevealVague(engine, o = {}) {
     visit: 1,
     meet: false,
     phase: 'reveal',
-    selection: { part: 'engine', goal: 'good', constraint: 'none', style: 'any' },
+    selection: { part: 'engine', goal: 'engine.good', constraint: 'engine.none', style: 'engine.any' },
     ...o,
   });
 }
@@ -1728,7 +1860,7 @@ export function previewFreePlay(engine, o = {}) {
   return garageScene(engine, {
     freePlay: true,
     meet: false,
-    selection: { part: 'chassis', goal: 'accel-brake', constraint: null, style: null },
+    selection: { part: 'chassis', goal: 'chassis.slalom', constraint: null, style: null },
     tip: 'constraint.first',
     ...o,
   });
@@ -1765,6 +1897,7 @@ export function previewTokenPopup(engine, o = {}) {
 export function previewExpert(engine, o = {}) {
   return garageScene(engine, {
     visit: 3,
+    meet: false,
     expert: true,
     selection: { part: 'engine', goal: null, constraint: null, style: null },
     freeText: 'בורג, תחזק לי את המנוע ליציאה מסיבוב, בלי להוסיף יותר מ‎2 ק"ג משקל, ובצבע כתום מאובק',

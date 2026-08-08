@@ -14,6 +14,7 @@ const DEFAULTS = {
   expertUnlocked: false,
   bestLap: {},              // trackId -> ms
   muted: false,
+  championshipAsked: [],    // quiz question ids already asked THIS championship
 };
 
 let state = load();

@@ -2,12 +2,28 @@
 // IN-RACE QUIZ — מרוץ הפרומפטים
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// Floating "question beacons" sit around the lap. Driving through one drops the
-// world into slow motion and opens a single three-answer question about AI and
-// prompting. Right answer → turbo + tokens. Wrong answer or a timeout → nothing
-// bad happens at all: the correct answer is shown, one warm line is shown, and
-// the race carries on. That asymmetry is deliberate and load-bearing — a child
-// who is punished for a wrong guess stops guessing, and stops learning.
+// Floating "question beacons" sit around the lap. Driving through one FREEZES
+// the world and opens a single three-answer question about AI and prompting.
+// Right answer → turbo + tokens. Wrong answer or a timeout → nothing bad happens
+// at all: the correct answer is shown, one warm line is shown, and the race
+// carries on. That asymmetry is deliberate and load-bearing — a child who is
+// punished for a wrong guess stops guessing, and stops learning.
+//
+// ═══════════════════════════════════════════════════════ WAVE 3: FULL FREEZE
+// Wave 2 slowed the world to 0.28×/0.78× while a question was up. Reading while
+// the kart still drives is a divided-attention task, and the one thing this
+// panel exists to do is teach — so the sequence is now:
+//
+//   beacon hit → sim FROZEN (zero fixed steps) → question → 1/2/3
+//   → feedback + explanation, on screen indefinitely → Space
+//   → 3 · 2 · 1 on the HUD gantry, still frozen → resume
+//
+// Nothing about the mechanism changed, only the number: the time scale handed
+// back to race.js is now exactly 0 for the whole sequence (D11 — fewer fixed
+// steps, never shorter ones; at scale 0 the accumulator simply never fills, so
+// race and lap clocks, which only advance inside simulate(), do not move).
+// race.js additionally gates `input.enabled` off for the frozen stretch exactly
+// the way the pause menu does, so held keys survive it (D12).
 //
 // ═══════════════════════════════════════════════════ INTEGRATION SEAM (race.js)
 //
@@ -24,8 +40,9 @@
 //
 // The ONLY thing race.js must change in its loop is where the fixed step comes
 // from. `update(dt)` is still handed a real-time 1/60 by the engine; the quiz is
-// ticked with that REAL dt (its countdown must not slow down with the world),
-// and the number it returns scales how much SIM time that frame is worth:
+// ticked with that REAL dt (its own countdown must keep running in wall-clock
+// time while the world is stopped), and the number it returns scales how much
+// SIM time that frame is worth — 1 normally, 0 while a panel is up:
 //
 //   const FIXED = 1 / 60;
 //   let simAcc = 0;
@@ -41,7 +58,7 @@
 //
 // where `simulate(FIXED)` is the existing body of update(). Consequences, stated
 // plainly because they are the whole reason for this shape:
-//   • The physics step is STILL exactly 1/60. Slow motion runs FEWER steps per
+//   • The physics step is STILL exactly 1/60. A frozen world runs ZERO steps per
 //     frame, it never shortens one. Nothing in kartphysics changes behaviour.
 //   • S.raceTime / S.lapTime advance only inside simulate(), so lap timing stays
 //     honest: a slowed second of wall clock is a slowed second of race time, and
@@ -84,6 +101,8 @@ registerStrings({
     'quiz.timeUp': 'נגמר הזמן',
     'quiz.answerMarked': 'התשובה הנכונה מסומנת',
     'quiz.continue': 'ממשיכים לנסוע…',
+    'quiz.pressSpace': 'לוחצים רווח כדי להמשיך',
+    'quiz.continueBtn': 'ממשיכים! (רווח)',
     'quiz.noPenalty': 'בלי עונש. ממשיכים!',
     'quiz.warm.1': 'לא נורא בכלל — עכשיו יש כאן משהו חדש שיודעים.',
     'quiz.warm.2': 'ניסיון יפה! גם תשובה שלא קלעה מלמדת משהו.',
@@ -104,6 +123,8 @@ registerStrings({
     'quiz.timeUp': 'Time is up',
     'quiz.answerMarked': 'The right answer is marked',
     'quiz.continue': 'Back to racing…',
+    'quiz.pressSpace': 'Press Space to continue',
+    'quiz.continueBtn': 'Keep racing! (Space)',
     'quiz.noPenalty': 'No penalty. Keep going!',
     'quiz.warm.1': 'No harm done — that is one new thing you now know.',
     'quiz.warm.2': 'Nice try! An answer that misses still teaches something.',
@@ -137,14 +158,18 @@ const COOLDOWN_S = 10;
 // questions, not fewer.
 const COOLDOWN_IGNORED_S = 24;
 
-// Slow motion. The dip is the drama beat AND the reading time. It does not last
-// the whole question: after DIP_S the world eases back to READ_SCALE — still
-// clearly slowed, but the race is a race again. Both are TIME SCALES, applied by
-// race.js to its own accumulator (see the seam note at the top).
-const DIP_SCALE = 0.28;
-const DIP_S = 3.0;
-const READ_SCALE = 0.78;      // 0.72 → 0.78: still clearly slowed, less molasses
-const FEEDBACK_SCALE = 0.85;
+// The world is FROZEN, not slowed, for the whole sequence (Wave 3). This is a
+// TIME SCALE, applied by race.js to its own accumulator (see the seam note at
+// the top) — zero fixed steps are emitted, and it is not smoothed toward: a
+// half-frozen world is a half-simulated one, and lap times must stay honest.
+const FREEZE_SCALE = 0;
+// The resume countdown, in seconds per beat: 3 · 2 · 1 on the HUD's own gantry
+// (the quiz emits `race:countdown`, exactly like the race start does, so the
+// lights, the beeps and the GO flourish are the ones the child already knows).
+// The world stays frozen for all of it — the countdown is the hand-back, and it
+// exists so the kart is never moving again before the player is looking at it.
+const RESUME_BEAT_S = 0.72;
+const RESUME_BEATS = 3;
 
 // Answer time by tier, in seconds. Deliberately far longer than an adult needs:
 // a slow reader must never lose because of reading speed. Nothing bad happens at
@@ -160,9 +185,13 @@ const FEEDBACK_SCALE = 0.85;
 // which a child reaches having already read a dozen of these.
 const TIME_LIMIT = { 1: 20, 2: 18, 3: 16 };
 
-const FEEDBACK_OK_S = 3.4;    // celebration + explanation
-const FEEDBACK_NO_S = 4.6;    // longer: there is more to read, and no rush
-const DISMISS_AFTER_S = 0.7;  // before this, a keypress cannot skip the feedback
+// Feedback has NO time limit any more — it stays until the child presses Space.
+// The world is frozen behind it, so there is nothing to be late for, and the
+// explanation is the single most valuable half-screen in the game. The only
+// timer left here is a short arming delay, so the keypress that ANSWERED cannot
+// also dismiss the answer (a fast double-tap of 1 used to blink the explanation
+// away before it had been read).
+const DISMISS_AFTER_S = 0.45;
 
 const REWARD_TOKENS = { 1: 3, 2: 4, 3: 5 };
 const BOOST = { strength: 1.3, duration: 2.4, impulse: 6 };
@@ -225,6 +254,10 @@ const QUIZ_CSS = `
 .quiz-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;
   min-block-size:16px}
 .quiz-hint{font-size:12px;font-weight:800;color:var(--txt-dim);letter-spacing:.02em}
+/* Only offered once the feedback is up — while the question is live there is
+   nothing to continue to. */
+.quiz-cont{display:none;padding:8px 18px;font-size:clamp(13px,1.8vh,16px)}
+.quiz-answered .quiz-cont{display:inline-flex}
 
 .quiz-result{display:none;flex-direction:column;gap:clamp(4px,.8vh,9px);
   padding:clamp(9px,1.3vh,15px) clamp(11px,1.3vw,17px);border-radius:var(--r-m);
@@ -268,6 +301,10 @@ function injectQuizCSS() {
  *   spline      TrackSpline — beacons are placed along it (required for beacons)
  *   def         track def, for startT
  *   difficulty  1..3 → which tiers the bank draws from
+ *   askedIds    optional Array|Set of question ids already asked THIS
+ *               championship; they are excluded from this race's pool (Wave 3
+ *               item 6 — no repeats across the three races). Ignored if
+ *               excluding them would leave fewer than quizdata's MIN_POOL.
  *   rng         seeded rng from core/rng.js (defaults to a fixed seed)
  *   mount       DOM element for the overlay (default engine.ui)
  *   enabled     false = beacons render but never trigger (menu backdrops)
@@ -445,7 +482,12 @@ export function createQuizSystem(engine, opts = {}) {
   /* ── question pool ────────────────────────────────────────────────────────
      Drawn without replacement so a child never sees the same question twice in
      one race; the pool refills (reshuffled) if a race somehow outlasts it. */
-  const eligible = questionsForDifficulty(difficulty);
+  // `askedIds` carries the championship's memory across races: scenes.js
+  // accumulates the ids from `quiz:open` and hands them back, so race 2 never
+  // repeats a question from race 1. quizdata falls back to the full eligible
+  // list if excluding would starve the pool (MIN_POOL), so this can never
+  // empty it.
+  const eligible = questionsForDifficulty(difficulty, opts.askedIds);
   let pool = [];
   function refill() {
     pool = eligible.slice();
@@ -486,10 +528,16 @@ export function createQuizSystem(engine, opts = {}) {
   elVerdict.append(elVerdictTxt, elSub);
   const elResult = h('div.quiz-result', null, elVerdict, elWarm, elWhy);
 
+  // The explanation waits for Space, so there must also be something to click:
+  // a mouse/touch player, and a player still holding Space as a drift key when
+  // the beacon fired (their keydown already happened; auto-repeats are ignored
+  // on purpose, see onKey), both need a visible way out.
+  const elCont = h('button.btn.quiz-cont', { type: 'button', onclick: () => dismiss() });
+  const elFoot = h('div.quiz-foot', null, elHint, elCont);
+
   const card = h('div.quiz-card.panel-lift', null,
     h('div.quiz-head', null, elBadge, elTopic),
-    elBar, elQ, elOpts, elResult,
-    h('div.quiz-foot', null, elHint));
+    elBar, elQ, elOpts, elResult, elFoot);
   card.setAttribute('role', 'dialog');
   card.setAttribute('aria-live', 'polite');
 
@@ -497,11 +545,16 @@ export function createQuizSystem(engine, opts = {}) {
   mount.appendChild(root);
 
   /* ── state ────────────────────────────────────────────────────────────────*/
-  let phase = 'idle';        // idle | question | feedback
+  // idle | question | feedback | resume
+  //   question/feedback/resume all hold the world at FREEZE_SCALE. `resume` is
+  //   the 3 · 2 · 1 hand-back: the panel is already gone, the sim is not back yet.
+  let phase = 'idle';
   let phaseT = 0;            // seconds in the current phase (REAL time)
+  let beat = -1;             // last countdown beat emitted during `resume`
   let cooldown = 0;
   let scale = 1;             // the time scale handed back to race.js
   let shown = null;          // { data, order, correctSlot, limit }
+  const asked = [];          // ids opened by THIS system, in order (see quiz:open)
   let body = null;           // player body, for applyBoost
   let lastResult = null;
 
@@ -530,7 +583,9 @@ export function createQuizSystem(engine, opts = {}) {
     elTopic.textContent = topicLabel(shown.data.topic);
     elQ.textContent = s.q;
     for (let k = 0; k < 3; k++) optEls[k].txt.textContent = s.a[shown.order[k]];
-    elHint.textContent = t('quiz.hint', { k: num('1 · 2 · 3') });
+    elHint.textContent = phase === 'feedback'
+      ? t('quiz.pressSpace') : t('quiz.hint', { k: num('1 · 2 · 3') });
+    elCont.textContent = t('quiz.continueBtn');
     if (shown.answered != null || shown.timedOut) renderResult();
   }
 
@@ -557,6 +612,7 @@ export function createQuizSystem(engine, opts = {}) {
     if (modalOpen('quiz')) return;
     pushModal('quiz');
     shown = pick || drawQuestion();
+    asked.push(shown.data.id);
     shown.answered = null;
     shown.timedOut = false;
     shown.warmKey = `quiz.warm.${1 + Math.floor(rng() * 4)}`;
@@ -576,19 +632,28 @@ export function createQuizSystem(engine, opts = {}) {
 
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // Auto-repeat is not a press. Space is also the drift key: a child who was
+    // holding it when the beacon fired would otherwise have the explanation
+    // dismissed for them, by a key they never released.
+    if (e.repeat) return;
     // Something is layered over us (pause menu, a one-time explainer). Its keys
     // are not ours: without this, 1/2/3 answered — and closed — a question the
-    // child could not even see while the pause menu was up.
+    // child could not even see while the pause menu was up. Space would likewise
+    // have dismissed the feedback from behind the pause menu.
     if (modalOpen('quiz')) return;
     const digit = { Digit1: 0, Digit2: 1, Digit3: 2, Numpad1: 0, Numpad2: 1, Numpad3: 2 }[e.code];
     if (phase === 'question') {
       if (digit == null) return;
       e.preventDefault();
       answer(digit);
-    } else if (phase === 'feedback' && phaseT > DISMISS_AFTER_S) {
-      if (digit == null && e.code !== 'Enter' && e.code !== 'Space') return;
+    } else if (phase === 'feedback') {
+      // Space is the one documented key; Enter is accepted as the usual
+      // "confirm" alias. Digits deliberately are NOT — the child just pressed
+      // one to answer, and the explanation must not blink away under a
+      // double-tap. DISMISS_AFTER_S covers the same trap for Space/Enter.
+      if (e.code !== 'Enter' && e.code !== 'Space') return;
       e.preventDefault();
-      close();
+      if (phaseT > DISMISS_AFTER_S) dismiss();
     }
   }
 
@@ -619,7 +684,8 @@ export function createQuizSystem(engine, opts = {}) {
     }
     card.classList.add('quiz-answered');
     root.classList.toggle('quiz-good', good);
-    elHint.textContent = t('quiz.continue');
+    elHint.textContent = t('quiz.pressSpace');
+    elCont.textContent = t('quiz.continueBtn');
     renderResult();
 
     if (good) {
@@ -644,15 +710,35 @@ export function createQuizSystem(engine, opts = {}) {
     opts.onResult?.(payload);
   }
 
-  function close() {
-    if (phase === 'idle') return;
-    popModal('quiz');
-    removeEventListener('keydown', onKey);
+  /**
+   * The child has read the explanation and pressed Space (or the button). Take
+   * the panel away and hand the world back with a 3 · 2 · 1 — the sim stays
+   * frozen right through it, so the kart is never moving again before the
+   * player is looking at the road instead of at a paragraph.
+   */
+  function dismiss() {
+    if (phase !== 'feedback') return;
+    hidePanel();
+    phase = 'resume';
+    phaseT = 0;
+    beat = -1;
+    bus.emit('quiz:dismiss', lastResult);
+  }
+
+  function hidePanel() {
     root.classList.remove('show');
     root.classList.remove('quiz-good');
     card.classList.remove('quiz-answered');
+    removeEventListener('keydown', onKey);
+  }
+
+  function close() {
+    if (phase === 'idle') return;
+    popModal('quiz');
+    hidePanel();
     phase = 'idle';
     phaseT = 0;
+    beat = -1;
     cooldown = lastResult?.timedOut ? COOLDOWN_IGNORED_S : COOLDOWN_S;
     bus.emit('quiz:close', lastResult);
   }
@@ -662,7 +748,8 @@ export function createQuizSystem(engine, opts = {}) {
    * @param {number} dt    REAL seconds since the last frame (never scaled)
    * @param {object} playerBody  KartBody — read for position, given the boost
    * @param {object} ctx   { racing:boolean } — false during countdown/after flag
-   * @returns {number} time scale in (0,1] for race.js to multiply its dt by
+   * @returns {number} time scale for race.js to multiply its dt by: 1 while
+   *          idle, 0 for the whole question → feedback → countdown sequence.
    */
   function update(dt, playerBody, ctx) {
     if (playerBody) body = playerBody;
@@ -704,20 +791,26 @@ export function createQuizSystem(engine, opts = {}) {
         elBarFill.style.width = (frac * 100).toFixed(1) + '%';
         elBar.classList.toggle('low', frac < 0.28);
         if (left <= 0) timeout();
-      } else if (phaseT >= (lastResult?.correct ? FEEDBACK_OK_S : FEEDBACK_NO_S)) {
-        close();
+      } else if (phase === 'resume') {
+        // 3 · 2 · 1 · GO on the HUD's own countdown gantry, reusing the exact
+        // events the race start uses so the lights, the beeps and the GO
+        // flourish are the ones the child already learned in the first 3 seconds
+        // of the race. The world is still frozen for every one of these beats.
+        const b = Math.min(RESUME_BEATS, Math.floor(phaseT / RESUME_BEAT_S));
+        if (b !== beat) {
+          beat = b;
+          bus.emit('race:countdown', { n: RESUME_BEATS - b });   // 3,2,1 then 0 = GO
+        }
+        if (phaseT >= RESUME_BEATS * RESUME_BEAT_S) close();
       }
+      // `feedback` has no timer at all: it waits for Space (see dismiss()).
     }
 
-    // Time scale: deep dip for the drama beat, then a gentler slow while the
-    // question is still up, then back to full speed. Smoothed so the transition
-    // is a swoop rather than a jolt.
-    let target = 1;
-    if (phase === 'question') target = phaseT < DIP_S ? DIP_SCALE : READ_SCALE;
-    else if (phase === 'feedback') target = FEEDBACK_SCALE;
-    const rate = target < scale ? 9 : 3.2;
-    scale += (target - scale) * Math.min(1, dt * rate);
-    if (Math.abs(scale - target) < 0.005) scale = target;
+    // Time scale. Not smoothed and not partial: while the panel owns the screen
+    // the world is stopped dead (zero fixed steps), and the frame the panel
+    // leaves on is the frame the world starts again. Anything in between would
+    // be a half-simulated race and a dishonest lap time.
+    scale = phase === 'idle' ? 1 : FREEZE_SCALE;
 
     writeInstances();
     return scale;
@@ -738,12 +831,23 @@ export function createQuizSystem(engine, opts = {}) {
     group,
     update,
     get active() { return phase !== 'idle'; },
+    /** True for the whole frozen sequence — question, feedback AND the 3·2·1. */
+    get frozen() { return phase !== 'idle'; },
+    get phase() { return phase; },
+    /** The id of the question currently on screen, or null. */
+    get currentId() { return phase === 'idle' ? null : (shown?.data?.id ?? null); },
+    /** Every id this race has shown, in order — the same ids `quiz:open` carries. */
+    get askedIds() { return asked.slice(); },
+    /** How many questions are eligible after the championship exclusion. */
+    get poolSize() { return eligible.length; },
     get timeScale() { return scale; },
     get lastResult() { return lastResult; },
     get beaconCount() { return N; },
     /** Force a question open — used by previews and by the dev harness. */
     openQuestion(pick) { openQuestion(pick); },
-    /** Force the panel shut (pause, scene change). */
+    /** The player's "I have read it" — feedback → 3·2·1 → resume. */
+    dismiss,
+    /** Force the panel shut immediately, skipping the countdown (scene change). */
     close,
     dispose() {
       popModal('quiz');            // a torn-down scene must not leave a phantom
