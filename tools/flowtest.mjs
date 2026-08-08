@@ -429,13 +429,37 @@ try {
       ['plada', 'nitzotz', 'zuzi', 'nurit', ...REST],
       ['zuzi', 'nurit', 'nitzotz', 'plada', ...REST],   // final race: player 3rd
     ];
+    // WINS: 21–21 between zuzi and nitzotz, and ONLY the wins term separates
+    // them. zuzi takes races 1 and 2 and comes last in race 3 (10+10+1 = 21, two
+    // wins); nitzotz is 2nd, 2nd and 4th (8+8+5 = 21, no wins). Their bestFinal
+    // actually favours NITZOTZ (4th vs 8th), so deleting the wins term does not
+    // merely stop mattering — it flips the table. plada takes the title on 22.
+    const TIE_WINS = [
+      ['zuzi', 'nitzotz', 'plada', 'nurit', ...REST],
+      ['zuzi', 'nitzotz', 'plada', 'nurit', ...REST],
+      ['plada', 'nurit', 'zamzum', 'nitzotz', 'tipa', 'kaftor', 'raash', 'zuzi'],
+    ];
+    // PLAYER: equal points, equal wins AND equal bestFinal. The final race is run
+    // by six racers only — neither of the tied pair is in it — so both carry the
+    // bestFinal sentinel 99 and the first three terms are all level. The player is
+    // ZUZI for this ledger, not nitzotz: nitzotz is ROSTER[0], so with the
+    // player term deleted the stable sort would leave nitzotz on top anyway and
+    // the gate could not tell the difference. With zuzi as the player the term is
+    // the only thing that can lift them above the racer ahead of them in roster
+    // order, and deleting it flips the pair.
+    //   zuzi 10+8 = 18 (1 win)   nitzotz 8+10 = 18 (1 win)   both bestFinal 99
+    const TIE_PLAYER_TERM = [
+      ['zuzi', 'nitzotz', 'nurit', 'plada', ...REST],
+      ['nitzotz', 'zuzi', 'nurit', 'plada', ...REST],
+      ['nurit', 'plada', 'zamzum', 'tipa', 'kaftor', 'raash'],   // zuzi/nitzotz did not run
+    ];
     const clean = s => String(s == null ? '' : s).replace(/[⁦-⁩]/g, '').trim();
 
-    const ledger = orders => orders.map((order, i) => ({
+    const ledger = (orders, playerId = 'nitzotz') => orders.map((order, i) => ({
       trackIndex: i, track: ['oasis', 'circuit', 'cloud'][i] || 'oasis',
-      place: order.indexOf('nitzotz') + 1, timeMs: 90000 + i * 1000, bestLapMs: 30000,
+      place: order.indexOf(playerId) + 1, timeMs: 90000 + i * 1000, bestLapMs: 30000,
       standings: order.map((id, j) => ({
-        racerId: id, place: j + 1, isPlayer: id === 'nitzotz', timeMs: 90000 + j * 800,
+        racerId: id, place: j + 1, isPlayer: id === playerId, timeMs: 90000 + j * 800,
       })),
     }));
 
@@ -452,8 +476,9 @@ try {
       await page.reload({ waitUntil: 'load', timeout: 60000 });
       await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
     };
-    const finished = (orders, extra = {}) =>
-      seed({ championshipRace: 3, tokens: 9, parts: { engine: 2, tires: 1 }, results: ledger(orders), ...extra });
+    const finished = (orders, extra = {}, playerId = 'nitzotz') =>
+      seed({ championshipRace: 3, tokens: 9, parts: { engine: 2, tires: 1 },
+        racerId: playerId, results: ledger(orders, playerId), ...extra });
 
     const openPodium = async () => {
       await page.evaluate(() => window.__DEBUG.goto('podium', {}));
@@ -482,7 +507,7 @@ try {
 
     // Expected table for a ledger, computed HERE from the crafted orders rather
     // than from the game's own code, so the gate is an independent check.
-    const expectFor = (orders) => {
+    const expectFor = (orders, playerId = 'nitzotz') => {
       const POINTS = [10, 8, 6, 5, 4, 3, 2, 1];
       const acc = new Map();
       orders.forEach(order => order.forEach((id, i) => {
@@ -490,9 +515,11 @@ try {
         e.points += POINTS[i]; if (i === 0) e.wins++;
         acc.set(id, e);
       }));
+      // A racer absent from the final race keeps the 99 sentinel — that is the
+      // state TIE_PLAYER_TERM manufactures on purpose.
       orders[orders.length - 1].forEach((id, i) => { acc.get(id).bestFinal = i + 1; });
       return [...acc.entries()]
-        .map(([id, e]) => ({ id, ...e, isPlayer: id === 'nitzotz' }))
+        .map(([id, e]) => ({ id, ...e, isPlayer: id === playerId }))
         .sort((a, b) => (b.points - a.points) || (b.wins - a.wins) ||
           (a.bestFinal - b.bestFinal) || (a.isPlayer ? -1 : b.isPlayer ? 1 : 0))
         .map((e, i) => ({ place: String(i + 1), name: HE[e.id], points: String(e.points), isMe: e.isPlayer }));
@@ -540,6 +567,64 @@ try {
         `table P${myPlace} · "${got.congrats.slice(0, 46) || got.title}"`);
       if (label === 'rival takes it') await shot('flow-9-podium-tie.png');
     }
+
+    // --- C#3b: the WINS term of the tie-break is load-bearing ---------------
+    // C#3's two ledgers give both contenders exactly one win each, so the wins
+    // term contributed nothing and could be deleted with all 20 gates still
+    // green. This ledger is decided by wins ALONE: zuzi and nitzotz are level on
+    // 21 points, and bestFinal (the next term down) points the other way, so
+    // removing the wins comparison does not merely stop mattering — it swaps
+    // rows 2 and 3.
+    await finished(TIE_WINS, { bestPrompt: BEST_PROMPT });
+    await openPodium();
+    want = expectFor(TIE_WINS);
+    got = await readPodium();
+    const winsTable = JSON.stringify(got.rows) === JSON.stringify(want);
+    const top3 = got.rows.slice(0, 3).map(r => `${r.name} ${r.points}`).join(', ');
+    step('C#3b tie 21–21 is broken by WINS, not by the final race',
+      winsTable && got.rows[1]?.name === HE.zuzi && got.rows[2]?.name === HE.nitzotz &&
+      got.rows[1]?.points === '21' && got.rows[2]?.points === '21' && got.rows[0]?.points === '22',
+      `${top3}  (want ${HE.plada} 22, ${HE.zuzi} 21, ${HE.nitzotz} 21 — zuzi has 2 wins, ` +
+      `nitzotz the better final race)`);
+
+    // --- C#3c: the PLAYER term of the tie-break is load-bearing -------------
+    // Points, wins AND bestFinal all level: the final race is run by six racers
+    // and neither of the tied pair is in it, so both carry the 99 sentinel. The
+    // only thing left is "the player takes the higher spot". The player here is
+    // ZUZI rather than nitzotz on purpose — nitzotz is ROSTER[0], so with the
+    // term deleted the stable sort would keep nitzotz on top for the wrong
+    // reason and the gate would still pass.
+    await finished(TIE_PLAYER_TERM, { bestPrompt: BEST_PROMPT }, 'zuzi');
+    await openPodium();
+    want = expectFor(TIE_PLAYER_TERM, 'zuzi');
+    got = await readPodium();
+    const meRow = got.rows.find(r => r.isMe);
+    const rival = got.rows.find(r => r.name === HE.nitzotz);
+    const playerTable = JSON.stringify(got.rows) === JSON.stringify(want);
+    step('C#3c dead heat (points, wins AND final race all level) → the PLAYER takes the higher spot',
+      playerTable && meRow?.name === HE.zuzi && rival &&
+      meRow.points === rival.points && Number(meRow.place) === Number(rival.place) - 1,
+      `me ${meRow?.name} P${meRow?.place} ${meRow?.points}pts · rival ${rival?.name} ` +
+      `P${rival?.place} ${rival?.points}pts`);
+    await finished(CLEAR, { bestPrompt: BEST_PROMPT });   // back to the default player
+
+    // --- C#3d: a racerId that is not in the roster must not crown a stranger -
+    // playerRacerId() fell back to ROSTER[0] only when the saved id was FALSY, so
+    // an unknown-but-truthy id matched nobody: every row came back
+    // isPlayer:false, the podium's `find(isPlayer) || standings[0]` fallback
+    // congratulated the leader by name, highlighted no row, printed a total of 0
+    // beside a table of 21s and 22s, and handed them the certificate.
+    await finished(CLEAR, { bestPrompt: BEST_PROMPT, racerId: 'ghost-racer' });
+    await openPodium();
+    got = await readPodium();
+    const mine = got.rows.filter(r => r.isMe);
+    step('C#3d an unknown racerId falls back to a real roster racer — exactly one row is the player',
+      mine.length === 1 && mine[0].name === HE.nitzotz,
+      `${mine.length} highlighted row(s): ${mine.map(r => r.name).join(',') || 'none'}`);
+    step('C#3d ...and the total, the header and the certificate all name THAT racer',
+      mine.length === 1 && got.total === mine[0].points && got.total !== '0' &&
+      got.congrats.includes(HE.nitzotz),
+      `total=${got.total} playerRow=${mine[0]?.points} congrats="${got.congrats.slice(0, 44)}"`);
 
     // --- C#4: podium → certificate → main menu -----------------------------
     await finished(CLEAR, { bestPrompt: BEST_PROMPT });

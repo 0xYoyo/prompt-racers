@@ -576,8 +576,8 @@ const MENU_CSS = `
 .mn-time{font-size:clamp(12px,2.1vh,15px)}
 .mn-gap{font-size:13px;color:var(--txt-dim);text-align:start}
 .mn-reveal{animation:mnRow .34s var(--ease) both}
-/* Individual properties, not the `transform` shorthand — a `both`-filled keyframe
-   ending on `transform:none` outranks every hover/positioning transform on the
+/* Individual properties, not the transform shorthand — a both-filled keyframe
+   ending on transform:none outranks every hover/positioning transform on the
    element forever. Same rule as popIn in ui/style.js. */
 @keyframes mnRow{from{opacity:0;translate:0 10px;scale:.98}to{opacity:1;translate:0 0;scale:1}}
 .mn-awards{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-block-start:clamp(6px,1.2vh,10px)}
@@ -603,9 +603,9 @@ const MENU_CSS = `
 .mn-congrats{font-size:clamp(12px,min(1.5vw,2.2vh),19px);font-weight:700;color:#ffeec4;
   max-width:44ch;text-align:center;text-wrap:balance}
 /* Vertically centred by AUTO MARGINS between two insets, never by
-   translateY(-50%): `.mn-side` carries `.pop-in`, whose keyframe used to persist
-   `transform:none` and delete the centring half of the rule — the panel then hung
-   from the vertical middle downwards, overlapping `.mn-bottom` in English and
+   translateY(-50%): .mn-side carries .pop-in, whose keyframe used to persist
+   transform:none and delete the centring half of the rule — the panel then hung
+   from the vertical middle downwards, overlapping .mn-bottom in English and
    pushing the total row off the bottom edge below 768px. See the popIn note in
    ui/style.js. The two insets double as the height guard: the panel can never
    start above --mn-side-top, and --mn-side-bot reserves the band the button row
@@ -633,7 +633,7 @@ const MENU_CSS = `
 .mn-total b{font-size:12px;color:var(--txt-dim);font-weight:800}
 .mn-total em{font-style:normal;font-size:26px;color:var(--gold-1)}
 /* Same story horizontally: auto margins between inset-inline:0, not
-   translateX(-50%), because `.mn-bottom` is a `.pop-in` too. */
+   translateX(-50%), because .mn-bottom is a .pop-in too. */
 .mn-bottom{position:absolute;inset-block-end:clamp(16px,4vh,46px);inset-inline:0;
   inline-size:fit-content;max-inline-size:calc(100% - 28px);margin-inline:auto;
   display:flex;gap:12px;flex-wrap:wrap;justify-content:center}

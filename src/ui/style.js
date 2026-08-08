@@ -40,7 +40,7 @@ export const CSS = `
 .hud-bl{position:absolute;inset-block-end:18px;inset-inline-start:18px}
 .hud-br{position:absolute;inset-block-end:18px;inset-inline-end:18px}
 /* Centred by auto margins between two insets, NOT by translateX(-50%) — see the
-   popIn note below: `transform` is animation territory and a persisting keyframe
+   popIn note below: transform is animation territory and a persisting keyframe
    would delete the centring half of the rule. */
 .hud-tc{position:absolute;inset-block-start:14px;inset-inline:0;margin-inline:auto;
   inline-size:fit-content;max-inline-size:100%}
@@ -93,20 +93,20 @@ export const CSS = `
 .fade-in{animation:fadeIn .35s var(--ease) both}
 .pop-in{animation:popIn .4s var(--ease) both}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-/* popIn animates the INDIVIDUAL transform properties (`scale`/`translate`), never
-   the `transform` shorthand.
-   It used to end on `to{transform:none}` and is applied with `both`, so its final
-   frame PERSISTED as `transform:none` and won every cascade fight for the rest of
-   the element's life. Anything that also used `transform` on a `.pop-in` element
-   lost silently: the podium's `.mn-side` (translateY(-50%)) and `.mn-bottom`
+/* popIn animates the INDIVIDUAL transform properties (scale/translate), never
+   the transform shorthand.
+   It used to end on to{transform:none} and is applied with both, so its final
+   frame PERSISTED as transform:none and won every cascade fight for the rest of
+   the element's life. Anything that also used transform on a .pop-in element
+   lost silently: the podium's .mn-side (translateY(-50%)) and .mn-bottom
    (translateX(-50%)) were never pulled back, so the standings panel hung from the
    vertical centre downwards and the button row started at the horizontal centre —
-   in English they printed on top of each other. `.btn:hover`/`:active` lifts and
-   `.mn-card.sel`'s selected-card lift were dead for the same reason, invisibly.
-   `scale`/`translate` compose with `transform` instead of replacing it, so the
-   only remaining rule is: DO NOT centre anything with `translate:` on an element
+   in English they printed on top of each other. .btn:hover/:active lifts and
+   .mn-card.sel's selected-card lift were dead for the same reason, invisibly.
+   scale/translate compose with transform instead of replacing it, so the
+   only remaining rule is: DO NOT centre anything with translate: on an element
    that can also pop in — centre with auto margins between two insets, as
-   `.hud-tc` above and `.mn-side`/`.mn-bottom` in menus.js now do. */
+   .hud-tc above and .mn-side/.mn-bottom in menus.js now do. */
 @keyframes popIn{from{opacity:0;scale:.9;translate:0 10px}to{opacity:1;scale:1;translate:0 0}}
 
 @media (prefers-reduced-motion:reduce){
