@@ -206,3 +206,73 @@ inspects the wrong node. Test for `.show`, or query all of them.
 (`.quiz-root`'s `visibility`) reads as its old value indefinitely under
 `getComputedStyle`. A first pass at the pacing measurement above reported 93%
 slowed because of this. Measure class membership, not computed style.
+
+## Wave 3 — accepted, deferred, and found-but-not-owned
+
+### The audio idle-bus assertion is flaky
+`tests/audio.test.mjs`'s "idle bus is quiet" failed once at `rms 0.04910` against a
+0.004 floor, then passed twice at `rms 0.00000`. Something is leaving a voice ringing
+past `__hush()`'s 450ms settle. It is a real intermittent, not a threshold that is too
+tight — a run either reads zero or reads ten times the floor. Reproduce by running the
+full gate repeatedly; the failure appeared on a first run and not on the retry.
+
+### `engine.resize()` was window-only; now element-observed, but scenes were never audited
+`engine.width`/`height` and the renderer's backing store sat at their boot values for as
+long as no window `resize` event was delivered — measured at `engine.width === 800` on a
+1920px page under headless Chrome, which is how a stale three-column layout reached a
+gate. Fixed with a `ResizeObserver` on `engine.el` plus `engine.teardown()`. What was NOT
+done: auditing whether any scene had quietly compensated for the stale size, or whether
+any layout now reflows where it previously did not. Racer select is proven; the rest are
+merely no longer wrong in principle.
+
+### Racer select is height-bound at 1024x640
+The kart windows are 83px tall there, so the karts are as large as they can be without
+clipping on the turntable. They read fine but are small. Buying more would mean a
+shallower `SELECT_PITCH` (less hero) or a taller `.mn-view`, which the short-viewport
+budget cannot afford.
+
+### The garage's route home is wired from outside the garage
+`attachHomeControl()` is mounted by `scenes.js`, and `menus.js` injects a
+`.grg-top{padding-inline-start:104px}` rule to make room for it. That is a cross-module
+coupling that belongs in `garage.js`'s own top bar, which the navigation pass did not own.
+If the garage header is ever restyled, move the button into `topBar()` and delete the rule.
+
+### Four different words for "go home"
+`חזרה` (racer select, garage, free play), `לתפריט` (results), `לתפריט הראשי` (podium),
+`למסך הבית` (certificate, pause). All correct, all reachable, all learned separately by a
+child who should only have to learn one. A copy pass should unify them.
+
+### The certificate's buttons are smaller than every other screen's
+36px tall against 46–52px elsewhere. Above the 24px floor the layout gate enforces, so it
+passes, but small for a young child on the screen that is meant to feel like an award.
+
+### `tools/selecttest.mjs` has no retry
+It crashed once with a puppeteer `page.reload` navigation timeout at `bootSelect` and
+passed on the three runs after. Transient, but a gate that flakes teaches people to re-run
+gates until they are green, which is the habit that lets a real failure through.
+
+### Quiz pacing must be re-measured against a stopwatch, not race time
+D16's numbers (10s answered / 24s ignored cooldown, ~40% of a race slowed) were measured
+against *slow motion*. With the D20 full freeze, "fraction of the race slowed" no longer
+means anything — race time does not advance at all while a panel is up. The real cost is
+now wall-clock interruption count (~7 answered / ~3 ignored per race, unchanged). Whether
+that *feels* right is a playtest question, and the metric that used to answer it is gone.
+
+### A quiz open at the finish line loses its explanation
+If the flag falls while a panel is up, `close()` shuts it immediately and the child loses
+the explanation mid-read. Rare — it needs a beacon in the last seconds — and the
+alternative (holding the results screen behind a panel) is worse. Deliberate.
+
+### Space is both "dismiss feedback" and the drift key
+A player who taps Space to dismiss adds it to the held-key set, so a hop can fire on resume
+if they hold it through all three countdown beats. The 2.16s countdown absorbs the
+realistic case. Fixing it properly needs a "consume this key" concept in `input.js`.
+
+### The tie-break's fourth rule is unreachable in practice
+"If still tied, the player wins" is implemented and documented, but `bestFinal` is unique
+per racer whenever both ran the last race, so rules 1–3 always decide first. Kept as a
+safety net; only rules 1–3 are gated.
+
+### Real-vs-sandbox garage keys off `championshipRace > 0`
+So between choosing a racer and finishing race 1, the home-menu garage is still the
+sandbox. Defensible (nothing is yet at stake) but not what the words say.
