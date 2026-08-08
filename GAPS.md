@@ -209,12 +209,20 @@ slowed because of this. Measure class membership, not computed style.
 
 ## Wave 3 — accepted, deferred, and found-but-not-owned
 
-### The audio idle-bus assertion is flaky
-`tests/audio.test.mjs`'s "idle bus is quiet" failed once at `rms 0.04910` against a
-0.004 floor, then passed twice at `rms 0.00000`. Something is leaving a voice ringing
-past `__hush()`'s 450ms settle. It is a real intermittent, not a threshold that is too
-tight — a run either reads zero or reads ten times the floor. Reproduce by running the
-full gate repeatedly; the failure appeared on a first run and not on the retry.
+### The audio test was flaky in two places; one is fixed, one is still open
+**Fixed — the engine assertion.** "engine produces output" failed a full-gate run at
+`rms 0.0000` and passed on retry. Cause was in the test, not the game: it emitted
+`kart:engine` every 30ms while `setEngineState` throttles writes to one per 33ms, so the
+test's period aliased against the throttle and an unlucky phase dropped the early writes
+while the rpm ramp was still near-silent. It now emits at 60Hz from an idle rpm of 0.3,
+which is what `race.js` actually does. Three consecutive runs: 0.0761 / 0.0757 / 0.0740,
+against 0.0000–0.0815 before.
+
+**Still open — the idle-bus assertion.** "idle bus is quiet" failed once at `rms 0.04910`
+against a 0.004 floor, then passed on every run since (0.00000 each time, including the
+three above). Something can leave a voice ringing past `__hush()`'s 450ms settle. Not
+reproduced since the engine fix, and it may share the same root — but it was a different
+assertion on a different run, so it is not proven fixed. Watch it.
 
 ### `engine.resize()` was window-only; now element-observed, but scenes were never audited
 `engine.width`/`height` and the renderer's backing store sat at their boot values for as

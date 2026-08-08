@@ -150,13 +150,19 @@ try {
     return m;
   };
 
+  // Emit at 60Hz from a rpm the kart actually idles at, which is what race.js
+  // does. The old version ticked every 30ms from rpm 0 — and `setEngineState`
+  // throttles writes to one per 33ms, so the test's period aliased against the
+  // throttle and an unlucky phase could drop the early writes entirely while the
+  // ramp was still near-silent. That produced an intermittent rms 0.0000 here
+  // with nothing wrong in the game.
   await measureSource('engine (kart:engine bus events)', `
-    let r = 0;
+    let r = 0.3;
     const iv = setInterval(() => {
-      r = Math.min(1, r + 0.05);
+      r = Math.min(1, r + 0.03);
       bus.emit('kart:engine', { rpm01: r, load: 1, boosting: r > 0.8, surface: 'asphalt' });
-    }, 30);
-    setTimeout(() => clearInterval(iv), 1200);
+    }, 16);
+    setTimeout(() => clearInterval(iv), 1400);
   `);
 
   await measureSource('drift scrape (drift:start / drift:charge)', `
