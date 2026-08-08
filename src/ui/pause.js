@@ -15,7 +15,7 @@
 import { h, pushModal, popModal, modalHas } from './style.js';
 import { registerStrings, t } from './i18n.js';
 import { bus } from '../core/bus.js';
-import { overlayRoot, appendAll, settingsOverlay, backdropScene } from './menus.js';
+import { overlayRoot, appendAll, settingsOverlay, backdropScene, attachHomeControl } from './menus.js';
 
 /* ═════════════════════════════════════════════════════════════════ strings ══ */
 // Same voice as the rest of the game: impersonal present tense, gender-neutral.
@@ -23,6 +23,10 @@ import { overlayRoot, appendAll, settingsOverlay, backdropScene } from './menus.
 registerStrings({
   he: {
     'menu.pause.title': 'הפסקה',
+    // The label on the visible button in the corner of the race. Same word in
+    // Hebrew as the dialog's title (it is a noun either way); English needs the
+    // verb, because "Paused" on a button that is not yet pressed is a lie.
+    'menu.pause.open': 'הפסקה',
     'menu.pause.sub': 'המרוץ עוצר ומחכה',
     'menu.pause.resume': 'ממשיכים',
     'menu.pause.settings': 'הגדרות',
@@ -36,10 +40,11 @@ registerStrings({
   },
   en: {
     'menu.pause.title': 'Paused',
+    'menu.pause.open': 'Pause',
     'menu.pause.sub': 'The race is waiting',
     'menu.pause.resume': 'Resume',
     'menu.pause.settings': 'Settings',
-    'menu.pause.quit': 'Quit to Home',
+    'menu.pause.quit': 'Quit to Main Menu',
     'menu.pause.hint': 'Press Esc to get back to the race',
     'menu.pause.quitAsk': 'Leave the race?',
     'menu.pause.quitWarn': 'This race stops and starts over next time. Tokens and parts already saved stay saved.',
@@ -212,8 +217,13 @@ export function attachPauseControl(opts = {}) {
     // its own button and its own Escape, so nothing is unreachable.
     //
     // Named explicitly rather than "is anything open": a QUIZ panel must still
-    // be pausable over, because the quiz only slows the world, it does not stop
-    // it — refusing there would leave a child unable to pause for 20 seconds.
+    // be pausable over. Wave 2's reason was that the quiz only slowed the world;
+    // Wave 3 freezes it, and the reason became the opposite one — the quiz's
+    // feedback now waits for Space with no time limit, so a quiz panel can be
+    // the last thing on screen indefinitely and Settings/Quit must stay
+    // reachable from it. The quiz holds its own freeze while the pause menu sits
+    // on top, and race.js's setPaused() will not hand input back underneath it.
+    // See the policy block in ui/style.js.
     if (modalHas('token') || modalHas('meet')) return;
     freeze(true);
     bus.emit('race:pause');                       // audio ducks on this
@@ -247,6 +257,21 @@ export function attachPauseControl(opts = {}) {
   // was the P0. While the overlay is open its own capture-phase Escape handler
   // stops the event before input.js ever sees it, so this can never double-fire.
   const offBus = bus.on('input:pause', toggle);
+
+  // The visible half of the same door. Escape was the ONLY way out of a race —
+  // a keyboard shortcut a child never discovers, on the one screen where being
+  // stuck matters most. This is the shared route-home pill (ui/menus.js), except
+  // that it opens the pause menu rather than leaving at once: quitting a race in
+  // progress must keep going through the confirmation step, so a mis-tap cannot
+  // throw away three laps. Pass `homeButton:false` to opt out (the preview
+  // harness renders the dialog with no race behind it).
+  const home = opts.homeButton === false ? null : attachHomeControl({
+    // '❚❚' rather than '⏸': the pause pictograph falls back to a tofu-ish glyph
+    // in system-ui on the machines this ships to, and two heavy bars are the
+    // symbol every child already knows anyway.
+    engine, below: true, escape: false, glyph: '❚❚',
+    labelKey: 'menu.pause.open', onActivate: open,
+  });
   // A scene change while paused (quit, or a race that completes) must never leave
   // the engine frozen for whatever comes next.
   const offLeave = bus.on('scene:leaving', () => { if (ov) { ov.close(); } else { resume(); } });
@@ -258,6 +283,7 @@ export function attachPauseControl(opts = {}) {
       if (disposed) return;
       disposed = true;
       offBus(); offLeave();
+      home?.dispose();
       if (ov) { const o = ov; ov = null; o.close(); }
       freeze(false);
       unwrapUpdate();

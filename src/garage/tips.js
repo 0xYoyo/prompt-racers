@@ -37,7 +37,7 @@ export const TIPS = [
     trigger: 'goal specificity >= 2 (the goal names a moment on the track)',
     titleHe: 'מתי ואיפה',
     titleEn: 'When and where',
-    bodyHe: 'בפרומפט שלך היה רגע מדויק — "{goal}" — ולכן בורג ידע איזה חלק בדיוק לחזק. פרומפט מדויק, חלק מדויק.',
+    bodyHe: 'בפרומפט שלכם היה רגע מדויק — "{goal}" — ולכן בורג ידע איזה חלק בדיוק לחזק. פרומפט מדויק, חלק מדויק.',
     bodyEn: 'Your prompt named an exact moment — "{goal}" — so Boreg knew exactly what to strengthen. Precise prompt, precise part.',
   },
   {
@@ -119,7 +119,7 @@ export const TIPS = [
   {
     id: 'expert.intro', visit: 3,
     trigger: 'player opened expert mode',
-    titleHe: 'עכשיו במילים שלך',
+    titleHe: 'עכשיו במילים שלכם',
     titleEn: 'Now in your own words',
     bodyHe: 'עכשיו כותבים לבורג ישירות. כדאי לזכור את ארבעת החלקים: מה, מתי, מה אסור להרוס ואיך זה נראה — וזה גם משלם יותר טוקנים.',
     bodyEn: 'Now you write to Boreg directly. Keep the four pieces in mind: what, when, what must not break, how it looks — and it pays more tokens too.',
@@ -133,6 +133,177 @@ export const TIPS = [
     bodyEn: 'Words like "amazing" and "the strongest" sound great but tell Boreg nothing. One number ("3 kg lighter") beats ten compliments.',
   },
 ];
+
+// ── WIZARD STEP TIPS (Wave 3) ────────────────────────────────────────────────
+// The garage is a four-step wizard, and Boreg has exactly one thing to say at
+// any moment: something about THE STEP THE CHILD IS ON, and — the instant they
+// pick a card — about THE CARD THEY JUST PICKED. There is no other text on the
+// screen, so this table is the whole of Boreg's voice during the build.
+//
+// Two shapes per step:
+//   ask            → nothing chosen yet in this row: what this row is for.
+//   bySpec[0..3]   → chosen: what THAT level of precision just did.
+// Step 1 (the part) is not scored, so it keys by part id instead.
+//
+// {choice} is the card's own label and {part} is the part being built, so a tip
+// can never describe an option the child did not pick. Bodies stay to 1–2 short
+// sentences — the rule the whole tips file is built on.
+const STEP_TIPS = {
+  part: {
+    ask: {
+      titleHe: 'על מה מדברים?', titleEn: 'What are we talking about?',
+      bodyHe: 'לפני הכול צריך להגיד לי במה נוגעים. אותו פרומפט על מנוע ועל צמיגים הוא שני דברים שונים לגמרי.',
+      bodyEn: 'First tell me what we are touching. The same prompt about an engine and about tires is two different things.',
+    },
+    byPart: {
+      engine: {
+        titleHe: 'מנוע — כוח', titleEn: 'Engine — power',
+        bodyHe: 'מנוע נותן מהירות שיא, וגורר איתו משקל. תכף נחליט מתי בדיוק הכוח הזה צריך להגיע.',
+        bodyEn: 'An engine buys top speed and drags weight along. Next we decide exactly when that power is needed.',
+      },
+      tires: {
+        titleHe: 'צמיגים — אחיזה', titleEn: 'Tires — grip',
+        bodyHe: 'צמיגים קובעים כמה חזק אפשר לפנות. ככל שהם רכים יותר הם אוחזים חזק יותר — ונשחקים מהר יותר.',
+        bodyEn: 'Tires decide how hard you can turn. Softer means more grip — and faster wear.',
+      },
+      wing: {
+        titleHe: 'כנף — יציבות', titleEn: 'Wing — stability',
+        bodyHe: 'כנף לוחצת את הקארט לכביש בסיבוב מהיר, ומאטה קצת בישורת. זו עסקה, לא מתנה.',
+        bodyEn: 'A wing presses the kart down in fast corners and slows it a little on the straight. A deal, not a gift.',
+      },
+      chassis: {
+        titleHe: 'שלדה — זריזות', titleEn: 'Chassis — agility',
+        bodyHe: 'שלדה זה משקל. כל גרם שיורד ממנה עוזר — עד שהיא מתחילה להתפתל.',
+        bodyEn: 'A chassis is weight. Every gram off helps — right up until it starts to flex.',
+      },
+    },
+  },
+  goal: {
+    ask: {
+      titleHe: 'מה בדיוק לשפר?', titleEn: 'Improve what, exactly?',
+      bodyHe: 'עכשיו החלק המעניין: מה {part} אמור לעשות טוב יותר. ככל שיש כאן מתי ואיפה, כך אני צריך פחות לנחש.',
+      bodyEn: 'Now the interesting bit: what should {part} do better? The more when and where, the less I guess.',
+    },
+    bySpec: [
+      {
+        titleHe: 'זה עוד לא אומר לי כלום', titleEn: 'That still tells me nothing',
+        bodyHe: '"{choice}" נשמע נחמד, אבל אני לא יודע מה למדוד. אני אנחש — ולפעמים ניחוש יוצא מצחיק.',
+        bodyEn: '"{choice}" sounds nice, but I have nothing to measure. I will guess — and guesses come out funny.',
+      },
+      {
+        titleHe: 'כיוון, בלי כתובת', titleEn: 'A direction, no address',
+        bodyHe: '"{choice}" — עכשיו יש כיוון. עוד לא אמרתם מתי ואיפה על המסלול, אז את זה עוד אשלים לבד.',
+        bodyEn: '"{choice}" — now there is a direction. Still no when or where on track, so that part I fill in myself.',
+      },
+      {
+        titleHe: 'יש רגע מדויק', titleEn: 'There is an exact moment',
+        bodyHe: '"{choice}" מצביע על רגע אמיתי בנסיעה, ולכן אני יודע איזה חלק לחזק. זה בדיוק ההבדל.',
+        bodyEn: '"{choice}" points at a real moment in the lap, so I know what to strengthen. That is the difference.',
+      },
+      {
+        titleHe: 'מתי, איפה, ומה נמדד', titleEn: 'When, where and what is measured',
+        bodyHe: '"{choice}" — זה כבר תיאור שאפשר לבנות לפיו בלי לנחש אפילו פעם אחת. יקר, ומרגישים את זה.',
+        bodyEn: '"{choice}" — that I can build from without guessing even once. Expensive, and you will feel it.',
+      },
+    ],
+  },
+  constraint: {
+    ask: {
+      titleHe: 'מה אסור לי להרוס?', titleEn: 'What am I not allowed to break?',
+      bodyHe: 'כל שיפור לוקח משהו ממקום אחר. אם לא כתוב מה אסור להרוס — אני בוחר לבד, ואני בוחר את הדרך הקלה.',
+      bodyEn: 'Every improvement takes something from somewhere. If nothing says what must not break, I choose — and I choose easy.',
+    },
+    bySpec: [
+      {
+        titleHe: 'אז מותר לי הכול', titleEn: 'So anything goes',
+        bodyHe: 'בלי הגבלה אני אלך על הפתרון הקל. הוא יעבוד, ומשהו אחר בקארט ישלם על זה.',
+        bodyEn: 'With no limit I take the easy answer. It will work, and something else on the kart pays for it.',
+      },
+      {
+        titleHe: 'הגבלה בלי כתובת', titleEn: 'A limit with no address',
+        bodyHe: '"{choice}" זו כבר הגבלה, ותודה עליה — אבל היא לא אומרת לי מה בדיוק לשמור.',
+        bodyEn: '"{choice}" is a limit, and I will take it — but it does not tell me what exactly to protect.',
+      },
+      {
+        titleHe: 'עכשיו יש לי גבול', titleEn: 'Now I have a boundary',
+        bodyHe: '"{choice}" — דבר אחד שאסור לי לגעת בו. זה מכריח אותי לפתרון חכם במקום לפתרון קל.',
+        bodyEn: '"{choice}" — one thing I may not touch. That forces a clever answer instead of an easy one.',
+      },
+      {
+        titleHe: 'שתי הגבלות ביחד', titleEn: 'Two limits at once',
+        bodyHe: '"{choice}" — שתיהן ביחד מושכות לכיוונים הפוכים, וזה בדיוק מה שמוציא ממני את העבודה הכי טובה.',
+        bodyEn: '"{choice}" — the two pull opposite ways, and that is exactly what gets my best work out of me.',
+      },
+    ],
+  },
+  style: {
+    ask: {
+      titleHe: 'ואיך זה ייראה?', titleEn: 'And how should it look?',
+      bodyHe: 'גם סגנון זה מידע. אם לא תגידו איך {part} ייראה — אבחר בעצמי, ואני בוחר סגול.',
+      bodyEn: 'Style is information too. If nothing says how {part} should look, I pick — and I pick purple.',
+    },
+    bySpec: [
+      {
+        titleHe: 'אז אני בוחר', titleEn: 'Then I choose',
+        bodyHe: 'מי שלא בוחר, בוחרים בשבילו. אצלי זה תמיד יוצא סגול.',
+        bodyEn: 'Skip the choice and it gets made for you. With me it always comes out purple.',
+      },
+      {
+        titleHe: 'צבע זה התחלה', titleEn: 'A colour is a start',
+        bodyHe: '"{choice}" — עכשיו יש לי לפחות צבע בראש. את שאר התמונה עוד אמציא לבד.',
+        bodyEn: '"{choice}" — now I have a colour in my head. The rest of the picture is still mine to invent.',
+      },
+      {
+        titleHe: 'תמונה בראש', titleEn: 'A picture in my head',
+        bodyHe: '"{choice}" — זה כבר סגנון עם כיוון, אז החלק ייצא שלכם ולא סתם אפור.',
+        bodyEn: '"{choice}" — that is a style with a direction, so the part comes out yours instead of generic grey.',
+      },
+      {
+        titleHe: 'סגנון עם סיפור', titleEn: 'A style with a story',
+        bodyHe: '"{choice}" — יש כאן סיפור שלם, ואני יודע בדיוק איך זה צריך להרגיש. את זה כיף לרתך.',
+        bodyEn: '"{choice}" — there is a whole story here, and I know exactly how it should feel. Fun to weld.',
+      },
+    ],
+  },
+};
+
+/**
+ * Boreg's line for the CURRENT wizard step and the CURRENT selection in it.
+ * Pure: same (slot, selection, lang) always gives the same card, and the `id`
+ * changes whenever either the step or the choice inside it changes — which is
+ * what stops a stale tip from surviving a step change.
+ *
+ * @param slotKey   the row the wizard is showing
+ * @param selection {part, goal, constraint, style} option ids
+ * @returns {id, title, body}
+ */
+export function stepTip(slotKey, selection = {}, lang = 'he') {
+  const he = lang !== 'en';
+  const table = STEP_TIPS[slotKey];
+  if (!table) return { id: 'step.none', title: '', body: '' };
+  const chosen = optionById(slotKey, selection[slotKey]);
+  const partOpt = optionById('part', selection.part);
+  const vars = {
+    choice: chosen ? (he ? chosen.he : chosen.en) : '',
+    part: partOpt ? (he ? partOpt.he : partOpt.en) : (he ? 'החלק' : 'the part'),
+  };
+  let card, id;
+  if (!chosen) { card = table.ask; id = `step.${slotKey}.ask`; }
+  else if (slotKey === 'part') {
+    card = table.byPart[chosen.id] || table.ask;
+    id = `step.part.${chosen.id}`;
+  } else {
+    const spec = Math.max(0, Math.min(3, chosen.specificity | 0));
+    card = table.bySpec[spec];
+    id = `step.${slotKey}.${spec}`;
+  }
+  const fill = s => String(s || '').replace(/\{(\w+)\}/g, (m, k) => (vars[k] != null ? vars[k] : ''));
+  return {
+    id,
+    title: fill(he ? card.titleHe : card.titleEn),
+    body: fill(he ? card.bodyHe : card.bodyEn),
+  };
+}
 
 export const TIP_BY_ID = Object.fromEntries(TIPS.map(x => [x.id, x]));
 export const tipById = id => TIP_BY_ID[id] || null;

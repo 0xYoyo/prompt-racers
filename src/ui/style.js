@@ -39,7 +39,11 @@ export const CSS = `
 .hud-tr{position:absolute;inset-block-start:18px;inset-inline-end:18px}
 .hud-bl{position:absolute;inset-block-end:18px;inset-inline-start:18px}
 .hud-br{position:absolute;inset-block-end:18px;inset-inline-end:18px}
-.hud-tc{position:absolute;inset-block-start:14px;left:50%;transform:translateX(-50%)}
+/* Centred by auto margins between two insets, NOT by translateX(-50%) — see the
+   popIn note below: transform is animation territory and a persisting keyframe
+   would delete the centring half of the rule. */
+.hud-tc{position:absolute;inset-block-start:14px;inset-inline:0;margin-inline:auto;
+  inline-size:fit-content;max-inline-size:100%}
 
 /* ---- surfaces ---- */
 .panel{
@@ -89,7 +93,21 @@ export const CSS = `
 .fade-in{animation:fadeIn .35s var(--ease) both}
 .pop-in{animation:popIn .4s var(--ease) both}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes popIn{from{opacity:0;transform:scale(.9) translateY(10px)}to{opacity:1;transform:none}}
+/* popIn animates the INDIVIDUAL transform properties (scale/translate), never
+   the transform shorthand.
+   It used to end on to{transform:none} and is applied with both, so its final
+   frame PERSISTED as transform:none and won every cascade fight for the rest of
+   the element's life. Anything that also used transform on a .pop-in element
+   lost silently: the podium's .mn-side (translateY(-50%)) and .mn-bottom
+   (translateX(-50%)) were never pulled back, so the standings panel hung from the
+   vertical centre downwards and the button row started at the horizontal centre —
+   in English they printed on top of each other. .btn:hover/:active lifts and
+   .mn-card.sel's selected-card lift were dead for the same reason, invisibly.
+   scale/translate compose with transform instead of replacing it, so the
+   only remaining rule is: DO NOT centre anything with translate: on an element
+   that can also pop in — centre with auto margins between two insets, as
+   .hud-tc above and .mn-side/.mn-bottom in menus.js now do. */
+@keyframes popIn{from{opacity:0;scale:.9;translate:0 10px}to{opacity:1;scale:1;translate:0 0}}
 
 @media (prefers-reduced-motion:reduce){
   .fade-in,.pop-in{animation:none}
@@ -124,6 +142,43 @@ export function injectStyles() {
 //   off();                           // on close (popModal('quiz') also works)
 //   if (modalOpen('quiz')) return;   // "is anything OTHER than me open?"
 //   if (modalOpen()) return;         // "is anything at all open?"
+//
+// ── THE POLICY (Wave 3; supersedes the D15/D18 table) ────────────────────────
+// The registry is a Set of ids and nothing more; the policy is a design choice
+// and lives here, next to it, because it is otherwise spread across four files.
+// Ids in play: 'quiz', 'pause', 'token' (first-token explainer), 'meet' (Boreg).
+//
+//   quiz        DEFERS behind anything else. Its beacon respawns, so nothing is
+//               lost — the question simply comes later. (quiz.js: openQuestion)
+//   token/meet  DEFER behind anything else; the save flag is untouched, so the
+//               next token shows the explainer. (garage.js)
+//   pause       May open over a QUIZ. May NOT open over token/meet.
+//
+// The pause-over-quiz rule survived Wave 3 but for the opposite reason, and the
+// reason is worth writing down because it flipped:
+//
+//   Wave 2: the quiz only SLOWED the world, so refusing to pause would have left
+//           a child unable to stop a moving kart for twenty seconds.
+//   Wave 3: the quiz FREEZES the world (zero fixed steps) and its feedback waits
+//           for Space with no time limit at all. So the race is no longer the
+//           thing a child needs rescuing from — but "no time limit" means a quiz
+//           panel can be the last thing on screen indefinitely, and Settings and
+//           Quit have to be reachable from there. Refusing Esc would make the
+//           one key a child already knows do nothing, in the one state they can
+//           be stuck in. So: Esc over an open quiz opens the pause menu ON TOP,
+//           the quiz stays exactly as it is underneath, and Esc again returns to
+//           it. token/meet are still refused: they freeze the sim too, but they
+//           are one-time, short, and have their own button and their own Escape.
+//
+// Three consequences that are load-bearing, each of which was a real bug once:
+//   • `1/2/3` must not answer, and Space must not dismiss, a quiz that is behind
+//     the pause menu — quiz.js's key handler returns early on modalOpen('quiz').
+//   • The quiz's own clocks (answer timer, resume countdown) must not advance
+//     behind the pause menu — same check, in quiz.update().
+//   • Resuming from the pause menu must NOT hand input back if a quiz is still
+//     frozen underneath. race.js's setPaused() consults its own quizFrozen flag
+//     rather than assuming pause is the only thing that can hold the world.
+// Pinned by tools/modaltest.mjs.
 // ─────────────────────────────────────────────────────────────────────────────
 const _modals = new Set();
 

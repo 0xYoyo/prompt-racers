@@ -133,6 +133,15 @@ try {
   });
 
   // ── 2. silence floor: with nothing playing, the bus must be quiet ──────────
+  // Leave the title screen first. Its backdrop is a REAL raceScene (that is the
+  // whole point of it — you can see the game happening behind the logo), so it
+  // emits `kart:engine` every frame and re-enables the engine voice on the frame
+  // after `__hush()` disables it. Whether this assertion saw silence therefore
+  // depended on rAF timing: it read 0.00000 most runs and 0.026–0.049 when a
+  // frame landed inside the measurement window. Racer select has karts but no
+  // running simulation, so nothing re-arms behind the meter.
+  await page.evaluate(() => window.__DEBUG.goto('select'));
+  await sleep(400);
   await page.evaluate(() => window.__hush());
   const quiet = await page.evaluate(() => window.__measure(400));
   ok('idle bus is quiet (proves the meter is honest)', quiet.rms < RMS_FLOOR, `rms ${quiet.rms.toFixed(5)}`);
@@ -150,13 +159,19 @@ try {
     return m;
   };
 
+  // Emit at 60Hz from a rpm the kart actually idles at, which is what race.js
+  // does. The old version ticked every 30ms from rpm 0 — and `setEngineState`
+  // throttles writes to one per 33ms, so the test's period aliased against the
+  // throttle and an unlucky phase could drop the early writes entirely while the
+  // ramp was still near-silent. That produced an intermittent rms 0.0000 here
+  // with nothing wrong in the game.
   await measureSource('engine (kart:engine bus events)', `
-    let r = 0;
+    let r = 0.3;
     const iv = setInterval(() => {
-      r = Math.min(1, r + 0.05);
+      r = Math.min(1, r + 0.03);
       bus.emit('kart:engine', { rpm01: r, load: 1, boosting: r > 0.8, surface: 'asphalt' });
-    }, 30);
-    setTimeout(() => clearInterval(iv), 1200);
+    }, 16);
+    setTimeout(() => clearInterval(iv), 1400);
   `);
 
   await measureSource('drift scrape (drift:start / drift:charge)', `

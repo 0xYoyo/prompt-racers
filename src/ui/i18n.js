@@ -65,7 +65,10 @@ export function formatTime(ms) {
 registerStrings({
   he: {
     'game.title': 'מרוץ הפרומפטים',
-    'common.back': 'חזרה',
+    // ONE word for the one destination. Every screen's way out lands on the
+    // title screen, and the game used to call it four different things
+    // (חזרה / לתפריט / לתפריט הראשי / למסך הבית). A child should learn it once.
+    'common.back': 'למסך הבית',
     'common.continue': 'ממשיכים',   // impersonal present, like every other button
     'common.next': 'הבא',
     'common.close': 'סגירה',
@@ -74,7 +77,7 @@ registerStrings({
   },
   en: {
     'game.title': 'Prompt Racers',
-    'common.back': 'Back',
+    'common.back': 'Main Menu',
     'common.continue': 'Continue',
     'common.next': 'Next',
     'common.close': 'Close',

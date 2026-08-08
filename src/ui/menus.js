@@ -10,7 +10,7 @@
 // RTL is the default and the arrow-key mapping is written visually, not by index:
 // under RTL the grid flows right-to-left, so ArrowLeft advances the array.
 import * as THREE from 'three';
-import { h, injectStyles } from './style.js';
+import { h, injectStyles, modalOpen } from './style.js';
 import { registerStrings, t, num, ordinal, formatTime, setLang, getLang, isRTL } from './i18n.js';
 import { save } from '../core/save.js';
 import { bus } from '../core/bus.js';
@@ -64,7 +64,13 @@ export const RACERS = (Array.isArray(ROSTER_IMPORT) && ROSTER_IMPORT.length
 const racerAt = i => RACERS[((i % RACERS.length) + RACERS.length) % RACERS.length];
 const racerById = id => RACERS.find(r => r.id === id) || RACERS[0];
 const racerName = r => (getLang() === 'he' ? (r.nameHe || r.nameEn) : (r.nameEn || r.nameHe));
-const initialOf = r => (racerName(r) || '?').trim().charAt(0);
+// Name for a standings row. Resolved from the live roster so a language switch
+// re-renders it, and falls back to the name the ledger already resolved rather
+// than to an unrelated racer.
+const displayName = s => {
+  const r = RACERS.find(x => x.id === s.racerId);
+  return r ? racerName(r) : (s.name || '—');
+};
 const hex = c => '#' + (c >>> 0).toString(16).padStart(6, '0');
 const mixHex = (a, b, k) => {
   const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
@@ -74,6 +80,43 @@ const mixHex = (a, b, k) => {
 
 const CHAMP_POINTS = [10, 8, 6, 5, 4, 3, 2, 1];
 const pointsFor = place => CHAMP_POINTS[Math.max(0, (place | 0) - 1)] ?? 0;
+
+// How many races a championship is. Only used to tell "mid-championship" from
+// "finished" on the title screen; the authoritative table is track/trackdef.js,
+// which this module deliberately does not import (it must render standalone).
+const CHAMP_RACES = 3;
+const champRace = () => Number(save.read('championshipRace')) || 0;
+const champInProgress = () => champRace() > 0 && champRace() < CHAMP_RACES;
+const champFinished = () => champRace() >= CHAMP_RACES;
+
+/**
+ * Start a fresh championship — the ONE place that clears the ledger.
+ *
+ * Every key the championship writes has to go, or the new run starts with the
+ * old run's wallet, the old run's parts bolted to a kart the child has not built
+ * yet, and a certificate quoting a prompt from a championship that is over.
+ * `championshipCounted` is the podium's once-per-ledger guard for the
+ * championshipsDone counter (see SCENES.podium in scenes.js).
+ *
+ * Deliberately NOT cleared: lang / quality / muted (preferences), tipsSeen and
+ * expertUnlocked (things the child has already been taught — re-teaching them is
+ * patronising), and bestLap (a personal record, not championship state).
+ */
+export function resetChampionship() {
+  save.set({
+    championshipRace: 0,
+    results: [],
+    tokens: 0,
+    parts: {},
+    bestPrompt: null,
+    championshipCounted: false,
+    // The quiz's cross-race memory. Left behind, a new championship would open
+    // with race 1 already "having asked" 20 questions and would start drawing
+    // from the tier-2 overflow on its gentlest race.
+    championshipAsked: [],
+  });
+  bus.emit('championship:reset');
+}
 
 const REDUCED = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -90,23 +133,34 @@ registerStrings({
     'menu.start': 'מתחילים אליפות',
     'menu.newChamp': 'אליפות חדשה',
     'menu.continue': 'ממשיכים באליפות',
+    'menu.viewPodium': 'לטבלת האליפות',
     'menu.howto': 'איך משחקים',
     'menu.freePlay': 'המוסך של בורג',
     'menu.settings': 'הגדרות',
-    'menu.back': 'חזרה',
+    // ONE word for the one destination. Every "way out" in the game lands on
+    // this screen, and it used to be called four different things — חזרה here
+    // and in the garage, לתפריט on results, לתפריט הראשי on the podium,
+    // למסך הבית on the certificate and in pause. All correct, all learned
+    // separately by a child who should only ever learn one.
+    'menu.back': 'למסך הבית',
     'menu.enterHint': 'לוחצים Enter כדי להתחיל',
     'menu.key.steer': 'היגוי',
     'menu.key.gas': 'גז',
     'menu.key.drift': 'החלקה',
     'menu.key.pause': 'הפסקה',
     'menu.key.select': 'בחירה',
-    'menu.key.back': 'חזרה',
+    'menu.key.back': 'למסך הבית',
 
     'menu.select.title': 'מי נוסע?',
-    'menu.select.sub': 'בוחרים דמות עם החצים ולוחצים Enter',
+    // Two steps, said in the order a child does them. The old copy ("ולוחצים
+    // Enter") described a screen that started the race the moment you picked;
+    // choosing and starting are now separate on purpose.
+    'menu.select.sub': 'בוחרים דמות בעכבר או בחצים — ואז לוחצים על הכפתור הגדול',
     'menu.select.go': 'לזינוק!',
     'menu.select.you': 'זה אני',
     'menu.select.player': 'הדמות שלכם',
+    'menu.select.picked': 'בחרתם:',
+    'menu.select.confirm': 'בחירה',
     'menu.stat.speed': 'מהירות',
     'menu.stat.accel': 'תאוצה',
     'menu.stat.handling': 'אחיזה',
@@ -121,7 +175,7 @@ registerStrings({
     'menu.results.bestlap': 'ההקפה המהירה שלכם',
     'menu.results.garage': 'למוסך',
     'menu.results.next': 'המרוץ הבא',
-    'menu.results.menu': 'לתפריט',
+    'menu.results.menu': 'למסך הבית',
     'menu.results.youPlaced': 'סיימתם במקום ה{p}',
     'menu.results.tokenHint': 'טוקנים הם הדלק של המוסך — קונים איתם שדרוגים',
 
@@ -133,7 +187,7 @@ registerStrings({
     'menu.podium.points': 'נק׳',
     'menu.podium.total': 'סך הנקודות שלכם',
     'menu.podium.again': 'אליפות חדשה',
-    'menu.podium.menu': 'לתפריט הראשי',
+    'menu.podium.menu': 'למסך הבית',
 
     'menu.set.title': 'הגדרות',
     'menu.set.lang': 'שפה',
@@ -157,7 +211,7 @@ registerStrings({
     'menu.how.driveT': 'נוהגים',
     'menu.how.driveB': 'חצים ימינה ושמאלה מסובבים, חץ למעלה נותן גז.',
     'menu.how.driftT': 'מחליקים',
-    'menu.how.driftB': 'רווח בתוך סיבוב = החלקה, ובסוף מקבלים דחיפה.',
+    'menu.how.driftB': 'רווח בתוך סיבוב = החלקה, ובסוף מקבלים טורבו.',
     'menu.how.tokenT': 'אוספים טוקנים',
     'menu.how.tokenB': 'כל מרוץ מזכה בטוקנים לפי המקום שסיימתם בו.',
     'menu.how.garageT': 'משדרגים במוסך',
@@ -170,23 +224,26 @@ registerStrings({
     'menu.start': 'Start Championship',
     'menu.newChamp': 'New Championship',
     'menu.continue': 'Continue Championship',
+    'menu.viewPodium': 'Championship Standings',
     'menu.howto': 'How to Play',
     'menu.freePlay': "Boreg's Garage",
     'menu.settings': 'Settings',
-    'menu.back': 'Back',
+    'menu.back': 'Main Menu',
     'menu.enterHint': 'Press Enter to start',
     'menu.key.steer': 'Steer',
     'menu.key.gas': 'Accelerate',
     'menu.key.drift': 'Drift',
     'menu.key.pause': 'Pause',
     'menu.key.select': 'Select',
-    'menu.key.back': 'Back',
+    'menu.key.back': 'Main Menu',
 
     'menu.select.title': 'Choose Your Racer',
-    'menu.select.sub': 'Pick with the arrow keys, press Enter',
+    'menu.select.sub': 'Pick with the mouse or the arrow keys — then press the big button',
     'menu.select.go': "Let's Race!",
     'menu.select.you': 'YOU',
     'menu.select.player': 'Your racer',
+    'menu.select.picked': 'You picked:',
+    'menu.select.confirm': 'Choose',
     'menu.stat.speed': 'Speed',
     'menu.stat.accel': 'Accel',
     'menu.stat.handling': 'Handling',
@@ -348,38 +405,129 @@ const MENU_CSS = `
 .mn-back{display:inline-flex;align-items:center;gap:6px;font-size:14px;padding:9px 18px;flex:none}
 .mn-back span{font-size:15px;line-height:1;opacity:.8;direction:ltr;unicode-bidi:isolate}
 @media (min-width:900px){
-  .mn-back{position:absolute;inset-inline-start:0;inset-block-start:0}
+  /* z-index, because the centred .mn-head next to it spans the FULL row width
+     and therefore overlaps this button's rectangle. Paint order alone kept the
+     button on top only while .mn-head's opacity was exactly 1 — during its
+     .35s fade-in the animated opacity gives it a stacking context of its own
+     and it swallows every click aimed at "back". A child who reaches for the
+     back button the moment the screen appears hits nothing. Caught by the
+     hit-test in tools/selecttest.mjs section 7. */
+  .mn-back{position:absolute;inset-inline-start:0;inset-block-start:0;z-index:2}
 }
 
+/* ---------- the global route home (attachHomeControl) ---------- */
+/* Screens that are not built by baseScreen() — the race and the garage — used to
+   have no visible way out at all: the race only answered the Escape key and the
+   garage answered nothing, so a child who opened the garage from the home menu
+   was stuck inside it until they finished a four-step prompt. This is the one
+   affordance they all now share: same pill, same inline-start corner, same word
+   as the racer-select back button, mounted into engine.ui (NOT into the scene's
+   own DOM, which those two modules rebuild from scratch on every interaction). */
+/* Solid, not ghost: this one floats over bright gameplay (a desert sky at noon),
+   where the translucent-white ghost fill is invisible. Same card treatment the
+   HUD uses, so it still reads as part of the same product. */
+#ui .mn-home{position:absolute;z-index:20;inset-block-start:18px;inset-inline-start:18px;
+  pointer-events:auto;color:var(--txt);border:1px solid var(--stroke-hi);
+  background:linear-gradient(180deg,rgba(52,52,72,.94),rgba(20,20,31,.96));
+  box-shadow:0 0 0 1px rgba(0,0,0,.45),0 8px 20px rgba(0,0,0,.5)}
+#ui .mn-home:hover{background:linear-gradient(180deg,rgba(70,70,96,.96),rgba(30,30,44,.97))}
+#ui .mn-home span{opacity:1}
+/* The race's own lap card owns the top corner, so the race copy drops below it. */
+#ui .mn-home.below{inset-block-start:calc(18px + 4.7em)}
+/* The garage top bar starts in that corner; give the button its own lane rather
+   than floating on top of the title. Widened 104 → 156px when the label became
+   "למסך הבית" / "Main Menu": the pill is a word longer than "חזרה" / "Back" and
+   at 104px it printed straight through "המוסך". */
+#ui .grg-root .grg-top{padding-inline-start:156px}
+/* Anything that owns the screen hides it: a dialog, a garage scrim (Boreg's
+   introduction, the token explainer, the reveal) all have their own way out, and
+   a button floating over a modal is exactly the "covered control" this audit was
+   called to kill. The QUIZ is deliberately absent — D20 keeps the pause menu
+   reachable from a frozen quiz, so the race's button must stay live over it. */
+#ui:has(.mn-ov) .mn-home,
+#ui:has(.grg-scrim) .mn-home,
+#ui:has(.grgtok-scrim) .mn-home{display:none}
+
 /* ---------- racer select ---------- */
-.mn-grid{display:grid;gap:clamp(8px,min(1.1vw,1.6vh),16px);width:min(1360px,100%);margin:0 auto}
-.mn-card{position:relative;border-radius:var(--r-m);padding:10px 10px 12px;cursor:pointer;
-  background:linear-gradient(180deg,rgba(38,36,54,.80),rgba(16,15,25,.88));
-  backdrop-filter:blur(7px);
-  border:1px solid var(--stroke);box-shadow:0 10px 24px rgba(0,0,0,.5),0 1px 0 rgba(255,255,255,.07) inset;
-  transition:transform .16s var(--ease),box-shadow .16s var(--ease),border-color .16s}
-.mn-card:hover{transform:translateY(-3px);border-color:var(--stroke-hi)}
-.mn-card.sel{transform:translateY(-5px) scale(1.03);z-index:2;
-  border-color:var(--sel);box-shadow:0 0 0 2px var(--sel),0 0 46px 4px var(--sel),0 18px 38px rgba(0,0,0,.6)}
-.mn-card.dim .mn-swatch{filter:saturate(.58) brightness(.70)}
+/* The card is deliberately a TRANSPARENT frame with an opaque lower body: the
+   upper .mn-view is a window punched through the overlay so the real 3D kart,
+   drawn on the GL canvas underneath, is seen through it. Anything opaque or
+   backdrop-filtered over that rectangle (the old card background did both) puts
+   frosted glass in front of the kart. See makeKartStage() in racerSelectScene. */
+/* The column count is CSS's job, not JavaScript's.
+   It used to be an inline grid-template-columns written from the width handed
+   to resize(), which meant the roster's ROW COUNT — and therefore the height of
+   the whole screen — was a piece of JS state that could go stale. When the
+   resize signal did not arrive (headless Chrome does not always deliver a
+   window resize event for a viewport change, and engine.width stayed at the boot
+   800), the grid kept the 3 columns it was built with while the viewport was
+   1600 or 1920 wide: 8 cards became 3 rows instead of 2, ~290px taller, and the
+   "לזינוק!" CTA — the only door off this screen — was pushed under the bottom
+   edge. That is why the failure looked width-dependent and skipped 1440x900 at
+   the same height as a failing 1600x900: it was not the height maths, it was
+   which resize events happened to land.
+   Media queries cannot go stale, so the row count can no longer drift from the
+   viewport. The breakpoints mirror colsFor() exactly; JS now READS the column
+   count back off the layout for keyboard navigation instead of dictating it. */
+.mn-grid{display:grid;gap:clamp(8px,min(1.1vw,1.6vh),16px);width:min(1360px,100%);margin:0 auto;
+  grid-template-columns:repeat(1,minmax(0,1fr))}
+@media (min-width:520px){ .mn-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (min-width:740px){ .mn-grid{grid-template-columns:repeat(3,minmax(0,1fr))} }
+@media (min-width:1000px){ .mn-grid{grid-template-columns:repeat(4,minmax(0,1fr))} }
+.mn-card{position:relative;border-radius:var(--r-m);cursor:pointer;background:none;border:0;padding:0;
+  display:flex;flex-direction:column;
+  transition:transform .16s var(--ease)}
+.mn-card::after{content:"";position:absolute;inset:-3px;border-radius:calc(var(--r-m) + 3px);
+  border:3px solid var(--sel);box-shadow:0 0 0 2px rgba(0,0,0,.45),0 0 42px 2px var(--sel);
+  opacity:0;transition:opacity .16s var(--ease);pointer-events:none}
+.mn-card:hover{transform:translateY(-3px)}
+.mn-card.sel{transform:translateY(-6px) scale(1.035);z-index:2}
+.mn-card.sel::after{opacity:1}
 .mn-card.dim .mn-cname{color:rgba(244,241,234,.86)}
 .mn-card.dim .mn-fill{filter:saturate(.85) brightness(.92);box-shadow:none}
-.mn-card.dim:hover .mn-swatch,.mn-card.dim:hover .mn-fill{filter:none}
-.mn-card:focus-visible{outline:3px solid var(--info);outline-offset:3px}
-.mn-swatch{position:relative;height:clamp(48px,min(7.2vw,9vh),96px);border-radius:12px;overflow:hidden;
-  display:flex;align-items:center;justify-content:center;
-  box-shadow:0 4px 14px rgba(0,0,0,.4),0 1px 0 rgba(255,255,255,.25) inset}
-.mn-swatch::after{content:"";position:absolute;inset:0;
-  background:repeating-linear-gradient(115deg,rgba(255,255,255,.14) 0 12px,rgba(255,255,255,0) 12px 26px)}
-.mn-swatch::before{content:"";position:absolute;inset:0;
-  background:linear-gradient(180deg,rgba(255,255,255,.34),rgba(0,0,0,.22))}
-.mn-init{position:relative;z-index:2;font-size:clamp(26px,min(3.6vw,5vh),48px);font-weight:900;
-  color:rgba(255,255,255,.42);text-shadow:0 2px 0 rgba(0,0,0,.18)}
+.mn-card:focus-visible{outline:3px solid var(--info);outline-offset:4px}
+/* the window onto the 3D kart — no background, no blur, nothing in front of it */
+.mn-view{position:relative;height:clamp(74px,min(9.6vw,13vh),150px);
+  border-radius:var(--r-m) var(--r-m) 0 0;border:1px solid var(--stroke);border-block-end:0}
+.mn-card.sel .mn-view{border-color:var(--sel)}
+/* Unselected karts are scrimmed rather than desaturated: a CSS filter cannot
+   reach pixels drawn on the canvas below, and a dark veil is the clearest
+   "these are the ones you did NOT pick" a 8-year-old can read at a glance. */
+/* .40, not the .52 this started at: the whole point of the screen is that a
+   child can tell eight racers apart at a glance, and a veil heavy enough to
+   settle the "which one is picked" question was also heavy enough to turn the
+   other seven into silhouettes. The selected card carries a gold ring, a lift,
+   a tick and the "זה אני" badge — the veil only has to be the quietest of the
+   four cues, not the loudest. Measured by tools/selecttest.mjs, which fails if
+   any two card windows stop being visually distinguishable. */
+.mn-view::after{content:"";position:absolute;inset:0;border-radius:inherit;
+  background:rgba(7,6,13,.40);opacity:0;transition:opacity .18s var(--ease)}
+.mn-card.dim .mn-view::after{opacity:1}
+.mn-card.dim:hover .mn-view::after{opacity:.30}
+.mn-body{position:relative;padding:8px 10px 11px;border-radius:0 0 var(--r-m) var(--r-m);
+  background:linear-gradient(180deg,rgba(38,36,54,.86),rgba(14,13,22,.94));
+  backdrop-filter:blur(7px);
+  border:1px solid var(--stroke);border-block-start:0;
+  box-shadow:0 12px 26px rgba(0,0,0,.55),0 1px 0 rgba(255,255,255,.07) inset}
+.mn-card.sel .mn-body{border-color:var(--sel)}
 .mn-you{position:absolute;z-index:3;inset-block-start:8px;inset-inline-end:8px;
   background:linear-gradient(180deg,var(--gold-1),var(--gold-3));color:#2a1c00;
   font-size:12px;font-weight:900;letter-spacing:.06em;padding:3px 10px;border-radius:var(--r-pill);
   box-shadow:0 2px 8px rgba(0,0,0,.5)}
-.mn-cname{margin-block-start:7px;font-size:clamp(14px,min(1.5vw,2.3vh),21px);font-weight:900;letter-spacing:-.01em}
+.mn-tick{position:absolute;z-index:3;inset-block-start:6px;inset-inline-start:6px;display:none;
+  width:26px;height:26px;border-radius:50%;align-items:center;justify-content:center;
+  background:linear-gradient(180deg,#8fe38a,#2a9b46);color:#08210f;font-size:16px;font-weight:900;
+  box-shadow:0 2px 10px rgba(0,0,0,.6),0 0 0 2px rgba(255,255,255,.35) inset}
+.mn-card.sel .mn-tick{display:flex}
+.mn-cname{font-size:clamp(14px,min(1.5vw,2.3vh),21px);font-weight:900;letter-spacing:-.01em}
+/* the picked-racer readout above the start button — the screen must say out
+   loud who is about to drive, because the button no longer names it by itself */
+.mn-picked{display:flex;align-items:center;justify-content:center;gap:10px;
+  margin-block-start:clamp(4px,1vh,10px);font-size:clamp(13px,1.5vh,16px);font-weight:800;
+  color:var(--txt-dim)}
+.mn-picked b{font-size:clamp(16px,2.2vh,23px);font-weight:900;color:var(--gold-1)}
+.mn-picked i{width:14px;height:14px;border-radius:5px;font-style:normal;
+  box-shadow:0 0 10px -2px currentColor}
 .mn-ctag{font-size:11px;font-weight:600;color:var(--txt-dim);min-height:14px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mn-stats{margin-block-start:8px;display:flex;flex-direction:column;gap:5px}
@@ -392,6 +540,23 @@ const MENU_CSS = `
   transition:width .5s var(--ease);box-shadow:0 0 10px -2px currentColor}
 .mn-go{margin-block-start:clamp(6px,1.6vh,16px)}
 .mn-go .btn{box-shadow:0 6px 0 #a4620a,0 0 40px -6px rgba(255,194,71,.75),0 12px 26px rgba(0,0,0,.5),0 1px 0 rgba(255,255,255,.6) inset}
+/* Racer select is the tallest screen in the game — eight cards, a CTA and a key
+   legend — and it was overflowing the stage by 6px at 1366x768, 23px at
+   1280x720 and 46px at 1024x640, which pushed the legend clean off the bottom.
+   The layout gate did not see it because it only fails on clipped INTERACTIVE
+   elements and a key hint is a span.
+   Everything given back below is chrome: stage gaps, card padding, stat spacing.
+   The kart windows are deliberately untouched — a child telling eight racers
+   apart at 1024x640 is the entire purpose of the screen, and shrinking the one
+   thing it exists for to save a legend would be the wrong trade. */
+@media (max-height:790px){
+  .mn-select .mn-stage{gap:clamp(4px,1vh,12px);padding:clamp(8px,2vh,20px)}
+  .mn-select .mn-body{padding:6px 9px 8px}
+  .mn-select .mn-stats{margin-block-start:5px;gap:3px}
+  .mn-select .mn-ctag{min-height:0}
+  .mn-select .mn-picked{margin-block-start:2px}
+  .mn-select .mn-go{margin-block-start:clamp(4px,1vh,10px)}
+}
 
 /* ---------- results ---------- */
 .mn-rows{min-height:0;overflow-y:auto;overflow-x:hidden}
@@ -418,7 +583,10 @@ const MENU_CSS = `
 .mn-time{font-size:clamp(12px,2.1vh,15px)}
 .mn-gap{font-size:13px;color:var(--txt-dim);text-align:start}
 .mn-reveal{animation:mnRow .34s var(--ease) both}
-@keyframes mnRow{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+/* Individual properties, not the transform shorthand — a both-filled keyframe
+   ending on transform:none outranks every hover/positioning transform on the
+   element forever. Same rule as popIn in ui/style.js. */
+@keyframes mnRow{from{opacity:0;translate:0 10px;scale:.98}to{opacity:1;translate:0 0;scale:1}}
 .mn-awards{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-block-start:clamp(6px,1.2vh,10px)}
 .mn-award{flex:1 1 220px;display:flex;align-items:center;gap:12px;padding:clamp(5px,1.2vh,9px) 16px;border-radius:var(--r-m);
   background:linear-gradient(180deg,rgba(255,214,107,.16),rgba(255,214,107,.04));
@@ -436,8 +604,26 @@ const MENU_CSS = `
 .mn-podium-top::before{content:"";position:absolute;inset:-30% -10%;pointer-events:none;
   background:radial-gradient(58% 62% at 50% 46%,rgba(8,6,14,.82),rgba(8,6,14,.45) 55%,transparent 78%)}
 .mn-podium-top>*{position:relative}
-.mn-congrats{font-size:clamp(12px,min(1.5vw,2.2vh),19px);font-weight:700;color:#ffeec4;max-width:44ch;text-align:center}
-.mn-side{position:absolute;inset-block-start:50%;transform:translateY(-50%);
+/* text-wrap:balance so the English sentence cannot break mid-phrase
+   ("…in 2nd place, Spark. Great / racing!"): balanced lines split at the widest
+   available break, which for this copy is the sentence boundary. */
+.mn-congrats{font-size:clamp(12px,min(1.5vw,2.2vh),19px);font-weight:700;color:#ffeec4;
+  max-width:44ch;text-align:center;text-wrap:balance}
+/* Vertically centred by AUTO MARGINS between two insets, never by
+   translateY(-50%): .mn-side carries .pop-in, whose keyframe used to persist
+   transform:none and delete the centring half of the rule — the panel then hung
+   from the vertical middle downwards, overlapping .mn-bottom in English and
+   pushing the total row off the bottom edge below 768px. See the popIn note in
+   ui/style.js. The two insets double as the height guard: the panel can never
+   start above --mn-side-top, and --mn-side-bot reserves the band the button row
+   lives in, so at 1024x640 and below it shrinks (and scrolls, last resort)
+   instead of running off the screen. */
+.mn-side{position:absolute;
+  --mn-side-top:clamp(8px,2vh,20px);
+  --mn-side-bot:clamp(76px,13vh,124px);
+  inset-block-start:var(--mn-side-top);inset-block-end:var(--mn-side-bot);
+  block-size:fit-content;margin-block:auto;
+  max-block-size:calc(100% - var(--mn-side-top) - var(--mn-side-bot));overflow-y:auto;
   inset-inline-end:clamp(14px,3vw,44px);width:min(340px,32vw);padding:14px 16px}
 .mn-side h3{margin:0 0 10px;font-size:12px;font-weight:800;letter-spacing:.12em;color:var(--txt-dim);
   text-transform:uppercase}
@@ -453,8 +639,11 @@ const MENU_CSS = `
   display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .mn-total b{font-size:12px;color:var(--txt-dim);font-weight:800}
 .mn-total em{font-style:normal;font-size:26px;color:var(--gold-1)}
-.mn-bottom{position:absolute;inset-block-end:clamp(16px,4vh,46px);left:50%;transform:translateX(-50%);
-  display:flex;gap:12px}
+/* Same story horizontally: auto margins between inset-inline:0, not
+   translateX(-50%), because .mn-bottom is a .pop-in too. */
+.mn-bottom{position:absolute;inset-block-end:clamp(16px,4vh,46px);inset-inline:0;
+  inline-size:fit-content;max-inline-size:calc(100% - 28px);margin-inline:auto;
+  display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
 
 /* ---------- overlays ---------- */
 .mn-ov{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
@@ -510,7 +699,10 @@ const MENU_CSS = `
   .mn-root *,.mn-ov *{animation-duration:.001s !important;animation-delay:0s !important}
   .mn-press{animation:none;opacity:.85}
 }
-@media (max-width:640px){ .mn-side{position:static;transform:none;width:100%;margin-block-start:12px} }
+@media (max-width:640px){
+  .mn-side{position:static;inset:auto;block-size:auto;max-block-size:none;overflow-y:visible;
+    margin-block:12px 0;margin-inline:0;width:100%}
+}
 `;
 
 function injectMenuCSS() {
@@ -797,6 +989,70 @@ function baseScreen(engine, opts, build) {
   };
 }
 
+/* ══════════════════════════════════════════════════════ the route home ══ */
+/**
+ * Mount the shared "route home" pill for a scene that does NOT come from
+ * baseScreen(). Two screens are in that position and both were dead ends:
+ *
+ *   • the RACE   — its only exit was the Escape key, which a child does not know.
+ *   • the GARAGE — no exit at all, keyboard or otherwise. Opened from the home
+ *                  menu mid-championship, the only way out was to finish a
+ *                  four-step prompt and install the part.
+ *
+ * The button is appended to `engine.ui`, not to the scene's DOM: race.js rebuilds
+ * its HUD and garage.js calls `root.replaceChildren()` on literally every click,
+ * so anything living inside them would vanish. It carries the same classes, the
+ * same corner and the same word as the racer-select back button.
+ *
+ * @param {object}   opts
+ * @param {object}   opts.engine       engine (its `.ui` layer hosts the button)
+ * @param {string}   [opts.labelKey]   i18n key for the label (default 'menu.back')
+ * @param {string}   [opts.glyph]      leading glyph; default is the back arrow
+ * @param {Function} [opts.onActivate] default: engine.goto('menu')
+ * @param {boolean}  [opts.below]      drop below the top-corner HUD card (race)
+ * @param {boolean}  [opts.escape]     also route Escape here (default false —
+ *                                     the race's Escape belongs to the pause menu)
+ * @returns {{el:HTMLElement, dispose:Function}}
+ */
+export function attachHomeControl(opts = {}) {
+  injectMenuCSS();
+  const engine = opts.engine || _engine;
+  const mount = engine?.ui || document.body;
+  const go = () => (opts.onActivate ? opts.onActivate()
+    : engine?.goto ? engine.goto('menu') : bus.emit('menu:goto', { name: 'menu' }));
+
+  const el = h('button.btn.ghost.mn-back.mn-home' + (opts.below ? '.below' : ''), {
+    type: 'button', onclick: go,
+  });
+  const paint = () => {
+    el.replaceChildren(
+      h('span', { 'aria-hidden': 'true' }, opts.glyph || (isRTL() ? '→' : '←')),
+      document.createTextNode(t(opts.labelKey || 'menu.back')));
+  };
+  paint();
+  mount.appendChild(el);
+  const offLang = bus.on('lang:changed', paint);
+
+  // Escape, for the screens whose Escape nobody else claims. Ordered defensively:
+  // garage.js's own handler (Boreg's introduction, backing out of the reveal)
+  // runs on `document` and calls preventDefault, so `defaultPrevented` is the
+  // signal that the screen has already answered the key. Any modal — including
+  // the one-time explainers, which own their own dismissal (D20) — outranks us.
+  const onKey = e => {
+    if (!opts.escape || e.key !== 'Escape' || e.defaultPrevented) return;
+    if (modalOpen() || document.querySelector('.mn-ov')) return;
+    if (getComputedStyle(el).display === 'none') return;   // a scrim owns the screen
+    e.preventDefault();
+    go();
+  };
+  addEventListener('keydown', onKey);
+
+  return {
+    el,
+    dispose() { offLang(); removeEventListener('keydown', onKey); el.remove(); },
+  };
+}
+
 /**
  * Just the golden-hour backdrop, no screen furniture. ui/pause.js previews the
  * pause dialog over this, and the lead can use it as a loading/transition plate.
@@ -906,7 +1162,12 @@ function boregSVG() {
 export function titleScene(engine, opts = {}) {
   return baseScreen(engine, opts, api => {
     const build = () => {
-      const hasSave = (Number(save.read('championshipRace')) || 0) > 0;
+      // Three states, not two. "ממשיכים באליפות" is offered ONLY mid-championship:
+      // once the last race is on the books there is no next race, and the button
+      // used to send the player to race index 3 of a 3-race season — a scene with
+      // no track behind it, i.e. a black screen with no way back.
+      const inProgress = champInProgress();
+      const finished = champFinished();
 
       const logo = h('div.mn-logo', null,
         h('div.l1.display.display-white', null, getLang() === 'he' ? 'מרוץ' : 'PROMPT'),
@@ -915,15 +1176,19 @@ export function titleScene(engine, opts = {}) {
       const hero = h('div.mn-hero.fade-in', null,
         h('div.mn-burst'), h('div.mn-ribbon'), h('div.mn-ribbon.two'), h('div.mn-swoosh'), logo);
 
+      const startNew = () => { resetChampionship(); api.go('select', { fresh: true }); };
+
       const primary = h('button.btn.mn-btn-xl.pop-in', {
-        onclick: () => api.go('select'),
+        onclick: () => (finished ? startNew() : api.go('select')),
         style: { animationDelay: '.08s' },
-      }, t(hasSave ? 'menu.continue' : 'menu.start'));
+      }, t(finished ? 'menu.newChamp' : inProgress ? 'menu.continue' : 'menu.start'));
 
       const secondary = h('div.mn-btn-row.pop-in', { style: { animationDelay: '.14s' } },
-        hasSave ? h('button.btn.ghost', {
-          onclick: () => { save.set({ championshipRace: 0, results: [] }); api.go('select', { fresh: true }); },
-        }, t('menu.newChamp')) : null,
+        // Mid-championship: a way to abandon it. Finished: the podium (and with
+        // it the certificate) stays reachable, since the primary CTA has become
+        // "new championship" and would otherwise erase it out of reach.
+        inProgress ? h('button.btn.ghost', { onclick: startNew }, t('menu.newChamp')) : null,
+        finished ? h('button.btn.ghost', { onclick: () => api.go('podium') }, t('menu.viewPodium')) : null,
         // Free play: the garage with no race attached and no token pressure, so a
         // child can practise writing asks without a championship riding on it.
         // Routes to the registry's 'freeplay' scene (scenes.js → freePlayScene),
@@ -949,8 +1214,13 @@ export function titleScene(engine, opts = {}) {
 
     api.onKey(e => {
       if (api.overlayOpen()) return;
-      if (e.key === 'Enter') { e.preventDefault(); api.go('select'); }
-      else if (e.key === 'h' || e.key === '?') howToPlayOverlay();
+      // Enter is the primary CTA, so it must mean the same thing the button does —
+      // including "start a fresh championship" once the last one is finished.
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (champFinished()) { resetChampionship(); api.go('select', { fresh: true }); }
+        else api.go('select');
+      } else if (e.key === 'h' || e.key === '?') howToPlayOverlay();
       else if (e.key === 'b') howBuiltOverlay();
       else if (e.key === 's') settingsOverlay({ engine });
       // Escape on the title screen: this is the root, so there is nowhere to go
@@ -967,16 +1237,251 @@ export function titleScene(engine, opts = {}) {
 
 const STAT_KEYS = ['speed', 'accel', 'handling', 'weight'];
 
+/* ---------------------------------------------------------------------------
+ * KART SEAM for racer select.
+ *
+ * This module must never import kart/kartmodel.js — it would stop rendering
+ * standalone under tools/preview.mjs, which is the whole reason every subsystem
+ * can be judged on its own. So racer select asks for karts through a mounter the
+ * lead fills in from scenes.js (exactly like the garage's setKartPreviewMounter),
+ * and falls back to the block placeholder the podium already uses when nobody
+ * has filled it in.
+ *
+ *   setSelectKartMounter((holder, {racerId, parts, engine}) => {
+ *     const kart = createKart({...});   // { group, dispose() }
+ *     kart.group.name = 'kart:' + kart.racer.id;   // ← the gate reads this back
+ *     holder.add(kart.group);
+ *     return kart;
+ *   });
+ *
+ * WHOEVER BUILDS THE KART NAMES IT, from the racer it actually resolved — not
+ * from the id it was asked for. Eight cards silently showing eight copies of the
+ * player's kart is the failure this screen is most exposed to (the garage
+ * mounter defaults `racerId` to the save), and a name written by the caller
+ * would assert nothing. tools/selecttest.mjs reads mountedKarts() off the live
+ * scene graph and fails if any card is not wearing its own racer.
+ * ------------------------------------------------------------------------- */
+let _selectKartMounter = null;
+export function setSelectKartMounter(fn) { _selectKartMounter = fn; }
+
+/** Optional: (renderer) => {texture, dispose}. Without it MeshStandardMaterial
+ *  bodywork has no specular response and the karts read as matte resin. */
+let _selectEnvFactory = null;
+export function setSelectEnvironment(fn) { _selectEnvFactory = fn; }
+
+// The 3/4 showroom pose. The kart model is -Z forward (D9), so π faces the
+// camera; the extra 0.55 turns it off-square into a hero three-quarter view.
+const SELECT_BASE_YAW = Math.PI + 0.55;
+const SELECT_PITCH = 0.34;
+
+// Per-racer backdrop plate, drawn behind its kart INSIDE the 3D pass rather than
+// as a CSS background. The card's kart window has to be a genuine hole in the
+// overlay (anything opaque or backdrop-filtered over it frosts the kart), so the
+// racer's colour block has to live in the 3D layer too.
+function selectPlateTexture(r) {
+  const W = 256, H = 176, RAD = 26;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.beginPath();
+  x.moveTo(RAD, 0); x.lineTo(W - RAD, 0); x.quadraticCurveTo(W, 0, W, RAD);
+  x.lineTo(W, H); x.lineTo(0, H); x.lineTo(0, RAD); x.quadraticCurveTo(0, 0, RAD, 0);
+  x.closePath(); x.clip();
+
+  const g = x.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, hex(r.color));
+  g.addColorStop(1, mixHex(r.color, r.color2, 0.85));
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+
+  x.globalAlpha = 0.13; x.strokeStyle = '#fff'; x.lineWidth = 17;
+  for (let i = -H; i < W + H; i += 42) { x.beginPath(); x.moveTo(i, 0); x.lineTo(i + H, H); x.stroke(); }
+  x.globalAlpha = 1;
+
+  const sh = x.createLinearGradient(0, 0, 0, H);
+  sh.addColorStop(0, 'rgba(255,255,255,.30)');
+  sh.addColorStop(0.5, 'rgba(0,0,0,0)');
+  sh.addColorStop(1, 'rgba(0,0,0,.42)');
+  x.fillStyle = sh; x.fillRect(0, 0, W, H);
+
+  // a pool of shade under where the kart stands, so the model has something to
+  // separate from instead of floating on a flat colour
+  const vg = x.createRadialGradient(W / 2, H * 0.78, 8, W / 2, H * 0.78, W * 0.55);
+  vg.addColorStop(0, 'rgba(0,0,0,.38)');
+  vg.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = vg; x.fillRect(0, 0, W, H);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export function racerSelectScene(engine, opts = {}) {
   return baseScreen(engine, opts, api => {
     let index = Math.max(0, RACERS.findIndex(r => r.id === (opts.racerId || RACERS[0].id)));
-    let cols = 4;
     let cards = [];
     let grid = null;
+    let pickedName = null;
+    let pickedChip = null;
+    let goBtn = null;
 
     // Four columns keeps the roster two rows deep, which matters far more on a
     // short 1024x640 laptop than the extra card width three columns would buy.
+    // These thresholds live in CSS (see .mn-grid above); this is only the
+    // fallback for the case where the grid is not in the document yet.
     const colsFor = w => (w >= 1000 ? 4 : w >= 740 ? 3 : w >= 520 ? 2 : 1);
+    // Arrow-key navigation needs to know the column count. Read it off the real
+    // layout rather than remembering it: whatever the browser actually laid out
+    // is the truth, and it cannot be one resize event behind.
+    const colCount = () => {
+      const tpl = grid && getComputedStyle(grid).gridTemplateColumns;
+      const n = tpl && tpl !== 'none' ? tpl.trim().split(/\s+/).length : 0;
+      return n > 0 ? n : colsFor(innerWidth);
+    };
+
+    /* ------------------------------------------------------ 3D kart stage ── */
+    // Eight live karts, one per card, drawn on the GL canvas UNDER the overlay
+    // and clipped to each card's window with the scissor rectangle.
+    //
+    // Why one shared scene in CSS-pixel space rather than eight little scenes:
+    // the camera is orthographic with 1 world unit = 1 CSS pixel, so a card's
+    // getBoundingClientRect() IS the kart's position — the model can never drift
+    // away from the card it belongs to, at any resolution or column count, and a
+    // language flip that re-lays-out the grid needs no 3D bookkeeping at all.
+    //
+    // Cost control (engine.q, measured — see the report in tools/selecttest.mjs):
+    //  • one draw pass per card, each scissored to ~200x120 px, with the other
+    //    seven kart subtrees marked invisible so three skips them at cull time.
+    //    Total geometry drawn per frame is eight karts — the same as a race — but
+    //    the shaded area is a fraction of the screen.
+    //  • karts are built at the tier's own LOD (createKart reads engine.q), and
+    //    shadow casting is off: nothing here receives a shadow.
+    //  • low tier animates only the selected kart; the other seven hold the hero
+    //    pose, so seven per-frame driver/wheel rigs are skipped entirely.
+    const LOW = (engine?.q?.name || 'high') === 'low';
+    const stage3D = new THREE.Scene();
+    // We drive updateMatrixWorld ourselves, once per frame, instead of letting
+    // each of the eight render() calls walk the same graph again.
+    stage3D.matrixWorldAutoUpdate = false;
+    const cam3D = new THREE.OrthographicCamera(0, 1, 0, -1, -4000, 4000);
+    cam3D.position.set(0, 0, 1000);
+
+    stage3D.add(new THREE.HemisphereLight(0xffe4bd, 0x2b2340, 1.15));
+    const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.3);
+    keyLight.position.set(-3, 6, 7);
+    stage3D.add(keyLight);
+    if (!LOW) {
+      const rimLight = new THREE.DirectionalLight(0x9fc2ff, 0.9);
+      rimLight.position.set(5, 2, -6);
+      stage3D.add(rimLight);
+    }
+
+    let env3D = null;
+    if (_selectEnvFactory && engine?.renderer) {
+      try { env3D = _selectEnvFactory(engine.renderer); stage3D.environment = env3D?.texture || null; }
+      catch (e) { console.error('select environment failed', e); env3D = null; }
+    }
+
+    const plateGeo = new THREE.PlaneGeometry(1, 1);
+    const phRng = makeRng(4242);
+    const _box = new THREE.Box3();
+    const _v3 = new THREE.Vector3();
+    const _size = new THREE.Vector2();
+
+    const slots = RACERS.map(r => {
+      const root = new THREE.Group();
+      const anchor = new THREE.Group();
+      const pitch = new THREE.Group();
+      const spin = new THREE.Group();
+      pitch.add(spin); anchor.add(pitch); root.add(anchor);
+
+      const tex = selectPlateTexture(r);
+      const plateMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+      const plate = new THREE.Mesh(plateGeo, plateMat);
+      plate.renderOrder = -2;
+      root.add(plate);
+      stage3D.add(root);
+
+      let mounted = null;
+      let obj = null;
+      if (_selectKartMounter) {
+        try { mounted = _selectKartMounter(spin, { racerId: r.id, parts: {}, engine }) || null; }
+        catch (e) { console.error('select kart mounter failed', e); mounted = null; }
+        obj = mounted?.group || spin.children[0] || null;
+      }
+      if (!obj) {
+        // Standalone preview / unwired build. Deliberately named differently so
+        // a gate can tell "the seam is filled" from "the seam quietly is not".
+        obj = makePlaceholderKart(r, phRng);
+        obj.name = 'placeholder:' + r.id;
+        spin.add(obj);
+      }
+
+      // Measure the model flat (before the pitch is applied) so the fit maths
+      // below is about the kart, not about the pose.
+      spin.rotation.y = 0;
+      root.updateMatrixWorld(true);
+      // Measure the KART, not its contact shadow. The model carries a soft 2.9 x
+      // 3.4m ground blob at renderOrder -1 — 40% wider than the kart itself — and
+      // fitting to that shrank every card's model to about half the window it had
+      // to itself. Anything drawn behind the kart is excluded from the fit.
+      _box.makeEmpty();
+      obj.traverse(o => { if (o.isMesh && o.renderOrder >= 0) _box.expandByObject(o, true); });
+      if (_box.isEmpty()) _box.setFromObject(obj);
+      const size = _box.getSize(new THREE.Vector3());
+      const centre = _box.getCenter(_v3);
+      obj.position.set(-centre.x, -centre.y, -centre.z);
+
+      // Worst case across a full turntable revolution: a w×l footprint rotated
+      // about Y is never wider than hypot(w, l).
+      const spanW = Math.max(0.4, Math.hypot(size.x, size.z));
+      const spanH = Math.max(0.3, size.z * Math.sin(SELECT_PITCH) + size.y * Math.cos(SELECT_PITCH));
+
+      pitch.rotation.x = SELECT_PITCH;
+      spin.rotation.y = SELECT_BASE_YAW;
+      return { racer: r, root, anchor, pitch, spin, plate, plateMat, tex, mounted, obj, spanW, spanH, rect: null };
+    });
+
+    /** Park every kart's window over its card, in CSS pixels. */
+    function layoutKarts() {
+      const canvas = engine?.renderer?.domElement;
+      if (!canvas) return false;
+      const cr = canvas.getBoundingClientRect();
+      if (cr.width < 2 || cr.height < 2) return false;
+      cam3D.left = 0; cam3D.right = cr.width;
+      cam3D.top = 0; cam3D.bottom = -cr.height;
+      cam3D.updateProjectionMatrix();
+
+      let any = false;
+      for (let i = 0; i < slots.length; i++) {
+        const s = slots[i];
+        const el = cards[i]?.querySelector('.mn-view');
+        const r = el?.getBoundingClientRect();
+        if (!r || r.width < 8 || r.height < 8 || r.bottom < 0 || r.top > cr.height) { s.rect = null; continue; }
+        const x = r.left - cr.left + r.width / 2;
+        const y = r.top - cr.top + r.height / 2;
+        s.root.position.set(x, -y, 0);
+        s.plate.scale.set(r.width, r.height, 1);
+        const fit = Math.min(r.width / (s.spanW * 1.02), r.height / (s.spanH * 1.06));
+        s.anchor.scale.setScalar(fit);
+        s.plate.position.z = -(s.spanW * fit) / 2 - 8;
+        s.rect = { x: r.left - cr.left, y: r.top - cr.top, w: r.width, h: r.height };
+        any = true;
+      }
+      stage3D.updateMatrixWorld();
+      return any;
+    }
+
+    function disposeKarts() {
+      for (const s of slots) {
+        try { s.mounted?.dispose?.(); } catch (e) { console.error(e); }
+        if (!s.mounted) s.obj?.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+        s.plateMat.dispose();
+        s.tex.dispose();
+      }
+      plateGeo.dispose();
+      env3D?.dispose?.();
+      stage3D.clear();
+    }
 
     function paintStats(card, racer, animate) {
       const fills = card.querySelectorAll('.mn-fill');
@@ -1006,35 +1511,44 @@ export function racerSelectScene(engine, opts = {}) {
         if (badge) badge.style.display = on ? '' : 'none';
         if (on) { paintStats(c, racerAt(j), animate); c.focus({ preventScroll: true }); }
       });
-      bus.emit('menu:racer', racerAt(index));
+      const r = racerAt(index);
+      if (pickedName) pickedName.textContent = racerName(r);
+      if (pickedChip) pickedChip.style.background = hex(r.color);
+      bus.emit('menu:racer', r);
     }
 
     function makeCard(r, i) {
-      const c1 = hex(r.color), c2 = hex(r.color2);
+      const c1 = hex(r.color);
       const card = h('div.mn-card', {
         role: 'radio', tabindex: -1,
         'aria-label': racerName(r),
-        onclick: () => (index === i ? start() : select(i)),
+        'data-racer': r.id,
+        // A click PICKS. It does not race. A child exploring the roster with the
+        // mouse used to start race 1 the instant they clicked the card that was
+        // already highlighted — the one interaction on this screen that cannot be
+        // undone. Starting lives on the start button and nowhere else.
+        onclick: () => select(i),
         onfocus: () => { if (index !== i) select(i); },
         style: { '--sel': c1 },
       },
-        h('div.mn-swatch', { style: { background: `linear-gradient(150deg,${c1},${mixHex(r.color, r.color2, .75)})` } },
+        h('div.mn-view', null,
           h('div.mn-you', { style: { display: 'none' } }, t('menu.select.you')),
-          h('div.mn-init', null, initialOf(r))),
-        h('div.mn-cname', null, racerName(r)),
-        h('div.mn-ctag', null, t(`racer.${r.id}.tag`) === `racer.${r.id}.tag` ? '' : t(`racer.${r.id}.tag`)),
-        h('div.mn-stats', null, ...STAT_KEYS.map(k =>
-          h('div.mn-stat', null,
-            h('span', null, t('menu.stat.' + k)),
-            h('div.mn-track', null,
-              h('i.mn-fill', {
-                style: {
-                  color: c1,
-                  background: `linear-gradient(${isRTL() ? 270 : 90}deg,${c1},${mixHex(r.color, 0xffffff, .35)})`,
-                  width: ((r.stats[k] / 5) * 100) + '%',
-                },
-              }))))));
-      // Ensure the swatch tint reads even if color2 is missing.
+          h('div.mn-tick', { 'aria-hidden': 'true' }, '✓')),
+        h('div.mn-body', null,
+          h('div.mn-cname', null, racerName(r)),
+          h('div.mn-ctag', null, t(`racer.${r.id}.tag`) === `racer.${r.id}.tag` ? '' : t(`racer.${r.id}.tag`)),
+          h('div.mn-stats', null, ...STAT_KEYS.map(k =>
+            h('div.mn-stat', null,
+              h('span', null, t('menu.stat.' + k)),
+              h('div.mn-track', null,
+                h('i.mn-fill', {
+                  style: {
+                    color: c1,
+                    background: `linear-gradient(${isRTL() ? 270 : 90}deg,${c1},${mixHex(r.color, 0xffffff, .35)})`,
+                    width: ((r.stats[k] / 5) * 100) + '%',
+                  },
+                })))))));
+      // Ensure the selection ring tint reads even if color2 is missing.
       card.style.setProperty('--sel', c1);
       return card;
     }
@@ -1044,13 +1558,23 @@ export function racerSelectScene(engine, opts = {}) {
       api.go('race', { racerId: racerAt(index).id, track: Number(save.read('championshipRace')) || 0 });
     }
 
+    const focusStart = () => goBtn?.focus({ preventScroll: true });
+
+    // Scopes the short-viewport compaction above to this screen only — every
+    // other menu shares .mn-stage and none of them is anywhere near overflowing.
+    api.root.classList.add('mn-select');
+
     const build = () => {
       cards = RACERS.map(makeCard);
       grid = h('div.mn-grid', { role: 'radiogroup', 'aria-label': t('menu.select.title') }, ...cards);
       cards.forEach((c, i) => { c.classList.add('pop-in'); c.style.animationDelay = (0.02 * i).toFixed(2) + 's'; });
 
+      pickedChip = h('i', { 'aria-hidden': 'true' });
+      pickedName = h('b');
+      goBtn = h('button.btn.mn-btn-xl.mn-start', { onclick: start }, t('menu.select.go'));
       const go = h('div.mn-go.pop-in', { style: { animationDelay: '.22s' } },
-        h('button.btn.mn-btn-xl', { onclick: start }, t('menu.select.go')));
+        h('div.mn-picked', { 'aria-live': 'polite' }, t('menu.select.picked'), pickedChip, pickedName),
+        goBtn);
 
       appendAll(api.stage,
         // A visible way back, not only Escape: plenty of children play this with
@@ -1066,28 +1590,12 @@ export function racerSelectScene(engine, opts = {}) {
         h('div.mn-spacer'),
         h('div.mn-keys', null,
           keyHint([ARROW.left, ARROW.right, ARROW.up, ARROW.down], 'menu.key.select'),
-          keyHint(['Enter'], 'menu.select.go'),
+          keyHint(['Enter'], 'menu.select.confirm'),
           keyHint(['Esc'], 'menu.key.back')));
 
-      applyColsSettled(api.engine?.width || innerWidth);
       select(index, false);
+      layoutKarts();
     };
-
-    // The width handed to resize() can be one frame stale (the engine reads
-    // clientWidth on the resize event, which in headless Chrome occasionally
-    // beats layout). A stale 800 leaves the grid at three columns on a 1600px
-    // screen, which is tall enough to push the "לזינוק!" CTA off the bottom —
-    // the exact class of bug the layout gate exists to catch, and it showed up
-    // as an intermittent failure. Re-apply from the authoritative innerWidth on
-    // the next frame so the column count can never be left behind.
-    function applyCols(w) {
-      cols = colsFor(Math.round(w || api.engine?.width || innerWidth));
-      if (grid) grid.style.gridTemplateColumns = `repeat(${cols},minmax(0,1fr))`;
-    }
-    function applyColsSettled(w) {
-      applyCols(w);
-      requestAnimationFrame(() => applyCols(innerWidth));
-    }
 
     build();
     api.rebuildOnLang(build);
@@ -1100,17 +1608,82 @@ export function racerSelectScene(engine, opts = {}) {
       switch (e.key) {
         case 'ArrowLeft': e.preventDefault(); select(index + fwd); break;
         case 'ArrowRight': e.preventDefault(); select(index - fwd); break;
-        case 'ArrowDown': e.preventDefault(); select(index + cols); break;
-        case 'ArrowUp': e.preventDefault(); select(index - cols); break;
+        case 'ArrowDown': e.preventDefault(); select(index + colCount()); break;
+        case 'ArrowUp': e.preventDefault(); select(index - colCount()); break;
         case 'Home': e.preventDefault(); select(0); break;
         case 'End': e.preventDefault(); select(RACERS.length - 1); break;
-        case 'Enter': case ' ': e.preventDefault(); start(); break;
+        // Enter/Space on a CARD confirms the pick and hands focus to the start
+        // button; it never starts a race. On the button itself we get out of the
+        // way and let the browser's own activation fire onclick, so there is
+        // exactly one code path into a race from this screen.
+        case 'Enter': case ' ':
+          if (document.activeElement === goBtn) break;
+          e.preventDefault(); focusStart(); break;
         case 'Escape': e.preventDefault(); api.back('select'); break;
         default: break;
       }
     });
 
-    return { resize: w => applyColsSettled(w) };
+    return {
+      // Nothing to re-apply: the column count is a media query now, so the only
+      // thing a resize can invalidate is where the 3D karts are parked.
+      resize() { layoutKarts(); },
+      update(dt) {
+        const animateAll = !REDUCED() && !api.instant && !LOW;
+        for (let i = 0; i < slots.length; i++) {
+          const s = slots[i];
+          const on = i === index;
+          if (REDUCED() || api.instant) { s.spin.rotation.y = SELECT_BASE_YAW; continue; }
+          if (!on && !animateAll) { s.spin.rotation.y = SELECT_BASE_YAW; continue; }
+          s.spin.rotation.y += dt * (on ? 0.45 : 0.20);
+          // Only the picked kart runs its driver/wheel rig — seven idle rigs a
+          // frame is the one avoidable cost on this screen.
+          if (on) s.mounted?.update?.(dt, { speed01: 0 });
+        }
+      },
+      // Backdrop first, then one scissored pass per card. The scissor is what
+      // keeps a kart inside its own window: the 3D layer spans the whole canvas
+      // and nothing in the DOM above it can clip a pixel that is drawn below it.
+      render() {
+        const r = engine?.renderer;
+        if (!r) return;
+        r.autoClear = true;
+        r.render(api.backdrop.scene, api.backdrop.camera);
+        if (!layoutKarts()) return;
+        r.getSize(_size);
+        r.autoClear = false;
+        r.setScissorTest(true);
+        for (const s of slots) {
+          if (!s.rect) continue;
+          for (const o of slots) o.root.visible = (o === s);
+          r.setScissor(s.rect.x, _size.y - s.rect.y - s.rect.h, s.rect.w, s.rect.h);
+          r.clearDepth();
+          r.render(stage3D, cam3D);
+        }
+        r.setScissorTest(false);
+        for (const o of slots) o.root.visible = true;
+        r.autoClear = true;
+      },
+      dispose: disposeKarts,
+      expose: {
+        // What is ACTUALLY standing in each card window, read back off the scene
+        // graph — see the seam note above. Same contract as the podium's.
+        mountedKarts() {
+          return slots.map((s, i) => ({
+            index: i,
+            racerId: s.racer.id,
+            name: s.spin.children[0]?.name || null,
+            visible: !!s.rect,
+          }));
+        },
+        selectedRacerId: () => racerAt(index).id,
+        // Turntable angles, in roster order. tools/selecttest.mjs samples these
+        // across a step to prove the LOW tier really does animate only the
+        // picked kart — a claim a comment cannot make and a screenshot of a
+        // static frame cannot disprove.
+        kartSpins: () => slots.map(s => s.spin.rotation.y),
+      },
+    };
   });
 }
 
@@ -1293,11 +1866,41 @@ function numberPlateTexture(n) {
   return tex;
 }
 
+/**
+ * Normalise whatever arrived into the canonical standings shape documented next
+ * to totalPoints() in scenes.js: `{place, racerId, racer, name, points, wins,
+ * bestFinal, isPlayer}`, sorted best → worst with `place === index + 1`.
+ *
+ * The lead already hands over exactly that. This exists so the podium can never
+ * again render a row it did not understand: a missing `place` used to print the
+ * literal string "undefined" in every row of the table, and the header then
+ * fell back to a hard-coded "second" while the table showed the player first.
+ * The order that arrives is authoritative — the tie-break lives in ONE place
+ * (scenes.js) and is not second-guessed here.
+ */
+function normalizeStandings(list) {
+  return list.slice()
+    .sort((a, b) => (Number.isFinite(a.place) ? a.place : 99) - (Number.isFinite(b.place) ? b.place : 99))
+    .map((s, i) => {
+      const racer = racerById(s.racerId);
+      return {
+        ...s,
+        place: Number.isFinite(s.place) ? s.place : i + 1,
+        racerId: s.racerId ?? racer.id,
+        name: s.name || racerName(racer),
+        points: Number.isFinite(s.points) ? s.points : pointsFor(s.place ?? i + 1),
+        isPlayer: !!s.isPlayer,
+      };
+    });
+}
+
 export function podiumScene(engine, opts = {}) {
   return baseScreen(engine, opts, api => {
     const q = engine?.q || { particles: 1 };
-    const standings = (opts.standings?.length ? opts.standings : samplePodiumStandings())
-      .slice().sort((a, b) => (a.place || 99) - (b.place || 99));
+    const standings = normalizeStandings(opts.standings?.length ? opts.standings : samplePodiumStandings());
+    // ONE source of truth for "where did the player come": the sorted array the
+    // ledger produced. The header used to derive this separately and contradict
+    // the table it sits above.
     const me = standings.find(s => s.isPlayer) || standings[0];
     const rng = makeRng(7331);
 
@@ -1431,39 +2034,36 @@ export function podiumScene(engine, opts = {}) {
     // offers it as the primary action. The lead passes the run's best prompt in
     // through opts.bestPrompt (see certificateOverlay in ui/learn.js).
     function openCertificate() {
-      const meRacer = racerById(me?.racerId);
+      const meRacer = racerById(me.racerId);
       return certificateOverlay({
         bestPrompt: opts.bestPrompt,
         racerName: racerName(meRacer),
         championship: opts.championship,
         races: Array.isArray(opts.races) ? opts.races.filter(Boolean).length : undefined,
-        points: Number.isFinite(opts.totalPoints) ? opts.totalPoints
-          : (me?.points ?? pointsFor(me?.place || 1)),
-        place: me?.place || 1,
+        points: Number.isFinite(opts.totalPoints) ? opts.totalPoints : me.points,
+        place: me.place,
         onMenu: () => api.go('menu'),
       });
     }
 
     const build = () => {
-      const meRacer = racerById(me?.racerId);
-      const won = (me?.place || 9) === 1;
-      const rows = standings.map(s => {
-        const r = racerById(s.racerId);
-        return h('div.mn-prow' + (s.isPlayer ? '.me' : ''), null,
-          h('i.num', null, num(s.place)),
-          h('b', null, racerName(r)),
-          h('em.num', null, num(s.points ?? pointsFor(s.place))));
-      });
+      const meRacer = racerById(me.racerId);
+      const won = me.place === 1;
+      const rows = standings.map(s => h('div.mn-prow' + (s.isPlayer ? '.me' : ''), null,
+        h('i.num', null, num(s.place)),
+        h('b', null, displayName(s)),
+        h('em.num', null, num(s.points))));
 
-      const total = Number.isFinite(opts.totalPoints) ? opts.totalPoints
-        : (me?.points ?? pointsFor(me?.place || 1));
+      const total = Number.isFinite(opts.totalPoints) ? opts.totalPoints : me.points;
 
       appendAll(api.stage,
         h('div.mn-podium-top', null,
           h('div.mn-h1.display.pop-in', null, t(won ? 'menu.podium.champ' : 'menu.podium.done')),
+          // Header place comes from the SAME sorted array as the table row above,
+          // never from a second computation.
           h('div.mn-congrats.fade-in', { style: { animationDelay: '.12s' } },
             won ? t('menu.podium.congratsWin', { name: racerName(meRacer) })
-              : t('menu.podium.congrats', { p: ordinal(me?.place || 2), name: racerName(meRacer) }))));
+              : t('menu.podium.congrats', { p: ordinal(me.place), name: racerName(meRacer) }))));
 
       appendAll(api.root,
         h('div.panel-lift.mn-side.pop-in', { style: { animationDelay: '.18s' } },
@@ -1475,8 +2075,12 @@ export function podiumScene(engine, opts = {}) {
         h('div.mn-bottom.pop-in', { style: { animationDelay: '.26s' } },
           h('button.btn.mn-btn-xl', { onclick: openCertificate }, t('learn.cert.title')),
           h('button.btn.ghost', { onclick: () => api.go('menu') }, t('menu.podium.menu')),
+          // A new championship is a full reset (wallet, parts, best prompt and
+          // the ledger) and lands on racer select. Clearing only two of those
+          // keys left championshipRace at 0 with three finished races still on
+          // the books, which is not a state any screen was written for.
           h('button.btn.ghost', {
-            onclick: () => { save.set({ championshipRace: 0, results: [] }); api.go('select', { fresh: true }); },
+            onclick: () => { resetChampionship(); api.go('select', { fresh: true }); },
           }, t('menu.podium.again'))));
     };
 
@@ -1502,6 +2106,15 @@ export function podiumScene(engine, opts = {}) {
         slot.holder.clear();
         slot.holder.add(obj);
         return true;
+      },
+      // What is ACTUALLY standing on each step, read back off the scene graph.
+      // The three steps once held three copies of the player's kart and nothing
+      // on screen said so, so the flow gate asserts this rather than trusting
+      // that the mount was asked for. Whoever mounts names the object.
+      mountedKarts() {
+        return [...slots.keys()].sort((a, b) => a - b).map(place => ({
+          place, name: slots.get(place).holder.children[0]?.name || null,
+        }));
       },
     };
     _activePodium = podiumApi;

@@ -1,0 +1,477 @@
+
+> kart-project@1.0.0 gate
+> npm run build && npm test && node tools/verify.mjs && node tests/audio.test.mjs && node tools/flowtest.mjs
+
+
+> kart-project@1.0.0 build
+> node tools/build.mjs
+
+dist/index.html  1.20 MB
+
+> kart-project@1.0.0 test
+> node tests/spline.test.mjs && node tests/curvature.test.mjs && node tests/orientation.test.mjs && node tests/parts.test.mjs && node tests/ai.test.mjs && node tests/feel.test.mjs && node tests/crowd.test.mjs && node tests/quizbank.test.mjs && node tests/finishline.test.mjs && node tools/checkall.mjs
+
+
+=== oasis === length=1156.0m width=10
+  centreline probe: maxLateral=0.003m  maxTerr=0.41m
+  offset(+3m) probe: maxErr=0.001m
+  grid slots off-track: 0/8
+  max curvature: 19.3deg over 12 samples
+  closestT: 0.36us/call (need <8us for 8 karts@60fps)
+
+=== circuit === length=1183.4m width=9
+  centreline probe: maxLateral=0.004m  maxTerr=0.42m
+  offset(+3m) probe: maxErr=0.008m
+  grid slots off-track: 0/8
+  max curvature: 30.9deg over 12 samples
+  closestT: 0.57us/call (need <8us for 8 karts@60fps)
+
+=== cloud === length=1196.3m width=9.5
+  centreline probe: maxLateral=0.002m  maxTerr=0.43m
+  offset(+3m) probe: maxErr=0.001m
+  grid slots off-track: 0/8
+  max curvature: 17.4deg over 12 samples
+  closestT: 0.37us/call (need <8us for 8 karts@60fps)
+samples: [{"t":0,"c":0.316,"turnsRight":true,"dotRight":0.2936},{"t":0.001,"c":0.316,"turnsRight":true,"dotRight":0.2865},{"t":0.001,"c":0.306,"turnsRight":true,"dotRight":0.3051},{"t":0.002,"c":0.295,"turnsRight":true,"dotRight":0.277},{"t":0.002,"c":0.295,"turnsRight":true,"dotRight":0.266},{"t":0.003,"c":0.283,"turnsRight":true,"dotRight":0.2822}]
+
+Of 1462 curved samples: positive curvature coincided with a RIGHT turn 202 times, LEFT 0 times.
+=> positive curvature means a RIGHT turn. The docstring saying "+ = left" is WRONG.
+
+  RENDER ORIENTATION
+  ────────────────────────────────────────────────────────────────────────────
+  [32m✓[0m sim quaternion maps +Z onto velocity                     [2mdot=1.0000[0m
+  [32m✓[0m render quaternion maps -Z onto velocity                  [2mdot=1.0000[0m
+  [32m✓[0m model nose points AWAY from a trailing camera            [2mdot=1.0000 (negative = kart faces the camera)[0m
+  [32m✓[0m MODEL_YAW_OFFSET is exactly half a turn                  
+
+  STEERING SIGN (differential vs straight-ahead baseline)
+  ────────────────────────────────────────────────────────────────────────────
+  [32m✓[0m ArrowRight and ArrowLeft turn opposite ways              [2mright -21.3deg, left 21.3deg[0m
+  [32m✓[0m both inputs turn by a similar magnitude                  [2m|right|=21.3 |left|=21.3[0m
+  [32m✓[0m ArrowRight displaces the kart to its own RIGHT           [2m2.74 m sideways[0m
+  [32m✓[0m rendered heading turns with the motion (not mirrored)    [2mmotion -21.3deg, render -29.2deg[0m
+  ────────────────────────────────────────────────────────────────────────────
+  [32mall passed[0m
+
+
+  GARAGE PARTS → PHYSICS
+  ────────────────────────────────────────────────────────────────────────
+  [32m✓[0m engine numeric 3 → physics tier 3                    [2mgot 3[0m
+  [32m✓[0m engine name "pro" → physics tier 3                   [2mgot 3[0m
+  [32m✓[0m engine object {tier:3} → physics tier 3              [2mgot 3[0m
+  [32m✓[0m engine object {visualTier:"pro"} → physics tier 3    [2mgot 3[0m
+  [32m✓[0m missing slot → tier 0                                
+  [32m✓[0m junk name → tier 0, not NaN                          
+  [32m✓[0m tires → tyres                                        [2m{"engine":3,"tyres":3,"frame":3,"turbo":3}[0m
+  [32m✓[0m chassis → frame                                      
+  [32m✓[0m wing → turbo                                         
+  [32m✓[0m visual slots keep garage names                       [2m{"engine":2,"tires":1,"wing":3,"chassis":0,"exhaust":2}[0m
+  [32m✓[0m exhaust follows engine                               
+
+  STAT IMPACT (base = mid-range racer)
+  ────────────────────────────────────────────────────────────────────────
+    topSpeed     stock 1.000  →  maxed 1.054   5.4%
+    accel        stock 1.000  →  maxed 1.150   15.0%
+    grip         stock 1.000  →  maxed 1.120   12.0%
+    stability    stock 1.000  →  maxed 1.240   24.0%
+    boost        stock 1.000  →  maxed 1.120   12.0%
+    driftRate    stock 1.000  →  maxed 1.150   15.0%
+  [32m✓[0m maxed parts raise top speed                          
+  [32m✓[0m maxed parts raise acceleration                       
+  [32m✓[0m maxed parts raise grip                               
+  [32m✓[0m maxed parts raise drift rate                         
+  [32m✓[0m vague vs specific prompt differ in physics           [2m1.000 → 1.150[0m
+  ────────────────────────────────────────────────────────────────────────
+  [32mall passed[0m
+
+
+=== PACE x RACE: finishing position and laps behind the winner ===
+pace                        race 1 (oasis d1)                   race 2 (circuit d2)                     race 3 (cloud d3)
+100%        1   -0.00 -0.00 -0.00 -0.00 -0.00     1   -0.00 -0.00 -0.00 -0.00 -0.00      1   -0.00 -0.00 -0.00 0.00 -0.00
+85%              4   0.01 0.03 0.01 0.01 0.01        2-5   0.09 0.09 0.00 0.06 0.05        6-8   0.14 0.15 0.15 0.12 0.17
+70%              8   0.24 0.24 0.23 0.23 0.22          8   0.24 0.25 0.25 0.22 0.21          8   0.60 0.61 0.61 0.62 0.60
+              pos   laps behind, one per seed       pos   laps behind, one per seed       pos   laps behind, one per seed
+
+=== 1. NEVER LAPPED (the guarantee) ===
+  ✓ race 1 (oasis d1): 70%-pace player stays on the lead lap (worst 0.24 laps behind, budget 0.72)
+  ✓ race 2 (circuit d2): 70%-pace player stays on the lead lap (worst 0.25 laps behind, budget 0.72)
+  ✓ race 3 (cloud d3): 70%-pace player stays on the lead lap (worst 0.62 laps behind, budget 0.72)
+  ✓ 70%-pace player always has an opponent within half a lap (worst 0.41 laps to the nearest kart)
+  ✓ 85%-pace player is always in traffic (worst 0.03 laps to the nearest kart)
+
+=== 2. A 100% PLAYER STILL WINS ALL THREE ===
+  ✓ race 1 (oasis d1): 100%-pace player wins 5/5 seeds
+  ✓ race 2 (circuit d2): 100%-pace player wins 5/5 seeds
+  ✓ race 3 (cloud d3): 100%-pace player wins 5/5 seeds
+
+=== 3. THE 85% CURVE IS AN ESCALATION, NOT A WALL ===
+  championship (oasis d1 -> circuit d2 -> cloud d3), mean place: 4.0  ->  4.0  ->  7.2
+  laps behind:                                                   0.02     ->     0.06     ->     0.15
+  difficulty ladder on oasis alone, mean place: 4.0  ->  6.0  ->  7.6
+  ✓ difficulty 1 at 85% is gentle (mean place 4.0 <= 5)
+  ✓ each difficulty step is a visible step down the order for a struggling player
+  ✓ difficulty 3 at 85% is meaningfully harder than difficulty 1 (4.0 -> 7.6)
+  ✓ an 85% player is never close to lapped (worst 0.17 laps)
+
+=== 4. THE BAND IS STILL HARD-BOUNDED ===
+  measured band multiplier over 45 races: 0.8300 .. 1.0750
+  declared: [1 - BAND_HOLD, 1 + BAND_CATCH] = [0.830, 1.075]
+  ✓ every band sample lies inside the declared bound
+  ✓ the bound itself has not been widened (catch 0.075 <= 0.075, hold 0.170 <= 0.170)
+
+=== 5. WAVE-1 AI BEHAVIOUR (personalities, drift, lap times) ===
+persona          lap   entry   drift%  mistakes
+erratic        55.76   21.04     64.4        39
+blocker        55.32   18.09     61.6         8
+steady         53.28   18.95     47.9         5
+aggressive     53.45   19.12     67.3        19
+drifter        53.30   19.98     77.3        11
+steady         54.13   18.58     53.4         4
+aggressive     54.03   19.70     67.4        17
+  ✓ AI lap times are still in the Wave-1 window (53.28..55.76s)
+  ✓ the late braker still carries more speed into corners (19.70 > 18.58)
+  ✓ the drifter still drifts more than the metronome (129.38s > 89.35s)
+  ✓ the erratic driver still makes far more mistakes (39 vs 4)
+  ✓ the blocker still defends (16.2s of blocking)
+  ✓ every opponent still drifts most of the lap (min 47.9%)
+
+all checks passed
+
+
+=== 1. LONGITUDINAL ===
+  ✓ player top speed in 22..30 (24.21)
+  ✓ max-stat top speed <= 30 (26.00)
+  ✓ 0->95% between 1.5 and 6s (2.12)
+
+=== 2. LAP: GRIP vs DRIFT ===
+  ✓ both autopilot laps completed
+  ✓ drifting lap is FASTER (47.67 < 49.53)
+  ✓ the drifting lap actually drifts and boosts
+
+=== 3. CORNER BY TIER ===
+  ✓ sweeper R41 t0.62-0.74: corner forces a real slowdown (22.16 vs top 24.21)
+  ✓ hairpin R29 t0.94-0.04: corner forces a real slowdown (19.04 vs top 24.21)
+  ✓ purple reachable in one committed drift (1.97s)
+  ✓ each drift tier is a strictly bigger gain through the same corner
+
+=== 4. STAT SPREAD ===
+  ✓ stat spread 3-8% (3.45%)
+
+=== 5. GARAGE PARTS ===
+  ✓ fully upgraded kart is measurably faster
+  ✓ parts advantage 1.5-12% (9.37%)
+
+=== 6. SAFETY ===
+  ✓ no NaN over 2 minutes of chaotic input
+  ✓ no runaway velocity (19.28 m/s)
+  ✓ never escapes the barrier (max 4.93 m past the edge)
+  ✓ anti-stuck frees a walled kart within 2.2s (2.18s)
+  ✓ wedged kart is under way within 1.5s (0.40s)
+  ✓ respawn() puts the kart on the centreline facing forward
+  ✓ heavy kart shoves the light one further
+  ✓ kart lands and leaves the airborne state
+  ✓ off-track is meaningfully slower
+  ✓ off-track raises the rumble flag
+
+=== 7. ALL THREE TRACKS ===
+  ✓ oasis: autopilot completes a clean lap
+  ✓ oasis: drifting lap beats the gripping lap
+  ✓ circuit: autopilot completes a clean lap
+  ✓ circuit: drifting lap beats the gripping lap
+  ✓ cloud: autopilot completes a clean lap
+  ✓ cloud: drifting lap beats the gripping lap
+
+=== TUNING TABLE ===
+  0 -> 95% top (player)                           2.12 s
+  top speed (player)                           24.21 m/s   87.14 km/h
+  braking distance                               13.69 m   1.12 s
+  top speed (speed 5)                          26.00 m/s
+  top speed (speed 2)                          23.29 m/s
+  0->95% (accel 5)                                1.88 s
+  0->95% (accel 2)                                2.75 s
+  lap, no drift                                  49.53 s   avg 23.34 m/s
+  lap, drifting                                  47.67 s   avg 25.02 m/s
+  drift advantage                                 1.87 s   3.77%
+  drift time / boost time                40.42 / 29.10 s   tiers b/o/p: 35/6/0
+  off-track time (drift lap)                      0.00 s
+  boost run t0.72->0.92 (grip)                    9.62 s   exit 24.19 m/s, min 23.35 m/s
+  boost run t0.72->0.92 (blue)                    9.57 s   exit 24.19 m/s, min 23.39 m/s
+  boost run t0.72->0.92 (orange)                  9.45 s   exit 24.19 m/s, min 23.39 m/s
+  boost run t0.72->0.92 (purple)                  9.17 s   exit 24.19 m/s, min 23.39 m/s
+  sweeper R41 t0.62-0.74                          6.02 s   min 22.16 m/s  (top 24.21)
+  hairpin R29 t0.94-0.04                          5.43 s   min 19.04 m/s  (top 24.21)
+  drift secs to blue/orange/purple  0.58 / 1.25 / 1.97 s
+  lap nitzotz  3/4/4/3                           47.67 s   off 0.00s  max 29.49 m/s
+  lap plada    5/2/2/5                           46.83 s   off 0.00s  max 31.53 m/s
+  lap zuzi     2/5/5/1                           48.45 s   off 0.00s  max 28.52 m/s
+  lap zamzum   5/4/1/3                           47.30 s   off 0.77s  max 32.08 m/s
+  lap nurit    3/3/5/2                           47.35 s   off 0.00s  max 29.21 m/s
+  stat spread                                      3.45%   46.83 .. 48.45 s
+  lap stock parts                                47.67 s
+  lap maxed parts                                43.20 s
+  parts advantage                                 4.47 s   9.37%
+  chaos run max speed                          19.28 m/s
+  chaos run max off-track depth                   4.93 m
+  anti-stuck recovery                             2.18 s   wall contact at 1.38s, moving again at 3.57s
+  wedged-in-wall -> under way                     0.40 s   freed by the wall assist, anti-stuck never needed
+  bump: light displaced                           0.62 m   heavy displaced 0.28 m
+  air time from vy=6                              0.48 s   yaw change 0.05 rad
+  speed after 3s on asphalt                    24.21 m/s
+  speed after 3s off-track                     13.51 m/s   sand
+  lap oasis                                      47.03 s   no-drift 49.03s (drift 4.08% faster)  air 0.00s  jumps 0  max 29.51 m/s
+  lap circuit                                    54.58 s   no-drift 56.50s (drift 3.39% faster)  air 0.00s  jumps 0  max 29.57 m/s
+  lap cloud                                      48.53 s   no-drift 51.03s (drift 4.90% faster)  air 1.75s  jumps 12  max 29.58 m/s
+
+all checks passed
+
+
+  CROWD — spectators stay on the ground
+  ────────────────────────────────────────────────────────────────────────
+  [32m✓[0m 12 min @60Hz: every Y finite, never below base           
+  [32m✓[0m 12 min @60Hz: offset within sane bound                   [2mworst 2.245 m ≤ 2.298[0m
+  [32m✓[0m dt spikes (0.25s / 0.5s / 0): all Y finite and ≥ base    
+  [32m✓[0m dt spikes: offset within sane bound                      [2mworst 2.232 m[0m
+  [32m✓[0m clock reset mid-roar does not launch anyone              [2mworst 0.318 m[0m
+  [32m✓[0m new stand ignores the previous race's roar               [2mworst 0.324 m[0m
+  [32m✓[0m absurd strength / NaN / Infinity clock stay bounded      [2mworst 1.661 m[0m
+  [32m✓[0m cheer(1, NaN): stays bounded and settles                 [2mworst 1.428 m, settled 0.303 m[0m
+  [32m✓[0m cheer(1, NaN): a later cheer still lifts the stand       [2midle 0.310 → roar 1.300[0m
+  [32m✓[0m cheer(1, 1e9): stays bounded and settles                 [2mworst 1.446 m, settled 0.303 m[0m
+  [32m✓[0m cheer(1, 1e9): a later cheer still lifts the stand       [2midle 0.310 → roar 1.300[0m
+  [32m✓[0m cheer(1, Infinity): stays bounded and settles            [2mworst 1.428 m, settled 0.303 m[0m
+  [32m✓[0m cheer(1, Infinity): a later cheer still lifts the stand  [2midle 0.310 → roar 1.300[0m
+  [32m✓[0m cheer(1, negative): stays bounded and settles            [2mworst 1.428 m, settled 0.303 m[0m
+  [32m✓[0m cheer(1, negative): a later cheer still lifts the stand  [2midle 0.310 → roar 1.300[0m
+  [32m✓[0m cheer(1, zero): stays bounded and settles                [2mworst 1.428 m, settled 0.303 m[0m
+  [32m✓[0m cheer(1, zero): a later cheer still lifts the stand      [2midle 0.310 → roar 1.300[0m
+  [32m✓[0m clock jumps back 0.5s mid-roar: bounded                  [2mworst 2.062 m[0m
+  [32m✓[0m clock jumps back 1.5s mid-roar: bounded                  [2mworst 2.062 m[0m
+  [32m✓[0m clock jumps back 3.2s mid-roar: bounded                  [2mworst 2.062 m[0m
+  [32m✓[0m clock jumps back 12s mid-roar: bounded                   [2mworst 2.062 m[0m
+  [32m✓[0m bus cheers (position/lap/finish) stay bounded            [2mworst 1.503 m[0m
+  [32m✓[0m dispose() unsubscribes from the bus                      [2midle 0.294 → roar 1.398 (equal ⇒ leaked listener stamped a stale clock)[0m
+  [32m✓[0m idle bob actually moves                                  [2mrange 0.257–0.318 m[0m
+  [32m✓[0m a cheer visibly lifts the stand                          [2midle 0.286 → roar 1.460[0m
+
+  [32mall checks passed[0m
+
+
+  QUIZ BANK
+  ──────────────────────────────────────────────────────────────────────────────
+  [32m✓[0m at least 95 questions                                      [2m101 total[0m
+    tiers  {"1":36,"2":39,"3":26}
+    topics {"whatai":18,"prompt":28,"tokens":14,"iterate":13,"mistakes":16,"vibe":12}
+  [32m✓[0m every field present and non-empty in he + en               
+  [32m✓[0m exactly one correct index, 0..2                            
+  [32m✓[0m every tier is 1, 2 or 3                                    
+  [32m✓[0m every topic is a known TOPICS key                          
+  [32m✓[0m Hebrew fields contain Hebrew                               
+  [32m✓[0m no English leaking into Hebrew copy                        
+  [32m✓[0m length ceilings respected (readable at speed)              
+  [32m✓[0m no "which is NOT" trick questions                          
+  [32m✓[0m ids are unique and stable                                  
+  [32m✓[0m no duplicate Hebrew question text                          
+  [32m✓[0m no duplicate English question text                         
+  [32m✓[0m no two same-race questions share a correct answer          
+  [32m✓[0m correct index spread across 0/1/2                          [2m[33,34,34][0m
+    length-cheat table (share of questions each blind strategy wins)
+  [32m✓[0m he tier 1: no length strategy beats 45%                    [2mn=36  longest 36%  shortest 36%  middle 39%[0m
+  [32m✓[0m he tier 2: no length strategy beats 45%                    [2mn=39  longest 41%  shortest 33%  middle 38%[0m
+  [32m✓[0m he tier 3: no length strategy beats 45%                    [2mn=26  longest 31%  shortest 35%  middle 35%[0m
+  [32m✓[0m en tier 1: no length strategy beats 45%                    [2mn=36  longest 36%  shortest 31%  middle 33%[0m
+  [32m✓[0m en tier 2: no length strategy beats 45%                    [2mn=39  longest 41%  shortest 38%  middle 26%[0m
+  [32m✓[0m en tier 3: no length strategy beats 45%                    [2mn=26  longest 31%  shortest 35%  middle 35%[0m
+  [32m✓[0m tokens mentioned outside token questions is not a tell     [2m4/14 correct = 29%[0m
+  [32m✓[0m absolutes (תמיד / אף פעם / always / never) is not a tell   [2m6/14 correct = 43%[0m
+  [32m✓[0m options opening כן / Yes is not a tell                     [2m2/12 correct = 17%[0m
+  [32m✓[0m options opening לא / No is not a tell                      [2m4/13 correct = 31%[0m
+  [32m✓[0m short (≤4 word) Hebrew options are not free eliminations   [2m10/41 correct = 24%[0m
+  [32m✓[0m punctuation-emphasis distractor used sparingly             [2m2 appearances[0m
+  [32m✓[0m he.a and en.a are both length 3                            
+  [32m✓[0m en.a option order matches he.a                             
+  [32m✓[0m quiz.js pacing constants readable                          [2mCOOLDOWN_S=10 DISMISS_AFTER_S=0.45[0m
+  [32m✓[0m race.js lap count readable                                 [2m3 laps[0m
+    worst-case questions in one race: 26
+  [32m✓[0m race 1 pool ≥ worst-case race length                       [2m36 eligible (tiers 1)[0m
+  [32m✓[0m race 2 pool ≥ worst-case race length                       [2m75 eligible (tiers 1+2)[0m
+  [32m✓[0m race 3 pool ≥ worst-case race length                       [2m65 eligible (tiers 2+3)[0m
+  [32m✓[0m championship never runs out (worst-case draw)              [2mshortfalls 0/0/0[0m
+  [32m✓[0m exclude filters already-asked ids                          [2m49 left for race 2[0m
+  [32m✓[0m exclude never starves the pool below MIN_POOL              
+  [32m✓[0m exclude is optional (old call shape unchanged)             
+  [32m✓[0m IP keyword list reused from tools/verify.mjs               
+  [32m✓[0m no existing-IP references in the bank                      
+  ──────────────────────────────────────────────────────────────────────────────
+  [32mall passed[0m
+
+
+  FINISH-LINE ALIGNMENT
+  ────────────────────────────────────────────────────────────────────────
+  [32m✓[0m trackbuild anchors the start/finish complex at startT 
+  [32m✓[0m trackbuild builds 16 checkpoints from startT         
+  [32m✓[0m oasis: three clean laps are credited                 [2m3 laps[0m
+  [32m✓[0m oasis: lap credited AT the finish line               [2mworst 0.46m from the line (was ~95m early)[0m
+  [32m✓[0m oasis: skipping the lap does not credit one          
+  [32m✓[0m oasis: reversing over the line does not farm laps    
+  [32m✓[0m circuit: three clean laps are credited               [2m3 laps[0m
+  [32m✓[0m circuit: lap credited AT the finish line             [2mworst 0.55m from the line (was ~98m early)[0m
+  [32m✓[0m circuit: skipping the lap does not credit one        
+  [32m✓[0m circuit: reversing over the line does not farm laps  
+  [32m✓[0m cloud: three clean laps are credited                 [2m3 laps[0m
+  [32m✓[0m cloud: lap credited AT the finish line               [2mworst 0.37m from the line (was ~99m early)[0m
+  [32m✓[0m cloud: skipping the lap does not credit one          
+  [32m✓[0m cloud: reversing over the line does not farm laps    
+  ────────────────────────────────────────────────────────────────────────
+  [32mall passed[0m
+
+  ok    src/audio/audio.js                 327KB
+  ok    src/core/bus.js                    0KB
+  ok    src/core/engine.js                 669KB
+  ok    src/core/harness.js                519KB
+  ok    src/core/input.js                  2KB
+  ok    src/core/rng.js                    1KB
+  ok    src/core/save.js                   1KB
+  ok    src/garage/garage.js               432KB
+  ok    src/garage/prompts.js              41KB
+  ok    src/garage/scoring.js              58KB
+  ok    src/garage/tips.js                 65KB
+  ok    src/gfx/particles.js               338KB
+  ok    src/gfx/props.js                   362KB
+  ok    src/gfx/sky.js                     332KB
+  ok    src/gfx/textures.js                233KB
+  ok    src/kart/ai.js                     394KB
+  ok    src/kart/camera.js                 292KB
+  ok    src/kart/kartmodel.js              372KB
+  ok    src/kart/kartphysics.js            319KB
+  ok    src/kart/roster.js                 5KB
+  ok    src/main.js                        1223KB
+  ok    src/race/hud.js                    436KB
+  ok    src/race/minimap.js                222KB
+  ok    src/race/quiz.js                   604KB
+  ok    src/race/quizdata.js               165KB
+  ok    src/race/race.js                   819KB
+  ok    src/scenes.js                      1176KB
+  ok    src/track/trackbuild.js            415KB
+  ok    src/track/trackdef.js              228KB
+  ok    src/ui/i18n.js                     2KB
+  ok    src/ui/learn.js                    358KB
+  ok    src/ui/menus.js                    403KB
+  ok    src/ui/pause.js                    349KB
+  ok    src/ui/style.js                    5KB
+
+all modules bundle cleanly
+
+  CONTEST COMPLIANCE
+  ────────────────────────────────────────────────────────────────────────
+  [32m✓[0m single self-contained file                  [2m1.20 MB[0m
+  [32m✓[0m no external src/href in HTML                
+  [32m✓[0m no http(s) URLs in bundle                   
+  [32m✓[0m no asset files in src/                      
+  [32m✓[0m no embedded base64 media                    [2m0 found[0m
+  [32m✓[0m no network APIs in src/                     
+  [32m✓[0m no Math.random in src/ (determinism)        
+  [32m✓[0m no existing-IP references in source         
+  [32m✓[0m zero runtime network requests (all scenes)  [2mmenu, select, race, garage, results, podium[0m
+  [32m✓[0m boots with no console/page errors           
+  [32m✓[0m localStorage limited to one namespaced key  
+  [32m✓[0m no cookies set                              
+  [32m✓[0m defaults to Hebrew RTL                      [2mrtl/he[0m
+  ────────────────────────────────────────────────────────────────────────
+  13/13 passed
+
+
+  AUDIO — real built game, real gesture, measured output
+  ────────────────────────────────────────────────────────────────────────
+  [32m✓[0m audio module is present in the bundle                
+  [32m✓[0m audio singleton reachable in the running game        
+  [32m✓[0m not muted from a previous session                    [2mmuted=false[0m
+  [32m✓[0m AudioContext reaches "running" after one click       [2msuspended → running in 652ms[0m
+  [32m✓[0m master gain is open                                  [2m0.90[0m
+  [32m✓[0m idle bus is quiet (proves the meter is honest)       [2mrms 0.00000[0m
+  [32m✓[0m engine (kart:engine bus events) produces output      [2mrms 0.0530  peak 0.135[0m
+  [32m✓[0m drift scrape (drift:start / drift:charge) produces output [2mrms 0.1031  peak 0.164[0m
+  [32m✓[0m token pickup (token:pickup) produces output          [2mrms 0.0431  peak 0.226[0m
+  [32m✓[0m UI (ui:confirm / ui:select) produces output          [2mrms 0.0152  peak 0.206[0m
+  [32m✓[0m quiz stingers (quiz:correct / quiz:wrong) produces output [2mrms 0.0322  peak 0.319[0m
+  [32m✓[0m music — oasis produces output                        [2mrms 0.0329  peak 0.527[0m
+  [32m✓[0m music — circuit produces output                      [2mrms 0.0471  peak 0.715[0m
+  [32m✓[0m music — cloud produces output                        [2mrms 0.0378  peak 0.587[0m
+  [32m✓[0m music theme switches per track                       [2mthemeId=cloud[0m
+  [32m✓[0m every emitted game event reaches a sound             [2m24 events heard[0m
+  [32m✓[0m reaches the race scene                               [2mrace[0m
+  [32m✓[0m race audio is non-silent                             [2mrms 0.1197[0m
+  [32m✓[0m race audio does not clip                             [2mpeak 0.674[0m
+  [32m✓[0m engine voice is live during the race                 
+  [32m✓[0m race music is playing in the track theme             [2mrace/oasis[0m
+  [32m✓[0m context still running after the race                 [2mrunning[0m
+  [32m✓[0m no runaway voice growth                              [2mpeak 38 voices, 0 dropped[0m
+  [2mplayed 105 sounds, 11 voices live at the end[0m
+  [32m✓[0m no page errors while the audio ran                   
+  ────────────────────────────────────────────────────────────────────────
+
+  [32maudio OK — measured, in the real game[0m
+
+
+  PLAYABILITY — full Wave-1 slice at 1366x768
+  ──────────────────────────────────────────────────────────────────────
+  [32m✓[0m boots to title                                 [2mmenu[0m
+  [32m✓[0m start button is clickable                      [2mok[0m
+  [32m✓[0m reaches racer select                           [2mselect[0m
+  [32m✓[0m start-race button works                        [2mok[0m
+  [32m✓[0m reaches race scene                             [2mrace[0m
+  [32m✓[0m countdown completed, kart is moving            [2m16.0 m/s, phase=racing[0m
+  [32m✓[0m laps are counting                              [2mlap 3, progress 2.60[0m
+  [32m✓[0m tokens collectable                             [2m3 tokens[0m
+  [32m✓[0m position is tracked                            [2mP8[0m
+  [32m✓[0m best lap recorded                              [2m71.85s[0m
+  [32m✓[0m race completes → results                       [2mresults[0m
+        [2mtokens: 15 pickups + 0 quiz + 6 finish = 21[0m
+  [32m✓[0m race token yield stays near the garage budget  [2m21 banked vs ~21 max garage spend[0m
+  [32m✓[0m progress persisted to localStorage             [2mrace 1, 27 tokens[0m
+  [32m✓[0m results CTA reachable at 1366x768              [2mok[0m
+  [32m✓[0m reaches garage                                 [2mgarage[0m
+  [32m✓[0m garage slots are selectable                    [2m6 rows engaged[0m
+  [32m✓[0m part can be built                              
+  [32m✓[0m part can be installed                          [2minstall clicked[0m
+  [32m✓[0m parts persisted                                [2m{"engine":0}[0m
+  ──────────────────────────────────────────────────────────────────────
+  P0 REGRESSION GATES
+  [32m✓[0m P0#1 karts face their direction of travel      [2mai0:1.00 ai1:1.00 ai2:1.00[0m
+  [32m✓[0m P0#2 ArrowRight steers RIGHT                   [2m3.83 m to the kart's own right[0m
+  [32m✓[0m P0#3 no obstruction across the track           [2mclear lap[0m
+  [32m✓[0m P0#4 Escape opens a pause overlay              
+  [32m✓[0m P0#4 pause freezes the simulation              [2mrace clock advanced 0s[0m
+  [32m✓[0m P0#5 audio context running                     [2mstate=running muted=false[0m
+  [32m✓[0m P0#5 audio is actually AUDIBLE (non-silent at destination) [2mrms=4.02e-2 peak=0.224[0m
+  ──────────────────────────────────────────────────────────────────────
+  CHAMPIONSHIP-END GATES (podium · tie-break · certificate · reset · routing)
+  [32m✓[0m C#1 podium rows === final standings (name/points/order) [2m1.זוזי 30  2.ניצוץ 24  3.פלדה 18  4.נורית 15  5.זמזום 12  6.טיפה 9  7.כפתור 6  8.רעשן 3[0m
+  [32m✓[0m C#1 no "undefined" anywhere in the podium      [2mclean[0m
+  [32m✓[0m C#1 podium total matches the player row        [2mtotal 24[0m
+  [32m✓[0m C#2 each podium step shows its own racer's kart [2mkart:zuzi kart:nitzotz kart:plada[0m
+  [32m✓[0m C#3 tie 24–24 (player takes it): table follows the tie-break [2m1.ניצוץ 24*  2.זוזי 24[0m
+  [32m✓[0m C#3 tie 24–24 (player takes it): header place === table place [2mtable P1 · "כל הכבוד, ניצוץ! לקחתם את גביע מרוץ הפרומפטים."[0m
+  [32m✓[0m C#3 tie 24–24 (rival takes it): table follows the tie-break [2m1.זוזי 24  2.ניצוץ 24*[0m
+  [32m✓[0m C#3 tie 24–24 (rival takes it): header place === table place [2mtable P2 · "סיימתם את האליפות במקום השני, ניצוץ. מרוץ יפה!"[0m
+  [32m✓[0m C#4 podium CTA opens the certificate           
+  [32m✓[0m C#4 certificate quotes the player's best prompt [2m"מנוע קליל שמאיץ מהר ביציאה מפנייה, בלי ל…"[0m
+  [32m✓[0m C#4 certificate names what was learned         
+  [32m✓[0m C#4 certificate → main menu                    [2mok, scene=menu[0m
+  [32m✓[0m C#5 new championship clears the whole ledger   [2mrace=0 results=0 tokens=0 parts=0 bestPrompt=cleared[0m
+  [32m✓[0m C#5 new championship lands on racer select, not a black screen [2mscene=select, 8 cards, 5 buttons[0m
+  [32m✓[0m C#5 championshipsDone counted exactly once     [2mchampionshipsDone=1[0m
+  [32m✓[0m C#6 finished championship offers no "continue" [2mאליפות חדשה | לטבלת האליפות | המוסך של בורג[0m
+  [32m✓[0m C#7 no save → the sandbox garage               [2m{"garage":true,"sandbox":true,"real":false,"podium":false}[0m
+  [32m✓[0m C#7 championship in progress → the REAL garage [2m{"garage":true,"sandbox":false,"real":true,"podium":false}[0m
+  [32m✓[0m C#7 championship finished → still the podium   [2m{"garage":false,"sandbox":false,"real":false,"podium":true}[0m
+  ──────────────────────────────────────────────────────────────────────
+  CROSS-MODULE SEAMS (crowd clock · quiz memory)
+  [32m✓[0m S#1 crowd instances found in the built race    [2m2 instanced meshes[0m
+  [32m✓[0m S#1 no spectator launches across the countdown→raceTime clock reset [2mduring 1.322m · after reset 1.322m · settled 1.322m · non-finite 0[0m
+  [32m✓[0m S#2 race.js exposes its quiz to the gates      [2m12 ids drawn, pool 75[0m
+  [32m✓[0m S#2 questions already asked this championship are excluded from the next race [2mexcluded 5 · redrew 12 · leaked none[0m
+  [32m✓[0m S#2 excluding shrinks the eligible pool (the ledger really reaches the quiz) [2mpool 75 → 70, expected 70[0m
+  [32m✓[0m no page errors during whole flow               
+  ──────────────────────────────────────────────────────────────────────
+  51/51 passed
+

@@ -1,0 +1,89 @@
+
+  RACER SELECT — kart seam, pick-vs-start, and real pixels
+  ──────────────────────────────────────────────────────────────────────────
+
+  1. the kart seam (8 cards, 8 different racers)
+  [32m✓[0m racer select exposes one kart slot per roster racer          8 slots
+  [32m✓[0m the slots are the roster, in order                           nitzotz,zuzi,plada,nurit,zamzum,tipa,kaftor,raash
+  [32m✓[0m every card actually mounted something                        8/8 named
+  [32m✓[0m the mounter seam is FILLED (no placeholder blocks in the real build) all real karts
+  [32m✓[0m each card wears ITS OWN racer's kart                         8/8 correct
+  [32m✓[0m all 8 mounted karts are distinct                             8 distinct names
+  [32m✓[0m every card window is on screen                               8/8 laid out
+
+  1b. …with a NON-default racer in the save (the save-backed trap)
+  [32m✓[0m a saved racerId does not leak into the other seven cards     8/8 correct
+  [32m✓[0m …and all 8 are still distinct                                
+  [32m✓[0m the saved racer is the one pre-selected                      plada
+
+  2. mouse: clicking a card selects, and only selects
+  [32m✓[0m starts on the player racer                                   nitzotz
+  [32m✓[0m clicking a card changes the selection                        tipa
+  [32m✓[0m …and the scene did NOT change                                select
+  [32m✓[0m …and exactly one card carries the selected state             tipa
+  [32m✓[0m …marked for assistive tech too                               
+  [32m✓[0m …and the "you picked" readout names it                       בחרתם:טיפה
+  [32m✓[0m clicking the ALREADY-selected card still does not race       select
+
+  3. keyboard: arrows move the selection, Enter on a card never races
+  [32m✓[0m RTL: ArrowLeft moves one card to the visual left (roster +1) zuzi
+  [32m✓[0m RTL: ArrowRight comes back                                   nitzotz
+  [32m✓[0m ArrowDown drops a row (4 columns at 1366px)                  zamzum
+  [32m✓[0m ArrowUp climbs back                                          nitzotz
+  [32m✓[0m …and the scene never moved while navigating                  select
+  [32m✓[0m two more steps land on the third racer                       plada
+  [32m✓[0m Enter on a CARD does not start a race                        select
+  [32m✓[0m …and does not change the pick                                plada
+  [32m✓[0m …it hands focus to the start button instead                  btn mn-btn-xl mn-start on
+
+  3b. English (--lang en) mirrors the arrow keys back
+  [32m✓[0m the screen is LTR                                            ltr
+  [32m✓[0m English strings are live                                     Choose Your Racer
+  [32m✓[0m LTR: ArrowRight moves forward through the roster             zuzi
+  [32m✓[0m LTR: ArrowLeft moves back                                    nitzotz
+  [32m✓[0m …and the karts survived the language flip, still one each    
+
+  4. only the start button starts a race — and it carries the pick
+  [32m✓[0m picked a racer that is NOT the roster default                kaftor
+  [32m✓[0m clicking the start button reaches the race scene             race
+  [32m✓[0m …driving the racer that was SELECTED, not the saved/default one kaftor
+  [32m✓[0m …and the pick was persisted                                  
+  [32m✓[0m keyboard reached the start button without racing             
+  [32m✓[0m Enter ON THE BUTTON starts the race                          race
+  [32m✓[0m …with the keyboard-selected racer                            zuzi
+  [32m✓[0m End jumps to the last racer                                  raash
+  [32m✓[0m Space on the button starts the race too                      race
+  [32m✓[0m …still with the right racer                                  
+  [32m✓[0m Escape goes back to the title, not into a race               menu
+
+  5. rendered frames: the karts are visibly on screen
+  [32m✓[0m every card window has a real rectangle                       325x100 …
+  [32m✓[0m no card window is a flat colour plate                        min 83 colours
+  [32m✓[0m every card window contains a dark kart silhouette            3.0–31.9% dark
+  [32m✓[0m the eight windows are visually distinguishable from each other closest pair plada/kaftor at 7.4 luma RMS
+  [32m✓[0m the SELECTED kart visibly rotates                            Δ 3.67 luma RMS
+  [32m✓[0m the other seven turn too on the high tier                    1.20 2.14 1.97 1.39 2.25 2.85 2.01
+
+  6. measured frame cost, and low-tier degradation
+  [32m✓[0m the low tier still mounts all 8 karts                        
+
+    select @high   3.9 ms/frame   (8 live karts, 9 render passes)
+    select @low    2.7 ms/frame
+    race   @high   1.4 ms/frame   (reference: a live race on the same machine)
+    budget         16.7 ms/frame = 60fps
+
+  [32m✓[0m the 8-kart stage fits in a 60fps frame budget, on swiftshader 3.9 ms vs 16.7 ms (race here: 1.4 ms)
+  [32m✓[0m …with room to spare (under half the budget)                  3.9 ms
+  [32m✓[0m the low tier is cheaper than the high tier                   2.7 vs 3.9 ms
+  [32m✓[0m low tier: the selected kart still turns                      Δ0.540 rad
+  [32m✓[0m low tier: the other seven hold the hero pose                 1/8 animating
+
+  7. the whole screen fits — 6 resolutions × 2 languages
+  [32m✓[0m the stage never overflows                                    0px at all 12 combinations
+  [32m✓[0m the start button and the key legend are always fully on screen all visible
+  [32m✓[0m all 8 karts stay mounted and laid out at every size          8/8 everywhere
+  [32m✓[0m no page errors anywhere in this run                          
+  ──────────────────────────────────────────────────────────────────────────
+
+  all racer-select checks passed
+

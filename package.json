@@ -6,7 +6,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "node tests/spline.test.mjs && node tests/curvature.test.mjs && node tests/orientation.test.mjs && node tests/parts.test.mjs && node tests/ai.test.mjs && node tests/feel.test.mjs && node tools/checkall.mjs",
+    "test": "node tests/spline.test.mjs && node tests/curvature.test.mjs && node tests/orientation.test.mjs && node tests/parts.test.mjs && node tests/ai.test.mjs && node tests/feel.test.mjs && node tests/crowd.test.mjs && node tests/quizbank.test.mjs && node tests/finishline.test.mjs && node tests/beacons.test.mjs && node tests/economy.test.mjs && node tools/checkall.mjs",
     "build": "node tools/build.mjs",
     "dev": "node tools/build.mjs --dev",
     "shot": "node tools/shot.mjs",
@@ -14,9 +14,17 @@
     "progress": "node tools/progress.mjs",
     "verify": "node tools/verify.mjs",
     "checkall": "node tools/checkall.mjs",
-    "layout": "node tools/layoutcheck.mjs",
+    "layout": "npm run layout:menu && npm run layout:select && npm run layout:garage && npm run layout:race && npm run layout:podium",
+    "layout:menu": "node tools/layoutcheck.mjs --dist --scene menu",
+    "layout:select": "node tools/layoutcheck.mjs --dist --scene select",
+    "layout:garage": "node tools/layoutcheck.mjs --dist --scene garage",
+    "layout:race": "node tools/layoutcheck.mjs --dist --scene race",
+    "layout:podium": "node tools/layoutcheck.mjs --dist --scene podium",
     "flow": "node tools/flowtest.mjs",
-    "gate": "npm run build && npm test && node tools/verify.mjs && node tests/audio.test.mjs && node tools/flowtest.mjs"
+    "modal": "node tools/modaltest.mjs",
+    "garage": "node tools/garagetest.mjs",
+    "select": "node tools/selecttest.mjs",
+    "gate": "npm run build && npm test && node tools/verify.mjs && node tests/audio.test.mjs && npm run layout && node tools/flowtest.mjs && node tools/modaltest.mjs && node tools/garagetest.mjs && node tools/selecttest.mjs"
   },
   "keywords": [],
   "author": "",

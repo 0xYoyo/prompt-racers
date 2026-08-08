@@ -77,6 +77,15 @@ import { ROSTER, nameKey } from '../kart/roster.js';
 
 /* ══════════════════════════════════════════════════════════════════ strings ══ */
 
+// Two vocabulary rules the Wave-3 smoothing pass applied here, both of them
+// "the same thing must have the same name on every screen":
+//   • ADDRESS. The HUD spoke to the player in the second-person SINGULAR
+//     ("סיימת", "ניצחת", "עקפת") while every menu, the results sheet and the
+//     podium use the impersonal PLURAL ("סיימתם", "בחרתם", "שלכם"). Both are
+//     gender-neutral in writing, so nothing was wrong — but a child met two
+//     registers in one game. The plural is the house voice; the HUD now matches.
+//   • DRIFT. The gauge was labelled "דריפט" while How-to-Play, the key hints and
+//     the drift card all say "החלקה" / "מחליקים". One root, one word: החלקה.
 registerStrings({
   he: {
     'hud.lap': 'הקפה',
@@ -85,21 +94,21 @@ registerStrings({
     'hud.map': 'מפה',
     'hud.pos': 'מקום',
     'hud.tokens': 'טוקנים',
-    'hud.drift': 'דריפט',
+    'hud.drift': 'החלקה',
     'hud.kmh': 'קמ״ש',
     'hud.go': 'קדימה!',
     'hud.finalLap': 'הקפה אחרונה!',
-    'hud.lapDone': 'סיימת הקפה {n}',
-    'hud.bestLap': 'ההקפה הכי מהירה שלכם!',
+    'hud.lapDone': 'סיימתם הקפה {n}',
+    'hud.bestLap': 'ההקפה המהירה שלכם!',
     'hud.wrongWay': 'כיוון הפוך! מסתובבים',
     // Hebrew ordinals are words, so they need the "במקום ה…" frame to be
     // grammatical — and this is the same frame the results screen uses, so a
     // place reads identically in the race and on the sheet afterwards.
-    'hud.overtake': 'עקפת! עכשיו במקום ה{o}',
-    'hud.overtaken': 'עקפו אותך… במקום ה{o}',
+    'hud.overtake': 'עקפתם! עכשיו במקום ה{o}',
+    'hud.overtaken': 'עקפו אתכם… במקום ה{o}',
     'hud.boost': 'טורבו!',
-    'hud.finish': 'סיימת במקום ה{o}!',
-    'hud.win': 'ניצחת!',
+    'hud.finish': 'סיימתם במקום ה{o}!',
+    'hud.win': 'ניצחתם!',
     'hud.combo': 'ברצף',
   },
   en: {
@@ -114,7 +123,7 @@ registerStrings({
     'hud.go': 'GO!',
     'hud.finalLap': 'Final lap!',
     'hud.lapDone': 'Lap {n} done',
-    'hud.bestLap': 'Your fastest lap!',
+    'hud.bestLap': 'Your best lap!',
     'hud.wrongWay': 'Wrong way! Turn around',
     'hud.overtake': 'Overtake! Now {o}',
     'hud.overtaken': 'Passed… now {o}',
