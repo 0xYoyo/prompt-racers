@@ -465,12 +465,16 @@ await boot();
   const n0 = await meshCount();
   ok('the preview mounts the REAL kart, not the placeholder', n0 > 60, `${n0} meshes in the scene`);
 
-  // 2. The noise floor, measured — two captures of the identical state.
+  // 2. The noise floor, MEASURED rather than assumed: the same state, entered
+  //    twice, with the same settling. The junk tiers have deliberately wobbling
+  //    parts, so this is not zero, and a "the kart changed" claim has to beat it.
+  await showSelection(selectionFor('chassis', false));
   await snap('noiseA');
+  await showSelection(selectionFor('chassis', false));
   await snap('noiseB');
   const noise = await diffRatio('noiseA', 'noiseB');
-  ok('two captures of the SAME state are nearly identical', noise <= MAX_NOISE,
-    `${(noise * 100).toFixed(2)}% (cap ${(MAX_NOISE * 100).toFixed(0)}%)`);
+  ok('the same state, entered twice, renders the same kart', noise <= MAX_NOISE,
+    `${(noise * 100).toFixed(2)}% noise floor (cap ${(MAX_NOISE * 100).toFixed(0)}%)`);
 
   // 3. Every slot, tier 0 vs tier 3: pixels AND mesh count must both move.
   const table = [];
@@ -506,13 +510,9 @@ await boot();
 // asked for.
 console.log('\n  GARAGE — SWITCHING PART LEAVES NO RESIDUE\n  ' + '─'.repeat(74));
 {
-  // What "a fresh wizard on step 2 of a wing" is supposed to look like.
-  await showSelection({ part: 'wing', goal: null, constraint: null, style: null });
-  const clean = await meshCount();
-  await snap('wingClean');
-
-  // Now get there the way a child does.
-  await boot();
+  // Get there the way a child does. (goto with an empty selection re-enters a
+  // fresh wizard without reloading the page, which would drop the snapshots.)
+  await showSelection({ part: null, goal: null, constraint: null, style: null });
   const partIdx = p => SLOTS[0].options.findIndex(o => o.id === p);
   await clickCard(partIdx('engine'));
   for (let step = 1; step < 4; step++) {
@@ -528,8 +528,15 @@ console.log('\n  GARAGE — SWITCHING PART LEAVES NO RESIDUE\n  ' + '─'.repeat
   await wait(120);
   const after = await read();
   const dirty = await meshCount();
-  await snap('wingAfter');
+  const boxDirty = await snap('wingAfter');
+
+  // …and what a wing kart that never met an engine looks like.
+  await showSelection({ part: 'wing', goal: null, constraint: null, style: null });
+  const clean = await meshCount();
+  const boxClean = await snap('wingClean');
   const residue = await diffRatio('wingClean', 'wingAfter');
+  ok('both residue frames came from the same box',
+    JSON.stringify(boxClean) === JSON.stringify(boxDirty), `${boxClean.w}x${boxClean.h} vs ${boxDirty.w}x${boxDirty.h}`);
   ok('the engine really was built up before switching', loaded > clean, `${loaded} vs ${clean} meshes`);
   ok('switching the part clears the downstream answers', after.blanks === 3, `${after.blanks} blanks`);
   ok('…and the kart drops the part that is no longer selected', dirty === clean,

@@ -144,6 +144,28 @@ const afterSpeed = await evalp(()=>window.__DEBUG.engine.active.player.speed);
 ok('…and the kart is still accelerating after the resume', afterSpeed > 3,
    `${heldSpeed.toFixed(1)} → ${afterSpeed.toFixed(1)} m/s`);
 
+// ── 3b. a child still HOLDING Space is not stuck ────────────────────────
+// Space is the drift key. If it was held when the beacon fired, pressing it does
+// nothing (auto-repeat is not a press — that guard is deliberate, D20), and the
+// gold button was the only way out: a keyboard-only dead end. The auto-repeat is
+// now used as the tell, and the panel says what to do.
+console.log('\n  3b. a held Space says so instead of doing nothing');
+await boot(true, { autopilot:true });
+await evalp(()=>window.__DEBUG.advance(6));
+await key('Space');                                  // drifting when the beacon fires
+await openQuiz(); await wait(80);
+await tap('Digit1'); await wait(80);
+await evalp(()=>window.__DEBUG.advance(1));          // past the arming delay
+await key('Space');                                  // the auto-repeat of a key never released
+await wait(120);
+ok('a held Space does NOT dismiss the explanation',
+   await has('.quiz-root.show .quiz-card.quiz-answered'));
+ok('…and the panel says to let go of it first', await evalp(()=>
+  [...document.querySelectorAll('.quiz-root.show .quiz-hint')].some(e=>e.classList.contains('held'))));
+await keyUp('Space');
+await tap('Space'); await wait(120);
+ok('…and releasing it, then pressing it, works', !(await has('.quiz-root.show')));
+
 // ── 4. pause over a frozen quiz (the Wave-3 policy) ─────────────────────
 console.log('\n  4. pause over a frozen quiz');
 await boot(true, { autopilot:true });
