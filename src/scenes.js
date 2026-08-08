@@ -315,6 +315,13 @@ export const SCENES = {
     return withHomeControl(garageScene(eng, {
       ...o,
       visit,
+      // The parts the child already owns. Without this the garage's "before"
+      // column is a hard-coded 52/48/50/50 while the kart rendered beside it
+      // wears the real upgrades (the mounter reads save directly) — so from
+      // visit 2 the picture and the numbers described different karts, and a
+      // tier-3 fit over an owned tier-2 promised the whole stat row instead of
+      // the difference.
+      ownedParts: save.read('parts') || {},
       // Floor the budget at the cost of the cheapest complete ask (one part,
       // free options elsewhere). Race payouts already guarantee more than this,
       // but a garage that opens with every card greyed out is the single worst
@@ -375,7 +382,13 @@ export const SCENES = {
       return SCENES.garage(eng, rest);
     }
     return withHomeControl(
-      freePlayScene(eng, { ...o, onExit: () => engine.goto('menu') }), eng);
+      freePlayScene(eng, {
+        ...o,
+        // Same reason as the championship garage: the sandbox should compare
+        // against the kart the child actually owns, not a notional stock one.
+        ownedParts: save.read('parts') || {},
+        onExit: () => engine.goto('menu'),
+      }), eng);
   },
 
   podium: (eng, o = {}) => {

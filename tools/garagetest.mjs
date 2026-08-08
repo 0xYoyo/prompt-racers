@@ -348,6 +348,91 @@ if (done) {
     String(done.gain));
 }
 
+// ── the reward moment shows the kart ─────────────────────────────────────────
+// The debrief used to throw a scrim over the only 3D on the screen, so at the
+// exact moment the game says "look what your prompt made" the child could not
+// see it. Two live karts now sit inside the debrief — what they got, and the
+// greyed twin a different prompt would have produced. Both are real renders, so
+// the gate reads their pixels: blank canvases and two identical canvases both
+// fail.
+console.log('\n  GARAGE — THE DEBRIEF SHOWS THE KART\n  ' + '─'.repeat(74));
+{
+  await page.evaluate(async () => {
+    window.__FREEPLAY = false;
+    await window.__DEBUG.goto('preview', {
+      tokens: 99, meet: false, visit: 2, phase: 'reveal',
+      selection: { part: 'engine', goal: 'engine.exit', constraint: 'engine.balanced', style: 'engine.forge' },
+    });
+  });
+  await page.evaluate(() => { window.__DEBUG.advance(0.6); window.__DEBUG.renderOnce(); });
+  await wait(150);
+  const cv = await page.evaluate(() => [...document.querySelectorAll('.grg-reveal .grg-minicv')].map(c => {
+    const cx = c.getContext('2d');
+    const d = cx.getImageData(0, 0, c.width, c.height).data;
+    let lit = 0; const bag = new Set(); let sum = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 24) lit++;
+      bag.add(((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4));
+      sum += d[i] + d[i + 1] + d[i + 2];
+    }
+    return { w: c.width, h: c.height, lit: lit / (d.length / 4), colors: bag.size, sum };
+  }));
+  ok('the debrief carries two live kart windows', cv.length === 2, `${cv.length} canvases`);
+  ok('…and neither of them is blank', cv.length === 2 && cv.every(c => c.lit > 0.06 && c.colors > 24),
+    cv.map(c => `${(c.lit * 100).toFixed(0)}% covered / ${c.colors} colours`).join(' · '));
+  ok('…and the two karts are not the same picture', cv.length === 2 && cv[0].sum !== cv[1].sum,
+    cv.map(c => c.sum).join(' vs '));
+}
+
+// ── "before" is the kart the child actually owns ─────────────────────────────
+// BASE_STATS is the bare factory kart. From visit 2 the child is wearing parts,
+// and the 3D preview already knew it (the mounter reads save.read('parts')) —
+// so the panel captioned "your kart" and the debrief's before column were
+// describing a kart nobody had driven since race 1. `opts.ownedParts` fixes it
+// and defaults to today's behaviour.
+console.log('\n  GARAGE — "BEFORE" IS THE KART THE CHILD OWNS\n  ' + '─'.repeat(74));
+{
+  const digits = s => (s.match(/\d+/g) || []).map(Number);
+  const revealWith = async ownedParts => {
+    await page.evaluate(async o => {
+      window.__FREEPLAY = false;
+      window.__DONE = null;
+      await window.__DEBUG.goto('preview', {
+        tokens: 99, meet: false, visit: 3, phase: 'reveal', ownedParts: o,
+        selection: { part: 'tires', goal: 'tires.slip', constraint: 'tires.none', style: 'tires.any' },
+      });
+    }, ownedParts);
+    await wait(120);
+    return (await read()).beforeAfter.map(digits);
+  };
+  const bare = await revealWith({});
+  ok('with nothing owned, "before" is still the factory kart 52/48/50/50',
+    JSON.stringify(bare.map(d => d[0])) === JSON.stringify([52, 48, 50, 50]), JSON.stringify(bare));
+  // engine tier 2 is +15 speed / +11 accel / 0 handling / +1 weight
+  const owned = await revealWith({ engine: 2 });
+  ok('with a tier-2 engine owned, "before" is 67/59/50/51 — the kart on screen',
+    JSON.stringify(owned.map(d => d[0])) === JSON.stringify([67, 59, 50, 51]), JSON.stringify(owned));
+  // …and re-fitting a slot the child already owns only promises the DIFFERENCE
+  const same = await page.evaluate(async () => {
+    window.__DONE = null;
+    await window.__DEBUG.goto('preview', {
+      tokens: 99, meet: false, visit: 3, phase: 'reveal', ownedParts: { tires: 0 },
+      selection: { part: 'tires', goal: 'tires.slip', constraint: 'tires.none', style: 'tires.any' },
+    });
+    const b = [...document.querySelectorAll('.grg-revactions button')].find(x => /התקנ|Install/.test(x.textContent));
+    b?.click();
+    return window.__DONE;
+  });
+  // The same tier-0 tires the kart is already wearing: no change at all, and the
+  // screen has to say so instead of re-promising the upgrade a third time.
+  ok('re-fitting the tier you already own promises nothing',
+    !!same && ['speed', 'accel', 'handling', 'weight'].every(k => same.part.deltas[k] === 0),
+    JSON.stringify(same?.part?.deltas));
+  ok('…and onDone reports the kart that drives away, not a factory one',
+    !!same && same.part.stats.speed === 54 && same.part.stats.handling === 53,
+    JSON.stringify(same?.part?.stats));
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // THE 3D PREVIEW — measured in pixels, not in captions.
 //
