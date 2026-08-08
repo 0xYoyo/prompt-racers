@@ -10,7 +10,7 @@
 // RTL is the default and the arrow-key mapping is written visually, not by index:
 // under RTL the grid flows right-to-left, so ArrowLeft advances the array.
 import * as THREE from 'three';
-import { h, injectStyles, modalOpen } from './style.js';
+import { h, injectStyles } from './style.js';
 import { registerStrings, t, num, ordinal, formatTime, setLang, getLang, isRTL } from './i18n.js';
 import { save } from '../core/save.js';
 import { bus } from '../core/bus.js';
@@ -409,37 +409,6 @@ const MENU_CSS = `
      hit-test in tools/selecttest.mjs section 7. */
   .mn-back{position:absolute;inset-inline-start:0;inset-block-start:0;z-index:2}
 }
-
-/* ---------- the global route home (attachHomeControl) ---------- */
-/* Screens that are not built by baseScreen() — the race and the garage — used to
-   have no visible way out at all: the race only answered the Escape key and the
-   garage answered nothing, so a child who opened the garage from the home menu
-   was stuck inside it until they finished a four-step prompt. This is the one
-   affordance they all now share: same pill, same inline-start corner, same word
-   as the racer-select back button, mounted into engine.ui (NOT into the scene's
-   own DOM, which those two modules rebuild from scratch on every interaction). */
-/* Solid, not ghost: this one floats over bright gameplay (a desert sky at noon),
-   where the translucent-white ghost fill is invisible. Same card treatment the
-   HUD uses, so it still reads as part of the same product. */
-#ui .mn-home{position:absolute;z-index:20;inset-block-start:18px;inset-inline-start:18px;
-  pointer-events:auto;color:var(--txt);border:1px solid var(--stroke-hi);
-  background:linear-gradient(180deg,rgba(52,52,72,.94),rgba(20,20,31,.96));
-  box-shadow:0 0 0 1px rgba(0,0,0,.45),0 8px 20px rgba(0,0,0,.5)}
-#ui .mn-home:hover{background:linear-gradient(180deg,rgba(70,70,96,.96),rgba(30,30,44,.97))}
-#ui .mn-home span{opacity:1}
-/* The race's own lap card owns the top corner, so the race copy drops below it. */
-#ui .mn-home.below{inset-block-start:calc(18px + 4.7em)}
-/* The garage top bar starts in that corner; give the button its own lane rather
-   than floating on top of the title. */
-#ui .grg-root .grg-top{padding-inline-start:104px}
-/* Anything that owns the screen hides it: a dialog, a garage scrim (Boreg's
-   introduction, the token explainer, the reveal) all have their own way out, and
-   a button floating over a modal is exactly the "covered control" this audit was
-   called to kill. The QUIZ is deliberately absent — D20 keeps the pause menu
-   reachable from a frozen quiz, so the race's button must stay live over it. */
-#ui:has(.mn-ov) .mn-home,
-#ui:has(.grg-scrim) .mn-home,
-#ui:has(.grgtok-scrim) .mn-home{display:none}
 
 /* ---------- racer select ---------- */
 /* The card is deliberately a TRANSPARENT frame with an opaque lower body: the
@@ -952,70 +921,6 @@ function baseScreen(engine, opts, build) {
       root.remove();
     },
     ...(extra.expose || {}),
-  };
-}
-
-/* ══════════════════════════════════════════════════════ the route home ══ */
-/**
- * Mount the shared "route home" pill for a scene that does NOT come from
- * baseScreen(). Two screens are in that position and both were dead ends:
- *
- *   • the RACE   — its only exit was the Escape key, which a child does not know.
- *   • the GARAGE — no exit at all, keyboard or otherwise. Opened from the home
- *                  menu mid-championship, the only way out was to finish a
- *                  four-step prompt and install the part.
- *
- * The button is appended to `engine.ui`, not to the scene's DOM: race.js rebuilds
- * its HUD and garage.js calls `root.replaceChildren()` on literally every click,
- * so anything living inside them would vanish. It carries the same classes, the
- * same corner and the same word as the racer-select back button.
- *
- * @param {object}   opts
- * @param {object}   opts.engine       engine (its `.ui` layer hosts the button)
- * @param {string}   [opts.labelKey]   i18n key for the label (default 'menu.back')
- * @param {string}   [opts.glyph]      leading glyph; default is the back arrow
- * @param {Function} [opts.onActivate] default: engine.goto('menu')
- * @param {boolean}  [opts.below]      drop below the top-corner HUD card (race)
- * @param {boolean}  [opts.escape]     also route Escape here (default false —
- *                                     the race's Escape belongs to the pause menu)
- * @returns {{el:HTMLElement, dispose:Function}}
- */
-export function attachHomeControl(opts = {}) {
-  injectMenuCSS();
-  const engine = opts.engine || _engine;
-  const mount = engine?.ui || document.body;
-  const go = () => (opts.onActivate ? opts.onActivate()
-    : engine?.goto ? engine.goto('menu') : bus.emit('menu:goto', { name: 'menu' }));
-
-  const el = h('button.btn.ghost.mn-back.mn-home' + (opts.below ? '.below' : ''), {
-    type: 'button', onclick: go,
-  });
-  const paint = () => {
-    el.replaceChildren(
-      h('span', { 'aria-hidden': 'true' }, opts.glyph || (isRTL() ? '→' : '←')),
-      document.createTextNode(t(opts.labelKey || 'menu.back')));
-  };
-  paint();
-  mount.appendChild(el);
-  const offLang = bus.on('lang:changed', paint);
-
-  // Escape, for the screens whose Escape nobody else claims. Ordered defensively:
-  // garage.js's own handler (Boreg's introduction, backing out of the reveal)
-  // runs on `document` and calls preventDefault, so `defaultPrevented` is the
-  // signal that the screen has already answered the key. Any modal — including
-  // the one-time explainers, which own their own dismissal (D20) — outranks us.
-  const onKey = e => {
-    if (!opts.escape || e.key !== 'Escape' || e.defaultPrevented) return;
-    if (modalOpen() || document.querySelector('.mn-ov')) return;
-    if (getComputedStyle(el).display === 'none') return;   // a scrim owns the screen
-    e.preventDefault();
-    go();
-  };
-  addEventListener('keydown', onKey);
-
-  return {
-    el,
-    dispose() { offLang(); removeEventListener('keydown', onKey); el.remove(); },
   };
 }
 

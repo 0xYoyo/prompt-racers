@@ -79,10 +79,11 @@ try {
     return null;
   });
 
-  // The two gate groups are independent: the play-through drives a real race,
-  // the championship-end group runs off crafted save data. `--only=play` /
-  // `--only=champ` runs one of them, so a fix in either seam can be iterated on
-  // in seconds instead of minutes.
+  // The gate groups are independent: the play-through drives a real race, the
+  // championship-end group and the navigation walk run off crafted save data,
+  // the seam group pokes two cross-module joints. `--only=play|champ|seam|nav`
+  // runs one of them, so a fix in any seam can be iterated on in seconds
+  // instead of minutes.
   const ONLY = (process.argv.find(a => a.startsWith('--only=')) || '').slice(7);
   const runs = name => !ONLY || ONLY === name;
 
@@ -784,9 +785,389 @@ try {
     await page.evaluate(() => localStorage.removeItem('promptracers.v1'));
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // NAVIGATION WALK (Wave 3, item 15). Separable section: it visits EVERY
+  // screen in the game, from crafted save data, and comes home from each one.
+  //
+  // What it pins, screen by screen:
+  //   • the scene really became the one we asked for (not a black screen, not
+  //     a silent no-op),
+  //   • there is a VISIBLE route home — a control a child can see and press,
+  //     not only a keyboard shortcut they will never discover,
+  //   • that control is inside the viewport AND hit-tests to itself at its own
+  //     centre. "Exists in the DOM" is not the bar: the racer-select back
+  //     button existed and was swallowed by the fading title next to it, and
+  //     the pause button on the race would be equally useless behind the HUD,
+  //   • Escape does what this screen documents, including the two places where
+  //     Escape must NOT go home (the root menu, and the pause confirmation),
+  //   • pressing that control lands on the main menu.
+  //
+  // Its own errors budget: a route that lands on a broken screen usually says
+  // so on the console long before it looks wrong.
+  // ═══════════════════════════════════════════════════════════════════════
+  async function navigationWalkGates() {
+    console.log('  ' + '─'.repeat(70));
+    console.log('  NAVIGATION WALK — every screen has a visible way home');
+    const errsBefore = errs.length;
+
+    const SAVE_KEY = 'promptracers.v1';
+    const REST = ['zamzum', 'tipa', 'kaftor', 'raash'];
+    const ORDER = ['zuzi', 'nitzotz', 'plada', 'nurit', ...REST];
+    const ledger = n => Array.from({ length: n }, (_, i) => ({
+      trackIndex: i, track: ['oasis', 'circuit', 'cloud'][i] || 'oasis',
+      place: 2, timeMs: 90000 + i * 1000, bestLapMs: 30000,
+      standings: ORDER.map((id, j) => ({
+        racerId: id, place: j + 1, isPlayer: id === 'nitzotz', timeMs: 90000 + j * 800,
+      })),
+    }));
+    // Reload from disk rather than poking save.js: the child arrives at these
+    // screens from a cold start too.
+    const seed = async patch => {
+      await page.evaluate((key, data) => localStorage.setItem(key, JSON.stringify(data)), SAVE_KEY, {
+        lang: 'he', quality: 'low', muted: true, racerId: 'nitzotz',
+        garageMetBoreg: true, garageTokenIntroSeen: true,   // the one-time explainers own their own dismissal
+        ...patch,
+      });
+      await page.reload({ waitUntil: 'load', timeout: 60000 });
+      await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+    };
+
+    // Find a control, and report everything needed to judge whether a CHILD
+    // could actually press it: visible, fully inside the viewport, big enough to
+    // hit, and — the one that keeps biting us — the topmost element at its own
+    // centre point.
+    const probe = (sel, reSrc = null) => page.evaluate((sel, reSrc) => {
+      const strip = s => String(s == null ? '' : s).replace(/[⁦-⁩]/g, '').trim();
+      const re = reSrc ? new RegExp(reSrc) : null;
+      const vis = el => el.offsetParent !== null && getComputedStyle(el).visibility !== 'hidden' &&
+        +getComputedStyle(el).opacity > 0.05;
+      const el = [...document.querySelectorAll(sel)]
+        .filter(vis).find(e => !re || re.test(strip(e.textContent)));
+      if (!el) return { found: false };
+      const r = el.getBoundingClientRect();
+      const cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+      const hit = document.elementFromPoint(cx, cy);
+      return {
+        found: true, text: strip(el.textContent), cx, cy,
+        inView: r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth,
+        big: r.width >= 24 && r.height >= 24,
+        hits: !!(hit && (hit === el || el.contains(hit))),
+        rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+      };
+    }, sel, reSrc);
+
+    // One assertion, used identically on every screen, so a screen cannot pass
+    // by being special.
+    const assertHome = (label, p) => {
+      step(`N: ${label} — visible route home, inside the viewport, not covered`,
+        !!(p.found && p.inView && p.big && p.hits),
+        p.found ? `"${p.text}" ${p.rect.join(',')} inView=${p.inView} tapTarget=${p.big} hitTest=${p.hits}`
+          : 'NO VISIBLE CONTROL LEADS HOME');
+    };
+    // A real mouse click at the control's own centre — the same point the hit
+    // test just checked, so "it hits" and "it works" are the same claim.
+    const clickAt = async p => { if (p.found) await page.mouse.click(p.cx, p.cy); };
+    const esc = async (ms = 800) => {
+      await page.keyboard.press('Escape');
+      await settle(ms);
+      return page.evaluate(() => ({
+        scene: window.__DEBUG.state().scene,
+        overlays: document.querySelectorAll('.mn-ov').length,
+        focus: (document.activeElement?.textContent || '').replace(/[⁦-⁩]/g, '').trim().slice(0, 24),
+      }));
+    };
+    const atScene = async (want, label) => {
+      const got = await scene();
+      step(`N: ${label} — scene is "${want}"`, got === want, `scene=${got}`);
+      return got === want;
+    };
+    // "Not a black screen": something readable, and something to press.
+    const alive = async label => {
+      const v = await page.evaluate(() => ({
+        text: (document.getElementById('ui')?.innerText || '').replace(/\s+/g, ' ').trim().length,
+        buttons: [...document.querySelectorAll('button')].filter(b => b.offsetParent).length,
+      }));
+      step(`N: ${label} — renders a real screen (text + controls)`, v.text > 20 && v.buttons > 0,
+        `${v.text} chars, ${v.buttons} buttons`);
+    };
+
+    // ── 1. MAIN MENU — the root. Escape must NOT leave; it parks focus on the
+    //      primary CTA, which is the documented behaviour (menus.js titleScene).
+    await seed({ championshipRace: 0, results: [] });
+    await atScene('menu', 'main menu');
+    await alive('main menu');
+    let r = await esc();
+    step('N: main menu — Escape stays home and focuses the primary CTA',
+      r.scene === 'menu' && r.overlays === 0 && /אליפות/.test(r.focus), JSON.stringify(r));
+
+    // ── 2. RACER SELECT
+    await page.evaluate(() => window.__DEBUG.goto('select', {}));
+    await settle(900);
+    await atScene('select', 'racer select');
+    let p = await probe('button.mn-back', 'חזרה');
+    assertHome('racer select', p);
+    r = await esc();
+    step('N: racer select — Escape goes home', r.scene === 'menu', JSON.stringify(r));
+    await page.evaluate(() => window.__DEBUG.goto('select', {}));
+    await settle(900);
+    p = await probe('button.mn-back', 'חזרה');
+    await clickAt(p);
+    await settle(900);
+    step('N: racer select — the back button lands on the main menu', (await scene()) === 'menu', await scene());
+
+    // ── 3. HOW TO PLAY / 4. ABOUT / 5. SETTINGS — three overlays over the menu.
+    for (const [label, open, closeRe] of [
+      ['how-to-play', /איך משחקים|How to/, /הבנתי|Got it/],
+      ['about (how it was built)', /נבנה|Built/, /מגניב|Cool|סגירה|Close/],
+      ['settings', /הגדרות|Settings/, /סגירה|Close/],
+    ]) {
+      await page.evaluate(() => window.__DEBUG.goto('menu', {}));
+      await settle(700);
+      const opened = await page.evaluate(src => {
+        const re = new RegExp(src);
+        const b = [...document.querySelectorAll('.mn-root button')].find(x => re.test(x.textContent));
+        if (!b) return false;
+        b.click(); return true;
+      }, open.source);
+      await settle(450);
+      const overlay = await page.evaluate(() => document.querySelectorAll('.mn-ov').length);
+      step(`N: ${label} — opens from the main menu`, opened && overlay === 1, `overlays=${overlay}`);
+      p = await probe('.mn-ov button', closeRe.source);
+      assertHome(label, p);
+      await clickAt(p);
+      await settle(400);
+      let left = await page.evaluate(() => document.querySelectorAll('.mn-ov').length);
+      step(`N: ${label} — its own button closes it back to the menu`,
+        left === 0 && (await scene()) === 'menu', `overlays=${left}, scene=${await scene()}`);
+      // ...and Escape does the same thing, without taking the menu with it.
+      await page.evaluate(src => {
+        const re = new RegExp(src);
+        [...document.querySelectorAll('.mn-root button')].find(x => re.test(x.textContent))?.click();
+      }, open.source);
+      await settle(400);
+      r = await esc(400);
+      step(`N: ${label} — Escape closes the overlay and leaves the menu standing`,
+        r.overlays === 0 && r.scene === 'menu', JSON.stringify(r));
+    }
+
+    // ── 6. FREE PLAY (the sandbox garage: no championship on the books) ──────
+    await seed({ championshipRace: 0, results: [], tokens: 0, parts: {} });
+    await page.evaluate(() => window.__DEBUG.goto('freeplay', { freePlay: true }));
+    await settle(1200);
+    await atScene('freeplay', 'free play');
+    await alive('free play');
+    p = await probe('button.mn-home', 'חזרה');
+    assertHome('free play', p);
+    r = await esc();
+    step('N: free play — Escape goes home', r.scene === 'menu', JSON.stringify(r));
+    await page.evaluate(() => window.__DEBUG.goto('freeplay', { freePlay: true }));
+    await settle(1200);
+    p = await probe('button.mn-home', 'חזרה');
+    await clickAt(p);
+    await settle(900);
+    step('N: free play — the back button lands on the main menu', (await scene()) === 'menu', await scene());
+
+    // ── 7. GARAGE, championship mode (a championship in progress) ────────────
+    await seed({ championshipRace: 1, tokens: 14, parts: { engine: 1 }, results: ledger(1) });
+    await page.evaluate(() => window.__DEBUG.goto('garage', {}));
+    await settle(1200);
+    await atScene('garage', 'garage (championship)');
+    await alive('garage (championship)');
+    step('N: garage (championship) — is the real garage, not the sandbox',
+      await page.evaluate(() => !!document.querySelector('.grg-root') &&
+        !(document.querySelector('.grg-bignum')?.textContent || '').includes('∞')), '');
+    p = await probe('button.mn-home', 'חזרה');
+    assertHome('garage (championship)', p);
+    await clickAt(p);
+    await settle(1000);
+    step('N: garage (championship) — the back button lands on the main menu',
+      (await scene()) === 'menu', await scene());
+    await page.evaluate(() => window.__DEBUG.goto('garage', {}));
+    await settle(1200);
+    r = await esc(1000);
+    step('N: garage (championship) — Escape goes home', r.scene === 'menu', JSON.stringify(r));
+
+    // ── 8. RACE + 9. PAUSE ───────────────────────────────────────────────────
+    // The race is the screen where being stuck matters most and the screen that
+    // had no visible exit at all. Quitting must still cost a confirmation.
+    await seed({ championshipRace: 0, results: [] });
+    await page.evaluate(() => window.__DEBUG.goto('race', { track: 0 }));
+    await settle(1200);
+    await page.evaluate(() => window.__DEBUG.advance(8));
+    await atScene('race', 'race');
+    p = await probe('button.mn-home', 'הפסקה');
+    assertHome('race', p);
+    await clickAt(p);
+    await settle(500);
+    let pause = await page.evaluate(() => ({
+      overlays: document.querySelectorAll('.mn-ov').length,
+      isPause: !!document.querySelector('.mn-dialog.pause'),
+      frozen: window.__DEBUG.engine.paused === true,
+    }));
+    step('N: race — the visible control opens the pause menu and freezes the race',
+      pause.overlays === 1 && pause.isPause && pause.frozen, JSON.stringify(pause));
+    const quit = await probe('.mn-dialog.pause button', 'יציאה');
+    assertHome('pause', quit);
+    // A mis-tap must NOT throw the race away: the quit button asks first.
+    await clickAt(quit);
+    await settle(400);
+    const asked = await page.evaluate(() => ({
+      scene: window.__DEBUG.state().scene,
+      confirming: /לצאת מהמרוץ|Leave the race/.test(document.querySelector('.mn-dialog.pause')?.innerText || ''),
+    }));
+    step('N: pause — quitting asks before it throws the race away',
+      asked.scene === 'race' && asked.confirming, JSON.stringify(asked));
+    // Escape inside the confirmation steps BACK, it does not quit and does not resume.
+    r = await esc(400);
+    const backToMenu = await page.evaluate(() =>
+      /הפסקה|Paused/.test(document.querySelector('.mn-dialog.pause')?.innerText || ''));
+    step('N: pause — Escape in the confirmation steps back to the pause menu, not out of the race',
+      r.scene === 'race' && r.overlays === 1 && backToMenu, JSON.stringify(r) + ` pauseMenu=${backToMenu}`);
+    // Escape from the pause menu itself resumes — it must not leave the race.
+    r = await esc(500);
+    const resumed = await page.evaluate(() => window.__DEBUG.engine.paused === false);
+    step('N: race — Escape opens/closes the pause menu and never quits by itself',
+      r.scene === 'race' && r.overlays === 0 && resumed, JSON.stringify(r) + ` running=${resumed}`);
+    // ...and the confirmed quit does go home.
+    await page.evaluate(() => window.__DEBUG.advance(1));
+    p = await probe('button.mn-home', 'הפסקה');
+    await clickAt(p);
+    await settle(400);
+    await clickAt(await probe('.mn-dialog.pause button', 'יציאה'));
+    await settle(400);
+    await clickAt(await probe('.mn-dialog.pause button', 'כן, יוצאים'));
+    await settle(1100);
+    const afterQuit = await page.evaluate(() => ({
+      scene: window.__DEBUG.state().scene, paused: window.__DEBUG.engine.paused,
+      overlays: document.querySelectorAll('.mn-ov').length,
+    }));
+    step('N: pause — confirmed quit lands on the main menu with the engine running',
+      afterQuit.scene === 'menu' && afterQuit.paused === false && afterQuit.overlays === 0,
+      JSON.stringify(afterQuit));
+    await alive('main menu after quitting a race');
+
+    // ── 8b. the race UNDER AN OPEN QUIZ — the one state a child can be stuck in.
+    // The quiz freezes the world and its feedback waits for Space with no time
+    // limit (D20), so a quiz panel can be the last thing on screen forever. The
+    // route home must survive it: the pill stays visible, un-covered, and opens
+    // the pause menu ON TOP without disturbing the quiz underneath.
+    await page.evaluate(() => window.__DEBUG.goto('race', { track: 0 }));
+    await settle(1200);
+    await page.evaluate(() => window.__DEBUG.advance(8));
+    await page.evaluate(() => window.__DEBUG.engine.active.quiz.openQuestion());
+    await settle(400);
+    const quizUp = await page.evaluate(() => !!document.querySelector('.quiz-root.show'));
+    p = await probe('button.mn-home', 'הפסקה');
+    step('N: race with a quiz on screen — the quiz is really open', quizUp, `quiz=${quizUp}`);
+    assertHome('race under an open quiz', p);
+    await clickAt(p);
+    await settle(500);
+    const overQuiz = await page.evaluate(() => ({
+      pause: !!document.querySelector('.mn-dialog.pause'),
+      quizStillThere: !!document.querySelector('.quiz-root.show'),
+    }));
+    step('N: race under an open quiz — pause opens on top, the quiz stays put (D20)',
+      overQuiz.pause && overQuiz.quizStillThere, JSON.stringify(overQuiz));
+    await esc(500);   // back to the quiz
+    await page.evaluate(() => window.__DEBUG.goto('menu', {}));
+    await settle(900);
+
+    // ── 10. RESULTS ──────────────────────────────────────────────────────────
+    await page.evaluate(o => window.__DEBUG.goto('results', o), {
+      trackIndex: 0, place: 2, timeMs: 92000, bestLapMs: 30000, tokens: 12,
+      standings: ORDER.map((id, j) => ({ racerId: id, place: j + 1, isPlayer: id === 'nitzotz', timeMs: 90000 + j * 800 })),
+    });
+    await settle(900);
+    await atScene('results', 'results');
+    await alive('results');
+    p = await probe('button', 'לתפריט');
+    assertHome('results', p);
+    r = await esc();
+    step('N: results — Escape goes home', r.scene === 'menu', JSON.stringify(r));
+    await page.evaluate(o => window.__DEBUG.goto('results', o), {
+      trackIndex: 0, place: 2, timeMs: 92000, tokens: 12,
+      standings: ORDER.map((id, j) => ({ racerId: id, place: j + 1, isPlayer: id === 'nitzotz' })),
+    });
+    await settle(900);
+    await clickAt(await probe('button', 'לתפריט'));
+    await settle(900);
+    step('N: results — the menu button lands on the main menu', (await scene()) === 'menu', await scene());
+
+    // ── 11. PODIUM + 12. CERTIFICATE — the end of a championship ─────────────
+    await seed({
+      championshipRace: 3, tokens: 9, results: ledger(3),
+      bestPrompt: { text: 'מנוע קליל שמאיץ מהר ביציאה מפנייה', score: 84 },
+    });
+    await page.evaluate(() => window.__DEBUG.goto('podium', {}));
+    await settle(1000);
+    await atScene('podium', 'podium');
+    await alive('podium');
+    p = await probe('button', 'לתפריט הראשי');
+    assertHome('podium', p);
+    // The certificate is the pay-off screen, and the one most likely to trap a
+    // child: it is a modal over the podium, so it needs BOTH a way back to the
+    // podium and a way home.
+    await page.evaluate(() => {
+      [...document.querySelectorAll('button')].find(x => /תעודת|Certificate/.test(x.textContent))?.click();
+    });
+    await settle(500);
+    const certOpen = await page.evaluate(() => document.querySelectorAll('.mn-ov .mn-dialog.cert').length);
+    step('N: certificate — opens from the podium', certOpen === 1, `overlays=${certOpen}`);
+    const certHome = await probe('.mn-ov button', 'הבית');
+    assertHome('certificate', certHome);
+    const certClose = await probe('.mn-ov button', 'סגירה');
+    step('N: certificate — also has a visible way back to the podium',
+      !!(certClose.found && certClose.inView && certClose.hits),
+      certClose.found ? `"${certClose.text}" hitTest=${certClose.hits}` : 'no close button');
+    // Escape must return to the podium, NOT skip the podium and land home.
+    r = await esc(600);
+    step('N: certificate — Escape returns to the podium it was opened from',
+      r.scene === 'podium' && r.overlays === 0, JSON.stringify(r));
+    // Escape on the podium itself goes home.
+    r = await esc();
+    step('N: podium — Escape goes home', r.scene === 'menu', JSON.stringify(r));
+    // And the certificate's own home button goes all the way home in one press.
+    await page.evaluate(() => window.__DEBUG.goto('podium', {}));
+    await settle(900);
+    await page.evaluate(() => {
+      [...document.querySelectorAll('button')].find(x => /תעודת|Certificate/.test(x.textContent))?.click();
+    });
+    await settle(500);
+    await clickAt(await probe('.mn-ov button', 'הבית'));
+    await settle(1000);
+    const home = await page.evaluate(() => ({
+      scene: window.__DEBUG.state().scene, overlays: document.querySelectorAll('.mn-ov').length,
+    }));
+    step('N: certificate — its home button lands on the main menu, overlay gone',
+      home.scene === 'menu' && home.overlays === 0, JSON.stringify(home));
+    await alive('main menu after the certificate');
+
+    // ── 13. the garage door at the end of a championship ─────────────────────
+    // Once every race is run the garage IS the podium (scenes.js). That reroute
+    // must not strand anyone: the screen it lands on needs its own way home.
+    await page.evaluate(() => window.__DEBUG.goto('garage', {}));
+    await settle(1000);
+    // The engine keeps the name it was asked for ('garage'); what changes is the
+    // screen behind it, so this asserts on what is actually rendered.
+    const rerouted = await page.evaluate(() => ({
+      podium: !!document.querySelector('.mn-prow'), garage: !!document.querySelector('.grg-root'),
+    }));
+    step('N: garage after the final race — reroutes to the podium, not a black screen',
+      rerouted.podium && !rerouted.garage, `scene=${await scene()} ${JSON.stringify(rerouted)}`);
+    assertHome('garage → podium', await probe('button', 'לתפריט הראשי'));
+
+    await shot('flow-13-nav-walk.png');
+    step('N: no page errors during the whole navigation walk', errs.length === errsBefore,
+      errs.slice(errsBefore, errsBefore + 2).join(' | '));
+    await page.evaluate(key => localStorage.removeItem(key), SAVE_KEY);
+    await page.reload({ waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  }
+
   if (runs('play')) await mainFlowGates();
   if (runs('champ')) await championshipEndGates();
   if (runs('seam')) await seamGates();
+  if (runs('nav')) await navigationWalkGates();
 
   step('no page errors during whole flow', errs.length === 0, errs.slice(0, 2).join(' | '));
 

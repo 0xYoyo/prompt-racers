@@ -15,7 +15,7 @@ import { garageScene, freePlayScene, setKartPreviewMounter } from './garage/gara
 import { sentenceText } from './garage/prompts.js';
 import {
   titleScene, racerSelectScene, resultsScene, podiumScene, setBackdrop,
-  setSelectKartMounter, setSelectEnvironment, attachHomeControl,
+  setSelectKartMounter, setSelectEnvironment,
 } from './ui/menus.js';
 import { createKart, makeKartEnvironment } from './kart/kartmodel.js';
 import { ROSTER } from './kart/roster.js';
@@ -69,19 +69,6 @@ setSelectKartMounter((holder, o = {}) => {
   return kart;
 });
 setSelectEnvironment(makeKartEnvironment);
-
-// ── the route home, for the screens that do not build their own ────────────
-// menus.js screens all carry a back button or a "to the menu" action; the garage
-// does not, and answered no key either, so a child who opened it from the home
-// menu was locked inside until they had finished a four-step prompt. The control
-// belongs to the navigation layer rather than to garage.js — it is mounted into
-// engine.ui, which garage.js never touches, and torn down with the scene.
-function withHomeControl(scene, eng) {
-  const home = attachHomeControl({ engine: eng, escape: true });
-  const disposeScene = scene.dispose.bind(scene);
-  scene.dispose = () => { home.dispose(); disposeScene(); };
-  return scene;
-}
 
 /** Track id or index → the name shown to the player, in the current language. */
 function trackNameOf(which) {
@@ -295,7 +282,7 @@ export const SCENES = {
   garage: (eng, o = {}) => {
     if (championshipDone()) return SCENES.podium(eng, o);
     const visit = nextRaceIndex() + 1;          // 1, 2 or 3
-    return withHomeControl(garageScene(eng, {
+    return garageScene(eng, {
       ...o,
       visit,
       // Floor the budget at the cost of the cheapest complete ask (one part,
@@ -339,7 +326,7 @@ export const SCENES = {
         });
         engine.goto('race', { track: nextRaceIndex() });
       },
-    }), eng);
+    });
   },
 
   // The home menu's garage entry. Two different screens hide behind one button:
@@ -357,8 +344,7 @@ export const SCENES = {
       void freePlay;
       return SCENES.garage(eng, rest);
     }
-    return withHomeControl(
-      freePlayScene(eng, { ...o, onExit: () => engine.goto('menu') }), eng);
+    return freePlayScene(eng, { ...o, onExit: () => engine.goto('menu') });
   },
 
   podium: (eng, o = {}) => {

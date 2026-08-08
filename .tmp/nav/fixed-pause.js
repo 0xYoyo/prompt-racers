@@ -23,10 +23,6 @@ import { overlayRoot, appendAll, settingsOverlay, backdropScene, attachHomeContr
 registerStrings({
   he: {
     'menu.pause.title': 'הפסקה',
-    // The label on the visible button in the corner of the race. Same word in
-    // Hebrew as the dialog's title (it is a noun either way); English needs the
-    // verb, because "Paused" on a button that is not yet pressed is a lie.
-    'menu.pause.open': 'הפסקה',
     'menu.pause.sub': 'המרוץ עוצר ומחכה',
     'menu.pause.resume': 'ממשיכים',
     'menu.pause.settings': 'הגדרות',
@@ -40,7 +36,6 @@ registerStrings({
   },
   en: {
     'menu.pause.title': 'Paused',
-    'menu.pause.open': 'Pause',
     'menu.pause.sub': 'The race is waiting',
     'menu.pause.resume': 'Resume',
     'menu.pause.settings': 'Settings',
@@ -270,7 +265,7 @@ export function attachPauseControl(opts = {}) {
     // in system-ui on the machines this ships to, and two heavy bars are the
     // symbol every child already knows anyway.
     engine, below: true, escape: false, glyph: '❚❚',
-    labelKey: 'menu.pause.open', onActivate: open,
+    labelKey: 'menu.pause.title', onActivate: open,
   });
   // A scene change while paused (quit, or a race that completes) must never leave
   // the engine frozen for whatever comes next.
