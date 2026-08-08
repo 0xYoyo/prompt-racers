@@ -266,10 +266,14 @@ means anything — race time does not advance at all while a panel is up. The re
 now wall-clock interruption count (~7 answered / ~3 ignored per race, unchanged). Whether
 that *feels* right is a playtest question, and the metric that used to answer it is gone.
 
-### A quiz open at the finish line loses its explanation
-If the flag falls while a panel is up, `close()` shuts it immediately and the child loses
-the explanation mid-read. Rare — it needs a beacon in the last seconds — and the
-alternative (holding the results screen behind a panel) is worse. Deliberate.
+### ~~A quiz open at the finish line loses its explanation~~ — no longer reachable
+Logged as an accepted tradeoff when the freeze shipped, then disproved by measurement: a
+critic forced a question open 12m before the line and advanced 20s, getting
+`move 0.000m, raceTime +0.000s`. The flag cannot fall while a panel is up, because the
+sim is frozen and `quiz.update()` runs before `simulate()`, so a beacon can never be taken
+on the same frame the line is crossed. The full freeze fixed this as a side effect.
+Kept here struck through rather than deleted, because a documented hazard that no longer
+exists is worse than no note — someone will otherwise "fix" it again.
 
 ### Space is both "dismiss feedback" and the drift key
 A player who taps Space to dismiss adds it to the held-key set, so a hop can fire on resume
@@ -284,3 +288,31 @@ safety net; only rules 1–3 are gated.
 ### Real-vs-sandbox garage keys off `championshipRace > 0`
 So between choosing a racer and finishing race 1, the home-menu garage is still the
 sandbox. Defensible (nothing is yet at stake) but not what the words say.
+
+### Two gate holes found by the Wave 3 critics, fixed in round 2 — recorded as patterns
+Both are worth remembering because the gates looked thorough and were not.
+
+**A gate can watch the wrong layer.** `tools/garagetest.mjs` bundles the garage
+standalone, so its kart preview falls through to an in-file placeholder whose `setPart()`
+is an empty function. Every 3D assertion in its 68 checks was a regex on a DOM caption —
+deleting `applyKartPreview()` entirely still passed all 68. A gate that renders nothing
+cannot see a rendering bug.
+
+**A gate can exercise a path no player can take.** `tools/modaltest.mjs` dispatched
+`new KeyboardEvent()` on `window`. A real keydown lands on `document.activeElement` and
+bubbles, so a capture-phase `stopPropagation()` genuinely blocks `input.js`; dispatched on
+`window` there is no capture phase to stop, so `input.js` fires regardless. Removing the
+`isTopOverlay` guard — the one whose comment records that a single Escape used to collapse
+the whole overlay stack — still reported "all modal checks passed". Synthetic events must
+be dispatched where the real ones arrive.
+
+**And a gate can pass vacuously.** modaltest's "pause never stacks on a live quiz" printed
+`0 quiz samples` on every run: its loop broke on the token explainer, seconds before any
+beacon could fire. An assertion over an empty sample set is not an assertion. Where a
+check depends on reaching a state, assert that the state was reached.
+
+### The quiz's "time scale is exactly 0" assertion is decorative
+A mutant that returns a time scale of 0 and *also* runs one `simulate(FIXED)` per frame
+while frozen passes it. Only the snapshot-delta assertions — comparing `raceTime`,
+`lapTime` and position across the freeze — catch that. Do not let anyone simplify the slow
+`simSnap` checks away on the grounds that the scale is already checked.

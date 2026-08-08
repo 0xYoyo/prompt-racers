@@ -29024,6 +29024,7 @@ void main() {
   setKartPreviewMounter((container, o = {}) => {
     const kart = createKart({ racerId: "player", parts: { engine: 0, tires: 0, wing: 0, chassis: 0, exhaust: 0 }, shadows: false });
     container.add(kart.group);
+    window.__KART = kart;
     return {
       // deliberately expose BOTH so we can see which one the garage actually uses
       setPart(slot, vt) {
@@ -29035,7 +29036,8 @@ void main() {
         kart.setParts(p);
       },
       update: kart.update,
-      dispose: kart.dispose
+      dispose: kart.dispose,
+      _kart: kart
     };
   });
   bootPreview((engine2, o = {}) => garageScene(engine2, { visit: 2, meet: false, tokens: 17, onDone: (p, g) => {

@@ -1,1 +1,186 @@
 =========== MUTANT a ===========
+
+  MODAL / QUIZ-FREEZE POLICY
+  ──────────────────────────────────────────────────────────────────────────
+
+  1. the freeze
+  [32m✓[0m the race is running before the quiz                        +1.00s, 22.8m
+  [32m✓[0m quiz.openQuestion() puts a panel on screen                 
+  [32m✓[0m the quiz reports itself frozen                             
+  [32m✓[0m the time scale handed to the race is exactly 0             
+  [31m✗[0m quiz open ⇒ ZERO sim steps advance                         race +4.000s, lap +4.000s, moved 106.476m
+  [32m✓[0m input is gated off while frozen                            
+
+  2. feedback → Space → 3·2·1 → resume
+  [32m✓[0m 1/2/3 answers the question                                 
+  [32m✓[0m …and an explanation is shown                               
+  [32m✓[0m the feedback is STILL up 12s later (no auto-close)         
+  [31m✗[0m …and the world is still frozen behind it                   
+  [32m✓[0m Space dismisses the feedback                               
+  [32m✓[0m …into the resume countdown, not straight back into the race 
+  [32m✓[0m …which shows the HUD 3·2·1 gantry                          
+  [31m✗[0m the world is STILL frozen during the countdown             
+  [32m✓[0m the quiz is idle after the countdown                       
+  [32m✓[0m the race is running again                                  +1.00s, 23.5m
+  [32m✓[0m input is handed back                                       
+
+  3. held keys survive the freeze (D12)
+  [32m✓[0m a held accelerate key accelerates before the quiz          22.5 m/s
+  [32m✓[0m the key is still tracked as held across the freeze         
+  [32m✓[0m …and the kart is still accelerating after the resume       22.5 → 23.7 m/s
+
+  4. pause over a frozen quiz
+  [32m✓[0m a quiz panel is up                                         
+  [32m✓[0m Esc over an open quiz opens the pause menu ON TOP          
+  [32m✓[0m …and the quiz is still there underneath                    
+  [32m✓[0m 1/2/3 do NOT answer the quiz behind the pause menu         
+  [32m✓[0m the quiz answer timer is frozen while paused               100% → 100%
+  [32m✓[0m Esc closes the pause menu again                            
+  [32m✓[0m …back to the quiz, unchanged                               
+  [31m✗[0m resuming from pause does NOT restart the race under the quiz race +2.000s
+  [32m✓[0m …and input stays gated off until the quiz lets go          
+  [32m✓[0m 1/2/3 answer again once the pause menu is gone             
+  [32m✓[0m Space does NOT dismiss the feedback behind the pause menu  
+  [32m✓[0m …and dismisses it once the pause menu is gone              
+
+  5. integration: the beacons themselves
+  [32m✓[0m a quiz beacon opens a panel while driving                  
+  [31m✗[0m …and a beacon-opened quiz freezes the world too            
+
+  6. no repeats across the championship
+  [32m✓[0m a race draws distinct questions                            mistakes-private-info, iterate-stop-point, tokens-not-words…
+  [32m✓[0m the same seed draws the same questions without askedIds    
+  [32m✓[0m askedIds are never drawn again                             no overlap
+  [32m✓[0m …and the pool is still healthy                             28 questions eligible
+
+  7. the one-time explainers
+  [32m✓[0m the token explainer fires during a race                    
+  [32m✓[0m …and never on top of a live quiz                           0 quiz samples, 0 stacked
+  [32m✓[0m the token explainer is up                                  
+  [32m✓[0m Escape closes the token explainer                          
+  [32m✓[0m …and does not open the pause menu over it                  
+EXIT=0
+=========== MUTANT b ===========
+
+  MODAL / QUIZ-FREEZE POLICY
+  ──────────────────────────────────────────────────────────────────────────
+
+  1. the freeze
+  [32m✓[0m the race is running before the quiz                        +1.00s, 22.8m
+  [32m✓[0m quiz.openQuestion() puts a panel on screen                 
+  [32m✓[0m the quiz reports itself frozen                             
+  [32m✓[0m the time scale handed to the race is exactly 0             
+  [32m✓[0m quiz open ⇒ ZERO sim steps advance                         race +0.000s, lap +0.000s, moved 0.000m
+  [32m✓[0m input is gated off while frozen                            
+
+  2. feedback → Space → 3·2·1 → resume
+  [32m✓[0m 1/2/3 answers the question                                 
+  [32m✓[0m …and an explanation is shown                               
+  [31m✗[0m the feedback is STILL up 12s later (no auto-close)         
+  [31m✗[0m …and the world is still frozen behind it                   
+  [32m✓[0m Space dismisses the feedback                               
+  [31m✗[0m …into the resume countdown, not straight back into the race 
+  [32m✓[0m …which shows the HUD 3·2·1 gantry                          
+  [31m✗[0m the world is STILL frozen during the countdown             
+  [32m✓[0m the quiz is idle after the countdown                       
+  [32m✓[0m the race is running again                                  +1.00s, 26.1m
+  [32m✓[0m input is handed back                                       
+
+  3. held keys survive the freeze (D12)
+  [32m✓[0m a held accelerate key accelerates before the quiz          22.5 m/s
+  [32m✓[0m the key is still tracked as held across the freeze         
+  [32m✓[0m …and the kart is still accelerating after the resume       22.5 → 14.0 m/s
+
+  4. pause over a frozen quiz
+  [32m✓[0m a quiz panel is up                                         
+  [32m✓[0m Esc over an open quiz opens the pause menu ON TOP          
+  [32m✓[0m …and the quiz is still there underneath                    
+  [32m✓[0m 1/2/3 do NOT answer the quiz behind the pause menu         
+  [32m✓[0m the quiz answer timer is frozen while paused               100% → 100%
+  [32m✓[0m Esc closes the pause menu again                            
+  [32m✓[0m …back to the quiz, unchanged                               
+  [32m✓[0m resuming from pause does NOT restart the race under the quiz race +0.000s
+  [32m✓[0m …and input stays gated off until the quiz lets go          
+  [32m✓[0m 1/2/3 answer again once the pause menu is gone             
+  [32m✓[0m Space does NOT dismiss the feedback behind the pause menu  
+  [32m✓[0m …and dismisses it once the pause menu is gone              
+
+  5. integration: the beacons themselves
+  [32m✓[0m a quiz beacon opens a panel while driving                  
+  [32m✓[0m …and a beacon-opened quiz freezes the world too            
+
+  6. no repeats across the championship
+  [32m✓[0m a race draws distinct questions                            mistakes-private-info, iterate-stop-point, tokens-not-words…
+  [32m✓[0m the same seed draws the same questions without askedIds    
+  [32m✓[0m askedIds are never drawn again                             no overlap
+  [32m✓[0m …and the pool is still healthy                             28 questions eligible
+
+  7. the one-time explainers
+  [32m✓[0m the token explainer fires during a race                    
+  [32m✓[0m …and never on top of a live quiz                           0 quiz samples, 0 stacked
+  [32m✓[0m the token explainer is up                                  
+  [32m✓[0m Escape closes the token explainer                          
+  [32m✓[0m …and does not open the pause menu over it                  
+EXIT=0
+=========== MUTANT c ===========
+
+  MODAL / QUIZ-FREEZE POLICY
+  ──────────────────────────────────────────────────────────────────────────
+
+  1. the freeze
+  [32m✓[0m the race is running before the quiz                        +1.00s, 22.8m
+  [32m✓[0m quiz.openQuestion() puts a panel on screen                 
+  [32m✓[0m the quiz reports itself frozen                             
+  [32m✓[0m the time scale handed to the race is exactly 0             
+  [32m✓[0m quiz open ⇒ ZERO sim steps advance                         race +0.000s, lap +0.000s, moved 0.000m
+  [32m✓[0m input is gated off while frozen                            
+
+  2. feedback → Space → 3·2·1 → resume
+  [32m✓[0m 1/2/3 answers the question                                 
+  [32m✓[0m …and an explanation is shown                               
+  [32m✓[0m the feedback is STILL up 12s later (no auto-close)         
+  [32m✓[0m …and the world is still frozen behind it                   
+  [32m✓[0m Space dismisses the feedback                               
+  [32m✓[0m …into the resume countdown, not straight back into the race 
+  [32m✓[0m …which shows the HUD 3·2·1 gantry                          
+  [32m✓[0m the world is STILL frozen during the countdown             
+  [32m✓[0m the quiz is idle after the countdown                       
+  [32m✓[0m the race is running again                                  +1.00s, 26.3m
+  [32m✓[0m input is handed back                                       
+
+  3. held keys survive the freeze (D12)
+  [32m✓[0m a held accelerate key accelerates before the quiz          22.5 m/s
+  [31m✗[0m the key is still tracked as held across the freeze         
+  [31m✗[0m …and the kart is still accelerating after the resume       22.5 → 0.0 m/s
+
+  4. pause over a frozen quiz
+  [32m✓[0m a quiz panel is up                                         
+  [32m✓[0m Esc over an open quiz opens the pause menu ON TOP          
+  [32m✓[0m …and the quiz is still there underneath                    
+  [32m✓[0m 1/2/3 do NOT answer the quiz behind the pause menu         
+  [32m✓[0m the quiz answer timer is frozen while paused               100% → 100%
+  [32m✓[0m Esc closes the pause menu again                            
+  [32m✓[0m …back to the quiz, unchanged                               
+  [32m✓[0m resuming from pause does NOT restart the race under the quiz race +0.000s
+  [32m✓[0m …and input stays gated off until the quiz lets go          
+  [32m✓[0m 1/2/3 answer again once the pause menu is gone             
+  [32m✓[0m Space does NOT dismiss the feedback behind the pause menu  
+  [32m✓[0m …and dismisses it once the pause menu is gone              
+
+  5. integration: the beacons themselves
+  [32m✓[0m a quiz beacon opens a panel while driving                  
+  [32m✓[0m …and a beacon-opened quiz freezes the world too            
+
+  6. no repeats across the championship
+  [32m✓[0m a race draws distinct questions                            mistakes-private-info, iterate-stop-point, tokens-not-words…
+  [32m✓[0m the same seed draws the same questions without askedIds    
+  [32m✓[0m askedIds are never drawn again                             no overlap
+  [32m✓[0m …and the pool is still healthy                             28 questions eligible
+
+  7. the one-time explainers
+  [32m✓[0m the token explainer fires during a race                    
+  [32m✓[0m …and never on top of a live quiz                           0 quiz samples, 0 stacked
+  [32m✓[0m the token explainer is up                                  
+  [32m✓[0m Escape closes the token explainer                          
+  [32m✓[0m …and does not open the pause menu over it                  
+EXIT=0

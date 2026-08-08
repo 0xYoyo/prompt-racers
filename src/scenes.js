@@ -98,7 +98,24 @@ const championshipDone = () => (Number(save.read('championshipRace')) || 0) >= T
 /** A championship is "in progress or finished" once its first race is on the books. */
 const hasChampionshipSave = () =>
   (Number(save.read('championshipRace')) || 0) > 0 || races().filter(Boolean).length > 0;
-const playerRacerId = () => save.read('racerId') || ROSTER[0].id;
+/**
+ * The player's racer id, GUARANTEED to be a roster member.
+ *
+ * This used to fall back to ROSTER[0] only when the saved id was falsy, so a
+ * saved id that is merely UNKNOWN (an edited localStorage, a racer renamed
+ * between versions) sailed through and matched nothing: `totalPoints()` then
+ * produced eight rows with `isPlayer:false`, `standings.find(s => s.isPlayer)`
+ * was undefined, and the podium's `|| standings[0]` fallback crowned whoever
+ * happened to be leading — congratulating them by name, highlighting no row,
+ * printing "your total points 0" beside a table of 21s and 22s, and awarding
+ * them the certificate. Validating membership here is what makes the canonical
+ * shape's "isPlayer is true for exactly one entry" (D19) actually true; every
+ * consumer downstream depends on it and none of them can restore it.
+ */
+const playerRacerId = () => {
+  const saved = save.read('racerId');
+  return ROSTER.some(r => r.id === saved) ? saved : ROSTER[0].id;
+};
 
 // ── the quiz's cross-race memory ───────────────────────────────────────────
 // `quizdata.questionsForDifficulty(difficulty, exclude)` can filter out

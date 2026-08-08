@@ -451,11 +451,15 @@ export function certificateOverlay(opts = {}) {
           h('div', null,
             h('div.s1', null, t('learn.cert.seal')),
             h('div.s2', null, t('learn.cert.champ', { n: num(champN) })))),
+        // The documented flow ends at the main menu, so THAT is the gold button
+        // and the primary focus target; "close" is the way back to the podium and
+        // reads as the secondary action it is. The emphasis used to be inverted,
+        // pointing the child at the one button that goes nowhere.
         h('div.lr-cert-acts', null,
-          opts.onMenu ? h('button.btn.ghost', {
+          opts.onMenu ? h('button.btn', {
             onclick: () => { o.close(); opts.onMenu(); },
           }, t('learn.cert.menu')) : null,
-          h('button.btn', { onclick: () => o.close() }, t('learn.cert.close')))),
+          h('button.btn.ghost', { onclick: () => o.close() }, t('learn.cert.close')))),
       h('div.lr-note', null, t('learn.cert.foot'))));
     o.focusFirst();
   };

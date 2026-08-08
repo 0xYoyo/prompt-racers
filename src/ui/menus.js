@@ -576,7 +576,10 @@ const MENU_CSS = `
 .mn-time{font-size:clamp(12px,2.1vh,15px)}
 .mn-gap{font-size:13px;color:var(--txt-dim);text-align:start}
 .mn-reveal{animation:mnRow .34s var(--ease) both}
-@keyframes mnRow{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+/* Individual properties, not the `transform` shorthand — a `both`-filled keyframe
+   ending on `transform:none` outranks every hover/positioning transform on the
+   element forever. Same rule as popIn in ui/style.js. */
+@keyframes mnRow{from{opacity:0;translate:0 10px;scale:.98}to{opacity:1;translate:0 0;scale:1}}
 .mn-awards{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-block-start:clamp(6px,1.2vh,10px)}
 .mn-award{flex:1 1 220px;display:flex;align-items:center;gap:12px;padding:clamp(5px,1.2vh,9px) 16px;border-radius:var(--r-m);
   background:linear-gradient(180deg,rgba(255,214,107,.16),rgba(255,214,107,.04));
@@ -594,8 +597,26 @@ const MENU_CSS = `
 .mn-podium-top::before{content:"";position:absolute;inset:-30% -10%;pointer-events:none;
   background:radial-gradient(58% 62% at 50% 46%,rgba(8,6,14,.82),rgba(8,6,14,.45) 55%,transparent 78%)}
 .mn-podium-top>*{position:relative}
-.mn-congrats{font-size:clamp(12px,min(1.5vw,2.2vh),19px);font-weight:700;color:#ffeec4;max-width:44ch;text-align:center}
-.mn-side{position:absolute;inset-block-start:50%;transform:translateY(-50%);
+/* text-wrap:balance so the English sentence cannot break mid-phrase
+   ("…in 2nd place, Spark. Great / racing!"): balanced lines split at the widest
+   available break, which for this copy is the sentence boundary. */
+.mn-congrats{font-size:clamp(12px,min(1.5vw,2.2vh),19px);font-weight:700;color:#ffeec4;
+  max-width:44ch;text-align:center;text-wrap:balance}
+/* Vertically centred by AUTO MARGINS between two insets, never by
+   translateY(-50%): `.mn-side` carries `.pop-in`, whose keyframe used to persist
+   `transform:none` and delete the centring half of the rule — the panel then hung
+   from the vertical middle downwards, overlapping `.mn-bottom` in English and
+   pushing the total row off the bottom edge below 768px. See the popIn note in
+   ui/style.js. The two insets double as the height guard: the panel can never
+   start above --mn-side-top, and --mn-side-bot reserves the band the button row
+   lives in, so at 1024x640 and below it shrinks (and scrolls, last resort)
+   instead of running off the screen. */
+.mn-side{position:absolute;
+  --mn-side-top:clamp(8px,2vh,20px);
+  --mn-side-bot:clamp(76px,13vh,124px);
+  inset-block-start:var(--mn-side-top);inset-block-end:var(--mn-side-bot);
+  block-size:fit-content;margin-block:auto;
+  max-block-size:calc(100% - var(--mn-side-top) - var(--mn-side-bot));overflow-y:auto;
   inset-inline-end:clamp(14px,3vw,44px);width:min(340px,32vw);padding:14px 16px}
 .mn-side h3{margin:0 0 10px;font-size:12px;font-weight:800;letter-spacing:.12em;color:var(--txt-dim);
   text-transform:uppercase}
@@ -611,8 +632,11 @@ const MENU_CSS = `
   display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .mn-total b{font-size:12px;color:var(--txt-dim);font-weight:800}
 .mn-total em{font-style:normal;font-size:26px;color:var(--gold-1)}
-.mn-bottom{position:absolute;inset-block-end:clamp(16px,4vh,46px);left:50%;transform:translateX(-50%);
-  display:flex;gap:12px}
+/* Same story horizontally: auto margins between inset-inline:0, not
+   translateX(-50%), because `.mn-bottom` is a `.pop-in` too. */
+.mn-bottom{position:absolute;inset-block-end:clamp(16px,4vh,46px);inset-inline:0;
+  inline-size:fit-content;max-inline-size:calc(100% - 28px);margin-inline:auto;
+  display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
 
 /* ---------- overlays ---------- */
 .mn-ov{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
@@ -668,7 +692,10 @@ const MENU_CSS = `
   .mn-root *,.mn-ov *{animation-duration:.001s !important;animation-delay:0s !important}
   .mn-press{animation:none;opacity:.85}
 }
-@media (max-width:640px){ .mn-side{position:static;transform:none;width:100%;margin-block-start:12px} }
+@media (max-width:640px){
+  .mn-side{position:static;inset:auto;block-size:auto;max-block-size:none;overflow-y:visible;
+    margin-block:12px 0;margin-inline:0;width:100%}
+}
 `;
 
 function injectMenuCSS() {
