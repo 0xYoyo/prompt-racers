@@ -21,25 +21,51 @@
 // ── CALIBRATION ─────────────────────────────────────────────────────────────
 // Measured, not guessed. D28 stopwatched the built game: a child is interrupted
 // 10 / 8 / 7 times across the three races = 25 questions per championship.
-// tests/economy.test.mjs pins the rest: ~15 token pickups per race (45 per
-// championship), quiz rewards 3/4/5 by tier, a 6-token win bonus.
 //
-//   One championship, a child answering ~70% correctly:
+// WAVE 4 RE-MEASURE. The economy was re-measured end to end for the first time
+// WITH the quiz reward counted (D29: the yield gate's driver had never triggered
+// a beacon, so the biggest term in the wallet had printed 0 on every run in the
+// project's history) and retuned at the source. What moved:
+//     quiz REWARD_TOKENS      3/4/5 by tier  →  1 flat
+//     token pickups           TOKEN_KEEP 0.42 of a spot list (~15/race)
+//                             →  TOKEN_CLUSTERS_PER_LAP = 1 whole row (~5/race)
+//     FINISH_TOKENS           [6,5,5,4,4,3,3,3]  →  [5,4,4,3,3,3,3,3]
+// The three constants are EXPORTED now, and tests/badges.test.mjs imports them
+// and re-derives everything below rather than copying it.
+//
+//   One championship, a child answering ~70% correctly and finishing 2nd–3rd:
 //     quiz correct   ~17         (25 asked)
-//     tokens         45 pickups + ~68 quiz + ~12 finish  ≈ 125
+//     tokens         ~15 pickups + ~17 quiz + ~11 finish  ≈ 43   (was ~125)
 //     drift boosts   ~12 per race = ~36
 //
-//   So over 2–3 championships: 35–52 correct, 250–375 tokens, 70–110 boosts.
+//   So over 2–3 championships: 35–52 correct, 85–130 tokens, 70–110 boosts.
 //   Every threshold below sits inside that envelope EXCEPT the two marked
 //   `hard: true` — `prompt-max` (needs expert mode written really well) and
 //   `champ-win` (needs beating seven rivals over a whole season). Those two are
 //   meant to still be locked after three championships for most children.
+//
+// The two token thresholds therefore came down with the income that feeds them:
+// 50 / 200 would now mean 1.2 and 4.8 championships, i.e. no early reward at the
+// bottom of the ladder and an unreachable rung at the top. See TOKEN_STEPS.
 //
 // The prompt numbers are the garage's own 0–100 quality score (garage/scoring.js):
 // tier cuts 30 / 55 / 80, a guided ask can reach at most 84 because the 17-token
 // budget is smaller than the 21-token maximum ask, and only free text (expert
 // mode) can pass 90. So `prompt-80` reads as "8 out of 10" and `prompt-max` as
 // "as good as this game can score".
+//
+// NOTE for whoever tunes the economy next — `prompt-80` moved without its number
+// moving. In REAL play the garage budget is the WALLET (scenes.js), not
+// DEFAULT_BUDGET, and the affordable ceiling rises with it: measured against
+// prompts.js, a wallet of 13 buys at most a 51, 14 a 63, 16 a 75, and it takes
+// exactly 17 to reach the 84 that clears this badge. Old races banked 35–53, so
+// 17 was always in hand and the badge was effectively free; new races bank 12–18,
+// so it now needs a strong race or a saved-up visit. That is D17's lesson working
+// as intended, not a regression — but it makes `prompt-80` the hardest badge NOT
+// marked `hard`, and if the economy is thinned again it becomes unreachable
+// before any token threshold does. It is not gated here (the calibration feeds
+// the tracker synthetic `garage:built` scores); tools/garagetest.mjs owns the
+// affordability side.
 // ═══════════════════════════════════════════════════════════════════════════
 import { bus } from './bus.js';
 import { save } from './save.js';
@@ -185,6 +211,34 @@ export const ICONS = {
 };
 
 /* ══════════════════════════════════════════════════════════════════ badges ══ */
+
+/**
+ * The two lifetime-token rungs, and the one glossary term that shares their
+ * currency. DERIVED, not chosen — see the CALIBRATION header for the income
+ * they are derived from, and §4 of tests/badges.test.mjs, which re-derives them
+ * from the live economy constants and fails if the derivation stops holding.
+ *
+ *   measured income   ~14.3 tokens a race, ~43 a championship (70% correct,
+ *                     finishing 2nd–3rd; a weak child banks ~41, a perfect
+ *                     single race banks 20)
+ *
+ *   low  = 20   ≈ 1.4 races. The first rung must be an EARLY reward: it lands
+ *                during race 2 for any child, and immediately for one who wins
+ *                race 1 having answered everything right. (The old 50 was 1.1
+ *                races of the old income; 20 is 1.4 races of the new one.)
+ *   high = 80   ≈ 1.9 championships. Lands inside two championships for the
+ *                median child (88 banked) and for a weak one (~82), and inside
+ *                three for anybody who finishes them. The 1 : 4 ratio between
+ *                the rungs is the old ladder's (50 : 200) kept intact, so the
+ *                shape of the climb is unchanged — only its scale.
+ *
+ * `data` (נתונים) unlocks on the same counter and had the same problem: 25 was
+ * half of one old race and is nearly two new ones. At 10 it is back to "partway
+ * through your first race", which is when the word is worth meeting.
+ */
+export const TOKEN_STEPS = { low: 20, high: 80 };
+export const DATA_TERM_TOKENS = 10;
+
 /**
  * @typedef {object} BadgeDef
  * @property {string} id
@@ -205,11 +259,17 @@ export const BADGES = [
   { id: 'quiz-40', group: 'quiz', icon: 'quizmaster', test: s => s.quizCorrect >= 40,
     progress: s => [s.quizCorrect, 40] },
 
-  /* ── tokens: ~125 earned per championship ────────────────────────────────── */
-  { id: 'tokens-50', group: 'tokens', icon: 'token', test: s => s.tokensLifetime >= 50,
-    progress: s => [s.tokensLifetime, 50] },
-  { id: 'tokens-200', group: 'tokens', icon: 'tokenpile', test: s => s.tokensLifetime >= 200,
-    progress: s => [s.tokensLifetime, 200] },
+  /* ── tokens: ~43 earned per championship (Wave 4 re-measure) ─────────────── */
+  // The ids keep their old numbers ON PURPOSE: a badge id is a SAVE KEY (it is
+  // written into save.badges, and ui/collection.js + tests/certificate.test.mjs
+  // name them), so renaming one would silently un-earn it for every child who
+  // already has it. The thresholds live in TOKEN_STEPS, which is also what the
+  // on-screen condition text is built from — so the copy can never drift from
+  // the test.
+  { id: 'tokens-50', group: 'tokens', icon: 'token', test: s => s.tokensLifetime >= TOKEN_STEPS.low,
+    progress: s => [s.tokensLifetime, TOKEN_STEPS.low] },
+  { id: 'tokens-200', group: 'tokens', icon: 'tokenpile', test: s => s.tokensLifetime >= TOKEN_STEPS.high,
+    progress: s => [s.tokensLifetime, TOKEN_STEPS.high] },
 
   /* ── drift ───────────────────────────────────────────────────────────────── */
   { id: 'drift-first', group: 'drift', icon: 'drift', test: s => s.driftBoosts >= 1 },
@@ -255,7 +315,7 @@ export const GLOSSARY = [
   { id: 'vibe', test: s => (s.topicsAnswered.vibe || 0) >= 1 },
   { id: 'iterate', test: s => (s.topicsAnswered.iterate || 0) >= 1 },
   { id: 'hallucination', test: s => (s.topicsAnswered.mistakes || 0) >= 1 },
-  { id: 'data', test: s => s.tokensLifetime >= 25 },
+  { id: 'data', test: s => s.tokensLifetime >= DATA_TERM_TOKENS },
   { id: 'algorithm', test: s => s.bestPlace >= 1 && s.bestPlace <= 3 },
   { id: 'neuron', test: (s, badges) => badges.length >= 3 },
   { id: 'cloud', test: s => s.champsFinished >= 1 || s.champRaces >= CHAMP_RACES },
@@ -284,9 +344,12 @@ export const BADGE_STRINGS = {
     'badge.quiz-40.name': 'מוח על',
     'badge.quiz-40.cond': 'עונים נכון על ‎40 שאלות',
     'badge.tokens-50.name': 'אוצר טוקנים',
-    'badge.tokens-50.cond': 'אוספים ‎50 טוקנים בסך הכול',
+    // Built from TOKEN_STEPS, not typed: the number a child reads on the card
+    // and the number the test uses must be the SAME number, or a retune leaves
+    // the game telling them something false in green.
+    'badge.tokens-50.cond': `אוספים ‎${TOKEN_STEPS.low} טוקנים בסך הכול`,
     'badge.tokens-200.name': 'ארנק כבד',
-    'badge.tokens-200.cond': 'אוספים ‎200 טוקנים בסך הכול',
+    'badge.tokens-200.cond': `אוספים ‎${TOKEN_STEPS.high} טוקנים בסך הכול`,
     'badge.drift-first.name': 'החלקה ראשונה',
     'badge.drift-first.cond': 'מסיימים החלקה אחת ומקבלים טורבו',
     'badge.drift-25.name': 'אלוף/ת ההחלקות',
@@ -318,9 +381,9 @@ export const BADGE_STRINGS = {
     'badge.quiz-40.name': 'Super Brain',
     'badge.quiz-40.cond': 'Answer 40 questions correctly',
     'badge.tokens-50.name': 'Token Treasure',
-    'badge.tokens-50.cond': 'Collect 50 tokens in total',
+    'badge.tokens-50.cond': `Collect ${TOKEN_STEPS.low} tokens in total`,
     'badge.tokens-200.name': 'Heavy Wallet',
-    'badge.tokens-200.cond': 'Collect 200 tokens in total',
+    'badge.tokens-200.cond': `Collect ${TOKEN_STEPS.high} tokens in total`,
     'badge.drift-first.name': 'First Drift',
     'badge.drift-first.cond': 'Finish one drift and get a boost',
     'badge.drift-25.name': 'Drift Champion',
@@ -374,7 +437,7 @@ export const GLOSSARY_STRINGS = {
     'glos.hallucination.hint': 'עונים על שאלה בנושא טעויות של AI במרוץ',
     'glos.data.term': 'נתונים',
     'glos.data.def': 'כל מה שמודל לומד ממנו: טקסטים, תמונות, מספרים.\nנתונים טובים ומגוונים עושים מודל טוב יותר מנתונים רבים וחוזרים.',
-    'glos.data.hint': 'אוספים ‎25 טוקנים בסך הכול',
+    'glos.data.hint': `אוספים ‎${DATA_TERM_TOKENS} טוקנים בסך הכול`,
     'glos.algorithm.term': 'אלגוריתם',
     'glos.algorithm.def': 'רשימת צעדים מדויקת לפתרון משימה, כמו מתכון.\nהיריבים במסלול נוסעים לפי אלגוריתם — לכן הם חוזרים על אותו קו בכל הקפה.',
     'glos.algorithm.hint': 'מסיימים מרוץ בשלושת המקומות הראשונים',
@@ -412,7 +475,7 @@ export const GLOSSARY_STRINGS = {
     'glos.hallucination.hint': 'Answer a race question about AI mistakes',
     'glos.data.term': 'Data',
     'glos.data.def': 'Everything a model learns from: texts, pictures, numbers.\nGood, varied data makes a better model than lots of repeated data.',
-    'glos.data.hint': 'Collect 25 tokens in total',
+    'glos.data.hint': `Collect ${DATA_TERM_TOKENS} tokens in total`,
     'glos.algorithm.term': 'Algorithm',
     'glos.algorithm.def': 'An exact list of steps for a task, like a recipe.\nThe rivals on track drive by an algorithm — which is why they repeat the same line every lap.',
     'glos.algorithm.hint': 'Finish a race in the top three',

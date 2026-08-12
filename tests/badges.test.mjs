@@ -15,7 +15,7 @@
 //       by save.reset();
 //   4.  the CALIBRATION CLAIM: ~2.5 championships of measured play earns most
 //       badges, the two designated hard ones stay locked — measured against
-//       economy constants READ FROM their owning modules, never copied;
+//       economy constants IMPORTED FROM their owning modules, never copied;
 //   4b. ui/collection.js actually evaluates (a bundle check is a syntax check);
 //   5.  the unlock toast is not a modal, takes no key, steals no focus;
 //   6.  the drift badges, driven through the REAL KartBody — see the note in §6;
@@ -37,9 +37,13 @@ import { getTrack, gridSlots } from '../src/track/trackdef.js';
 import { KartBody, autopilotInput } from '../src/kart/kartphysics.js';
 import {
   BADGES, BADGE_IDS, GLOSSARY, GLOSSARY_IDS, ICONS, HARD_BADGE_IDS,
-  BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS,
+  BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS, TOKEN_STEPS, DATA_TERM_TOKENS,
   startBadgeTracker, getStats, evaluate, NEEDED_EVENTS, CONSUMED_EVENTS,
 } from '../src/core/badges.js';
+// THE ECONOMY, IMPORTED FROM ITS OWNERS. See the block below §"the measured
+// event stream" for why these are imports and not regexes any more.
+import { REWARD_TOKENS } from '../src/race/quiz.js';
+import { FINISH_TOKENS, TOKEN_CLUSTERS_PER_LAP } from '../src/race/race.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = p => readFileSync(resolve(root, p), 'utf8');
@@ -73,32 +77,29 @@ const terms = () => save.read('glossary') || [];
 /* ── the measured event stream ────────────────────────────────────────────── */
 // The calibration below is only worth anything if it is measured against the
 // economy the game ACTUALLY has. The first version of this file copied
-// REWARD_TOKENS and FINISH_TOKENS into local literals; another agent is
-// rebalancing the economy this wave, and a copy would have gone on asserting a
-// calibration that no longer described the game, in green — which is D29's
-// failure exactly. So the constants are READ OUT OF THEIR OWNING MODULES (the
-// same technique tests/economy.test.mjs uses), the parse is asserted, and the
-// simulated stream is DERIVED from them.
+// REWARD_TOKENS and FINISH_TOKENS into local literals; a rebalance would have
+// left it asserting a calibration that no longer described the game, in green —
+// which is D29's failure exactly. Round 2 scraped them out of the source with
+// regexes, which fixed the staleness but bought a new failure mode: a rename or
+// a reformat turns a live constant into `undefined` and the calibration silently
+// re-derives itself from NaN.
 //
-// Two numbers cannot be read because no constant holds them:
+// So round 3 IMPORTS them. quiz.js, race.js and this file all now agree on one
+// object each; there is nothing left to keep in sync, and a rename is a load
+// error rather than a quiet zero. (The §6 pins still read the two files as TEXT,
+// because what they check is the SHAPE of an emit block, which has no export.)
+//
+// Two numbers still cannot be imported because no constant holds them:
 //   • questions per race 10 / 8 / 7 — DECISIONS.md D28, stopwatched on the built
 //     game. There is no constant; the quiz draws against beacons and cooldowns.
-//   • token pickups ~15 per race — a measurement, governed by race.js's
-//     TOKEN_KEEP thinning factor. That factor IS pinned below, so if the pickup
-//     yield is retuned this gate fails and says to re-measure, rather than
-//     quietly carrying a stale number.
+//   • token pickups ~5 per race — a MEASUREMENT (3–6, mean 4.7 over a race),
+//     governed by race.js's TOKEN_CLUSTERS_PER_LAP. That constant IS pinned
+//     below, so if the row density is retuned this gate fails and says to
+//     re-measure, rather than quietly carrying a stale number.
 const quizSrc = read('src/race/quiz.js');
 const raceSrc = read('src/race/race.js');
 
-const rewardMatch = quizSrc.match(/const REWARD_TOKENS = \{([^}]*)\}/);
-const REWARD = {};
-for (const [, k, v] of (rewardMatch?.[1] || '').matchAll(/(\d+)\s*:\s*(\d+)/g)) REWARD[+k] = +v;
-
-const finishMatch = raceSrc.match(/const FINISH_TOKENS = \[([^\]]*)\]/);
-const FINISH_TOKENS = (finishMatch?.[1] || '').split(',').map(s => +s.trim()).filter(n => !Number.isNaN(n));
-
-const keepMatch = raceSrc.match(/const TOKEN_KEEP = ([\d.]+)/);
-const TOKEN_KEEP = +(keepMatch?.[1] ?? NaN);
+const REWARD = REWARD_TOKENS;
 
 // ── the `drift:boost` contract (D35) ────────────────────────────────────────
 // kartphysics stamps every boost with `boostSeq` / `lastBoostTier` /
@@ -119,7 +120,10 @@ function DRIFT_BOOST_PAYLOAD(peakTier, source = 'drift') {
 
 const QUESTIONS = [10, 8, 7];
 const TIER_OF_RACE = [1, 2, 3];
-const PICKUPS_PER_RACE = 15;
+// Measured on the built game after the Wave-4 source-level thinning: 3–6 pickups
+// a race, mean 4.7, on all three tracks (the point of counting whole rows rather
+// than a fraction of a spot list is that it no longer differs per track).
+const PICKUPS_PER_RACE = 5;
 const BOOSTS_PER_RACE = 12;
 const TOPICS = ['whatai', 'prompt', 'tokens', 'iterate', 'mistakes', 'vibe'];
 
@@ -414,21 +418,80 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
 
 {
   // The calibration is only as honest as the economy it is measured against, so
-  // the constants are read from their owners and the read is asserted. A rename
-  // or a rebalance fails HERE, loudly, instead of silently shifting every token
-  // threshold under a green tick (D29).
-  ok('quiz REWARD_TOKENS read from src/race/quiz.js',
+  // the constants are IMPORTED from their owners and the import is asserted. A
+  // rename is now a load error; a rebalance fails HERE, loudly, instead of
+  // silently shifting every token threshold under a green tick (D29).
+  ok('quiz REWARD_TOKENS imported from src/race/quiz.js',
     REWARD[1] > 0 && REWARD[2] > 0 && REWARD[3] > 0, JSON.stringify(REWARD));
-  ok('FINISH_TOKENS read from src/race/race.js',
-    FINISH_TOKENS.length === 8, `[${FINISH_TOKENS.join(', ')}]`);
-  ok('PINNED: TOKEN_KEEP still 0.42 — if this moves, RE-MEASURE PICKUPS_PER_RACE',
-    TOKEN_KEEP === 0.42, `TOKEN_KEEP=${TOKEN_KEEP}, assuming ${PICKUPS_PER_RACE} pickups/race`);
+  ok('FINISH_TOKENS imported from src/race/race.js',
+    FINISH_TOKENS.length === 8 && FINISH_TOKENS.every(n => n > 0), `[${FINISH_TOKENS.join(', ')}]`);
 
-  const perChamp = QUESTIONS.reduce((a, n, i) => a + n * 0.7 * REWARD[TIER_OF_RACE[i]], 0)
-    + PICKUPS_PER_RACE * 3 + FINISH_TOKENS[1] * 3;
+  // ── THE PIN ───────────────────────────────────────────────────────────────
+  // The previous one read "PINNED: TOKEN_KEEP still 0.42 — if this moves,
+  // RE-MEASURE", and it did exactly its job: the Wave-4 rebalance moved every
+  // number under it and this file went red instead of going on claiming a
+  // calibration for an economy the game had left. Replaced in kind, not
+  // softened. If you are reading this because it is red: the thresholds in
+  // TOKEN_STEPS were DERIVED from these constants (see the derivation asserted
+  // just below), so re-measure the income and re-derive them — do not widen the
+  // pin to make the red go away.
+  ok('PINNED: the economy TOKEN_STEPS was derived from — if this moves, RE-MEASURE',
+    TOKEN_CLUSTERS_PER_LAP === 1
+    && REWARD[1] === 1 && REWARD[2] === 1 && REWARD[3] === 1
+    && FINISH_TOKENS.join(',') === '5,4,4,3,3,3,3,3',
+    `clusters/lap ${TOKEN_CLUSTERS_PER_LAP}, quiz ${REWARD[1]}/${REWARD[2]}/${REWARD[3]},`
+    + ` finish [${FINISH_TOKENS.join(',')}], assuming ${PICKUPS_PER_RACE} pickups/race`);
+
+  // ── THE DERIVATION ────────────────────────────────────────────────────────
+  // A literal pin says "something moved". This says WHAT THE THRESHOLDS MEAN,
+  // in the only unit the brief is written in — championships — and it is
+  // computed from the live constants, so it fails on any retune large enough to
+  // change the answer even if someone updates the pin above without thinking.
+  const perRace = i => QUESTIONS[i] * 0.7 * REWARD[TIER_OF_RACE[i]]
+    + PICKUPS_PER_RACE + FINISH_TOKENS[1];
+  const perChamp = [0, 1, 2].reduce((a, i) => a + perRace(i), 0);
+  const avgRace = perChamp / 3;
+  const lowInRaces = TOKEN_STEPS.low / avgRace;
+  const highInChamps = TOKEN_STEPS.high / perChamp;
+  const dataInRaces = DATA_TERM_TOKENS / avgRace;
+
   console.log(`     \x1b[2mderived from the live economy: ~${Math.round(perChamp)} tokens per championship`
     + ` (quiz ${REWARD[1]}/${REWARD[2]}/${REWARD[3]}, ${PICKUPS_PER_RACE} pickups/race,`
-    + ` ${FINISH_TOKENS[1]} finish bonus) — thresholds 50 / 200\x1b[0m`);
+    + ` ${FINISH_TOKENS[1]} finish bonus)\x1b[0m`);
+  console.log(`     \x1b[2mTOKEN_STEPS ${TOKEN_STEPS.low} / ${TOKEN_STEPS.high} = `
+    + `${lowInRaces.toFixed(1)} races / ${highInChamps.toFixed(1)} championships;`
+    + ` נתונים at ${DATA_TERM_TOKENS} = ${dataInRaces.toFixed(1)} races\x1b[0m`);
+
+  // The bottom rung is an EARLY reward: more than a single average race (so one
+  // race does not hand it over as a participation prize) and inside the first
+  // championship for every child.
+  ok('the low token badge is 1–2 races of real income (an early reward)',
+    lowInRaces > 1 && lowInRaces < 2, `${lowInRaces.toFixed(2)} races`);
+  // The top rung is the climb: reached inside 2–3 championships, which is the
+  // brief's window, and not before 1.5 (or it is not a climb).
+  ok('the high token badge is 1.5–2.5 championships of real income',
+    highInChamps >= 1.5 && highInChamps <= 2.5, `${highInChamps.toFixed(2)} championships`);
+  // …and the ladder keeps its shape: the old pair was 50 : 200.
+  ok('the two rungs keep the ladder\'s 1:4 ratio',
+    TOKEN_STEPS.high === TOKEN_STEPS.low * 4, `${TOKEN_STEPS.low} : ${TOKEN_STEPS.high}`);
+  // The glossary term on the same counter (נתונים) is a FIRST-RACE unlock: the
+  // word is meant to arrive while the child is still meeting tokens.
+  ok('the נתונים term unlocks inside the first race',
+    dataInRaces < 1, `${dataInRaces.toFixed(2)} races`);
+
+  // And the number the CHILD reads is the number the badge tests. The strings
+  // are built from TOKEN_STEPS so they cannot drift, but "cannot drift" is a
+  // claim about code someone will edit — so it is checked, in both languages,
+  // for all three thresholds.
+  const says = (key, n) => new RegExp(`\\b${n}\\b`)
+    .test((BADGE_STRINGS.he[key] || GLOSSARY_STRINGS.he[key] || '')
+      + ' ' + (BADGE_STRINGS.en[key] || GLOSSARY_STRINGS.en[key] || ''));
+  ok('the unlock text a child reads names the real threshold (he + en)',
+    says('badge.tokens-50.cond', TOKEN_STEPS.low)
+    && says('badge.tokens-200.cond', TOKEN_STEPS.high)
+    && says('glos.data.hint', DATA_TERM_TOKENS),
+    `"${BADGE_STRINGS.en['badge.tokens-50.cond']}" / "${BADGE_STRINGS.en['badge.tokens-200.cond']}"`
+    + ` / "${GLOSSARY_STRINGS.en['glos.data.hint']}"`);
 }
 
 {
@@ -445,12 +508,21 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
   garageVisit(51); playRace({ race: 1, place: 3, correctRate: 0.7 });
   garageVisit(58); playRace({ race: 2, place: 3, correctRate: 0.7 });
   bus.emit('championship:complete', { place: 3, points: 18, races: 3 });
+  // SNAPSHOT — the "early reward" claim, measured where it is made rather than
+  // read off the end state 1.5 championships later. (Both of these unlock in
+  // race 1–2; the whole championship is the generous reading.)
+  const afterC1 = { badges: [...badges()], terms: [...terms()], tokens: getStats().tokensLifetime };
   // championship 2
   bus.emit('championship:reset');
   garageVisit(62); playRace({ race: 0, place: 2, correctRate: 0.7 });
   garageVisit(66); playRace({ race: 1, place: 2, correctRate: 0.75 });
   garageVisit(71); playRace({ race: 2, place: 3, correctRate: 0.75 });
   bus.emit('championship:complete', { place: 2, points: 22, races: 3 });
+  // SNAPSHOT — "both token milestones land inside 2 championships" is a claim
+  // about the TWO-championship mark. Asserting it on the 2.5-championship end
+  // state would let the high rung drift half a season out of reach and stay
+  // green, which is this file's own recurring failure (D29) one step along.
+  const afterC2 = { badges: [...badges()], tokens: getStats().tokensLifetime };
   // half of championship 3
   bus.emit('championship:reset');
   garageVisit(74); playRace({ race: 0, place: 2, correctRate: 0.8 });
@@ -470,8 +542,20 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
     gotEasy.length / easy.length >= 0.7, `${gotEasy.length}/${easy.length}`);
   ok('the quiz ladder is fully climbed by championship 3',
     ['quiz-first', 'quiz-5', 'quiz-15', 'quiz-40'].every(id => got.includes(id)));
-  ok('both token milestones land inside 2 championships',
-    got.includes('tokens-50') && got.includes('tokens-200'), `${s.tokensLifetime} tokens`);
+  // ── the token ladder, checked where each claim is actually made ───────────
+  console.log(`     \x1b[2mtoken ladder: ${afterC1.tokens} banked after champ 1,`
+    + ` ${afterC2.tokens} after champ 2, ${s.tokensLifetime} after 2.5\x1b[0m`);
+  ok(`the LOW token badge (${TOKEN_STEPS.low}) is an early reward — earned in championship 1`,
+    afterC1.badges.includes('tokens-50'), `${afterC1.tokens} tokens after one championship`);
+  ok(`…and the נתונים term (${DATA_TERM_TOKENS}) with it`,
+    afterC1.terms.includes('data'), afterC1.terms.join(', '));
+  ok(`both token milestones (${TOKEN_STEPS.low}/${TOKEN_STEPS.high}) land inside 2 championships`,
+    afterC2.badges.includes('tokens-50') && afterC2.badges.includes('tokens-200'),
+    `${afterC2.tokens} tokens after two championships`);
+  // …and the high rung is not so low that it lands with the low one. If these
+  // ever unlock in the same race the ladder has become a single step.
+  ok('…but the high rung is NOT already earned after championship 1',
+    !afterC1.badges.includes('tokens-200'), `${afterC1.tokens} tokens after one championship`);
   ok('the drift ladder is climbed', got.includes('drift-first') && got.includes('drift-25'));
   ok('the designated HARD badges are still locked',
     HARD_BADGE_IDS.every(id => !got.includes(id)), HARD_BADGE_IDS.join(', '));

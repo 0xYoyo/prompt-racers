@@ -837,3 +837,41 @@ complete ask; the only other lever is capping the garage's view of the wallet, w
 rejected because it makes the HUD counter, the results screen and the garage budget
 contradict each other in front of a child. The gate prints it every run. Watch it in
 playtest.
+
+## D40 — Badge thresholds are derived from the economy, not typed next to it
+The Wave-4 economy (D39) cut lifetime income from ~135 to ~44 tokens per championship, so
+the two token badges — 50 and 200 — silently changed meaning from "1.1 races / 1.5
+championships" to "3.4 races / 4.5 championships". The high rung became unreachable inside
+the play the brief describes. Re-derived from the imported constants: **50 → 20** (1.35
+races, so the bottom rung is an early reward again) and **200 → 80** (1.8 championships).
+The 1:4 ratio is preserved so the ladder's shape is unchanged and only its scale moves, and
+that ratio is now itself asserted. The glossary term `נתונים` went 25 → **10**, back to a
+first-race unlock.
+
+Three things this pass established that matter more than the numbers:
+
+1. **The condition strings a child reads are now built from the constants.** They were
+   typed literals — "50", "200", "25" — in both languages, so a retune had three places to
+   leave the game telling a child something false about what it wants from them. Asserted:
+   the number on the card is the number the badge tests, in both languages.
+2. **The claims are asserted where they are made.** Calibration used to be read off the
+   2.5-championship end state, which would let the high rung drift half a season out of
+   reach and stay green. It now snapshots at the 1- and 2-championship marks.
+3. **The pin is two-layered on purpose:** a literal pin that says *something moved*, plus a
+   derivation from the live constants that says *what the thresholds now mean in
+   championships*. The second still bites when someone updates the first without
+   re-deriving — which is the realistic failure.
+
+Badge **ids** stay `tokens-50` / `tokens-200` even though the numbers moved. An id is a
+save key: renaming it would silently un-earn the badge for every child who has it.
+
+**One judgement call taken here rather than deferred.** `prompt-80` did not move and shifted
+anyway. In real play the garage budget is the *wallet*, not `DEFAULT_BUDGET`, and measured
+against `prompts.js` a wallet of 13 buys at most a score of 51, 16 → 75, and it takes
+exactly **17** to reach the 84 that clears the badge. Old races banked 35–53, so 17 was
+always in hand; new races bank 12–18. Kept at 80 rather than lowered, because the wallet
+carries between visits — so it lands at garage visit 2 or 3 rather than visit 1, which is
+the right shape for a badge about writing a *good* prompt: it should take a couple of goes.
+It is now the hardest badge not marked `hard`, and it would go unreachable before any token
+threshold if the economy is ever thinned again. That is in GAPS.md as the first thing to
+check after a future retune.

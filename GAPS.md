@@ -330,3 +330,50 @@ A mutant that returns a time scale of 0 and *also* runs one `simulate(FIXED)` pe
 while frozen passes it. Only the snapshot-delta assertions — comparing `raceTime`,
 `lapTime` and position across the freeze — catch that. Do not let anyone simplify the slow
 `simSnap` checks away on the grounds that the scale is already checked.
+
+
+## Wave 4 — accepted, deferred, and found-but-not-owned
+
+### The wallet can reach 22 against a 21-token maximum ask, at garage visit 2
+D39 landed a winning engaged race at 12–18 tokens against a 21 max ask. But the wallet
+CARRIES between visits, so the richest measured race (18) plus the largest guided rebate
+(4) reaches 22 at visit 2 — one token over. Closing it at source needs a race that pays
+less than a complete ask; the only other lever is capping the garage's view of the wallet,
+which D17 rejected because it makes the HUD counter, the results screen and the garage
+budget contradict each other in front of a child. The flow gate prints the number every
+run. **Watch in playtest**; if it bites, cut the rebate before the race payout.
+
+### `prompt-80` is the first badge that would go unreachable after an economy retune
+It needs a wallet of exactly 17 to afford the score-84 ask that clears it (13 buys 51,
+16 buys 75). Races now bank 12–18, so it lands at garage visit 2–3 on carried-over
+tokens. Deliberate (D40), but it means **after any future economy change, check
+`prompt-80` before checking the token badges** — it goes first.
+
+### 85% pace still finishes ~6th on race 3
+D33b restored race 1 to 4th and race 2 to 5th for a struggling child, giving a legible
+4→5→6 championship. Race 3 is unchanged at 6th, which is correct as the finale but means
+the gentlest and harshest races now differ by 2 places rather than the 5 they did in
+Wave 1. If playtest says the finale feels like a wall, the lever is `slotStretch`'s
+falloff, not the band.
+
+### The quiz stinger is the loudest thing in the game
+Measured during the Wave-4 audio pass: quiz stinger peak **0.52**, against race music
+0.44, wall hit 0.40, token pickup 0.19, and the redesigned engine at 0.068. It fires 7–10
+times a race (D28) over music that never rests. The engine was the reported complaint and
+is now four times quieter; the critic's judgement is that what would actually wear on a
+parent in the room after twenty minutes is the stinger. **Measure that before touching the
+engine again.**
+
+### Cloud Peak signage helps the frame but not the concept
+See the Cloud Peak entries above: the plateau physically cannot carry a mid-ground rung,
+so Wave 4 gave it a dark anchor at the plateau edge instead. The "doesn't read as above
+the clouds from the driver's seat" gap is unchanged and still wants the structural barrier
+change.
+
+### The lead's periodic commits swept in agents' mid-flight work
+Three separate agents reported that a `git add -A` commit picked up files they were still
+editing, so some Wave-4 commits contain states that were not gate-green at that instant
+(each was verified green shortly after). The commits are what makes an accident
+recoverable — D25's whole lesson — so the practice stays, but a future lead should either
+commit per-agent-report or accept that intermediate commits are snapshots, not releases.
+Also fixed this wave: `.tmp/` was being tracked, 2021 files and 1.0GB.

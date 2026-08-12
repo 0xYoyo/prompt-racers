@@ -14,6 +14,14 @@
 // directly instead of driving an autopilot lap until a beacon happens to fire
 // (which used to cost ~40s of simulated race per check).
 import puppeteer from 'puppeteer-core';
+// The quiz payout is asserted below, against the SOURCE OF TRUTH rather than a
+// copy of it. It used to read `p.tokens >= 3`, a literal from the 3/4/5-by-tier
+// era; the Wave-4 rebalance flattened REWARD_TOKENS to 1 and this gate went red
+// for a mechanism that was working perfectly. A hardcoded constant in a gate is
+// a second copy of a number the game already owns, and it fails in whichever
+// direction is least useful — so import it. quiz.js touches no DOM at import
+// time, which is why this works in plain Node.
+import { REWARD_TOKENS } from '../src/race/quiz.js';
 const dist = '/Users/yoyopc/repos/kart-project/dist/index.html';
 const b = await puppeteer.launch({ headless: 'new', executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', args: ['--no-sandbox','--use-gl=swiftshader','--enable-unsafe-swiftshader'] });
 const page = await b.newPage();
@@ -601,6 +609,7 @@ ok('the SECOND question box does not explain again',
       const root=[...document.querySelectorAll('.quiz-root')].find(e=>e.classList.contains('show'));
       root.querySelectorAll('.quiz-opt')[i%3].click();
       out.push({ correct:q.lastResult.correct, tokens:q.lastResult.tokens,
+                 tier:q.lastResult.tier,
                  banked:a.state.tokens-t0, boosting:!!a.player.boosting });
       q.close();
     }
@@ -609,9 +618,14 @@ ok('the SECOND question box does not explain again',
   const good = pay.filter(p=>p.correct), bad = pay.filter(p=>!p.correct);
   ok('both outcomes were sampled', good.length>0 && bad.length>0,
      `${good.length} right, ${bad.length} wrong`);
+  // The payout is checked against REWARD_TOKENS ITSELF, per tier, so a retune
+  // moves the gate with the game and a payout that quietly stops matching the
+  // table is still caught. `>0` is asserted separately: a table of zeroes would
+  // satisfy "matches the table" while paying a child nothing.
   ok('a right answer really does pay tokens AND a turbo',
-     good.length>0 && good.every(p=>p.tokens>=3 && p.banked===p.tokens && p.boosting),
-     good.map(p=>`+${p.banked}`).join(' '));
+     good.length>0 && good.every(p=>p.tokens===REWARD_TOKENS[p.tier] && p.tokens>0
+                                    && p.banked===p.tokens && p.boosting),
+     good.map(p=>`+${p.banked} (tier ${p.tier}, table ${REWARD_TOKENS[p.tier]})`).join(' '));
   ok('a wrong answer really does cost nothing',
      bad.length>0 && bad.every(p=>p.tokens===0 && p.banked===0),
      bad.map(p=>`${p.banked>=0?'+':''}${p.banked}`).join(' '));
