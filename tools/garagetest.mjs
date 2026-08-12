@@ -658,6 +658,146 @@ ok('…but never offers to install a part',
   !fpRev.revealButtons.some(x => /התקנ|Install/.test(x)), fpRev.revealButtons.join(' / '));
 ok('…and calls no onDone', (await page.evaluate(() => window.__DONE)) === null);
 
+// ═════════════════════════════════════════════════════════════════════════════
+// THE REVEAL FITS, OR SCROLLS AND SAYS SO — measured in pixels.
+//
+// The debrief ("מה כל שורה בפרומפט עשתה") is the payoff of the entire
+// educational core, and it used to run off the bottom of the modal on every
+// panel shorter than 1080: the last section was cut mid-row, inside an
+// overflow:auto box with no visible scrollbar (Chrome's overlay scrollbars are
+// invisible until you already scroll), so the screen looked broken rather than
+// scrollable — 156px lost at 1366x768, 275px at 1024x640.
+//
+// This section asserts GEOMETRY, not markup:
+//   · the reveal state was really reached (three debrief rows and the section
+//     title, in the language under test) — an assertion over an empty screen is
+//     not an assertion
+//   · the whole modal and its buttons are inside the viewport
+//   · EITHER the content fits its scroll box outright — last row's bottom edge
+//     inside the box's visible bottom edge — OR the box genuinely scrolls, in
+//     which case the affordance must be VISIBLE (the cue is painted, and a real
+//     scrollbar gutter is reserved) and scrolling to the end must bring the last
+//     row entirely inside the visible box
+//   · the scroll region is keyboard-reachable and still comes before the buttons
+//
+// It runs in its own browser WITHOUT --hide-scrollbars: the gate above hides
+// them so they cannot pollute the kart pixel-diffs, but a check about whether a
+// child can see that there is more to read cannot run in a window where
+// scrollbars have been switched off.
+console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'.repeat(74));
+{
+  const layoutBrowser = await puppeteer.launch({
+    executablePath: CHROME, headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader', '--force-device-scale-factor=1', '--mute-audio'],
+  });
+  const lp = await layoutBrowser.newPage();
+  lp.on('pageerror', e => errs.push('PAGEERROR: ' + e.message));
+  lp.on('console', m => { if (m.type() === 'error') errs.push('CONSOLE: ' + m.text()); });
+  await lp.goto('file://' + htmlPath, { waitUntil: 'load', timeout: 60000 });
+  await lp.evaluate(() => { window.__FREEPLAY = false; });
+  await lp.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+
+  // The three short panels the project tests. 1366x768 is the school laptop and
+  // 1024x640 is the floor; 1280x720 sits between them and used to fail too.
+  const SIZES = [[1366, 768], [1280, 720], [1024, 640]];
+  // Two real prompts, because the reveal's height depends on what was asked: a
+  // sharp one (longest recap, most fragments) and a vague one (the ghost card
+  // flips into the "you could have had this" invitation).
+  const CASES = [
+    ['sharp', { part: 'tires', goal: 'tires.late', constraint: 'tires.wear', style: 'tires.stripe' }],
+    ['vague', { part: 'engine', goal: 'engine.good', constraint: 'engine.none', style: 'engine.any' }],
+  ];
+  // The title of the section that was being clipped, in both languages. If the
+  // language never actually flipped (the capture harness once wrote the language
+  // to save and never called setLang, leaving every string Hebrew), the English
+  // rows fail here instead of quietly testing Hebrew twice.
+  const TITLE = { he: 'מה כל שורה בפרומפט עשתה', en: 'What each line of the prompt did' };
+
+  const measure = async expectTitle => lp.evaluate(title => {
+    const q = s => document.querySelector(s);
+    const box = el => { const r = el.getBoundingClientRect(); return { t: r.top, b: r.bottom, l: r.left, r: r.right, h: r.height }; };
+    const sc = q('.grg-rev-scroll');
+    const rows = [...document.querySelectorAll('.grg-rev-scroll .grg-dbrow')];
+    const labels = [...document.querySelectorAll('.grg-rev-scroll .label')].map(e => e.textContent.trim());
+    if (!sc || !rows.length) return { reached: false, rows: rows.length, labels };
+    const last = rows[rows.length - 1];
+    const cue = q('.grg-morecue');
+    const body = q('.grg-revbody');
+    const install = q('.grg-revactions button');
+    return {
+      reached: true, rows: rows.length, labels, titleShown: labels.includes(title),
+      vw: innerWidth, vh: innerHeight,
+      reveal: box(q('.grg-reveal')), actions: box(q('.grg-revactions')),
+      scroller: box(sc), last: box(last),
+      ch: sc.clientHeight, sh: sc.scrollHeight, scrollTop: sc.scrollTop,
+      // A styled, non-overlay scrollbar reserves width. An overlay scrollbar
+      // reserves none — which is exactly how the overflow stayed invisible.
+      gutter: sc.offsetWidth - sc.clientWidth,
+      hasMore: !!(body && body.classList.contains('has-more')),
+      cueOpacity: cue ? +getComputedStyle(cue).opacity : 0,
+      cueBox: cue ? box(cue) : null,
+      focusable: sc.tabIndex === 0,
+      // eslint-disable-next-line no-bitwise
+      scrollerBeforeButtons: !!(install && (sc.compareDocumentPosition(install) & Node.DOCUMENT_POSITION_FOLLOWING)),
+    };
+  }, expectTitle);
+
+  for (const lang of ['he', 'en']) {
+    console.log(`  \x1b[2m── lang ${lang} ──\x1b[0m`);
+    for (const [w, h] of SIZES) {
+      for (const [name, sel] of CASES) {
+        await lp.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
+        await lp.evaluate(async (s, l) => {
+          await window.__DEBUG.goto('preview', {
+            lang: l, tokens: 99, meet: false, visit: 2, phase: 'reveal', selection: s,
+          });
+        }, sel, lang);
+        await wait(420);
+        const tag = `${w}x${h} ${name}`;
+        const m = await measure(TITLE[lang]);
+        // 1. The state under test was really reached, in the language under test.
+        ok(`${tag}: the debrief is on screen, in ${lang}`,
+          m.reached && m.rows === 3 && m.titleShown,
+          m.reached ? `${m.rows} rows · "${(m.labels[m.labels.length - 1] || '').slice(0, 34)}"` : 'no reveal');
+        if (!m.reached || !m.titleShown) continue;
+
+        const issues = [];
+        if (m.reveal.b > m.vh + 1 || m.reveal.t < -1) issues.push(`modal outside viewport (${Math.round(m.reveal.t)}..${Math.round(m.reveal.b)} of ${m.vh})`);
+        if (m.actions.b > m.vh + 1) issues.push(`buttons ${Math.round(m.actions.b - m.vh)}px below the edge`);
+        const overflow = m.sh - m.ch;
+        let mode;
+        if (overflow <= 2) {
+          mode = 'fits';
+          // The clip that started all this: the last line of the last section
+          // sitting below the visible bottom edge of its own container.
+          if (m.last.b > m.scroller.b + 1) issues.push(`last debrief row ${Math.round(m.last.b - m.scroller.b)}px below the box with nothing to scroll`);
+          if (m.hasMore) issues.push('claims there is more below when there is not');
+        } else {
+          mode = `scrolls ${overflow}px`;
+          if (!m.hasMore || m.cueOpacity < 0.9) issues.push(`overflows ${overflow}px with no visible cue (opacity ${m.cueOpacity})`);
+          if (m.cueBox && m.cueBox.b > m.vh + 1) issues.push('the cue itself is off-screen');
+          if (m.gutter < 6) issues.push(`no scrollbar gutter (${m.gutter}px) — an overlay scrollbar is not an affordance`);
+          // …and the end must be reachable: scrolled to the bottom, the last row
+          // has to be ENTIRELY inside the visible box.
+          await lp.evaluate(() => { const s = document.querySelector('.grg-rev-scroll'); s.scrollTop = s.scrollHeight; });
+          await wait(160);
+          const end = await measure(TITLE[lang]);
+          if (end.last.b > end.scroller.b + 1 || end.last.t < end.scroller.t - 1) {
+            issues.push(`scrolled to the bottom the last row is still ${Math.round(end.last.b - end.scroller.b)}px out`);
+          }
+          if (end.hasMore) issues.push('still says "more below" at the bottom');
+        }
+        ok(`${tag}: the explanation is readable (${mode})`, issues.length === 0, issues.join(' · ') || `${m.sh}px of content in ${m.ch}px`);
+        ok(`${tag}: the explanation is keyboard-reachable, before the buttons`,
+          m.focusable && m.scrollerBeforeButtons,
+          `tabindex ${m.focusable ? '0' : 'missing'}, ${m.scrollerBeforeButtons ? 'precedes' : 'FOLLOWS'} the actions`);
+      }
+    }
+  }
+  await layoutBrowser.close();
+}
+
 ok('no page errors anywhere', errs.length === 0, errs[0] || '');
 console.log('  ' + '─'.repeat(74));
 console.log(fails ? `  \x1b[31m${fails} FAILED\x1b[0m\n` : '  \x1b[32mall garage checks passed\x1b[0m\n');

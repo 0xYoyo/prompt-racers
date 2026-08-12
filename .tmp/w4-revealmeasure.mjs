@@ -59,6 +59,7 @@ for (const lang of ['he', 'en']) {
         rows: rows.length,
         lastRow: box(last),
         labels,
+        cols: [...document.querySelectorAll('.grg-revcol')].map(e => `${e.className.split(' ')[1]}:${Math.round(e.getBoundingClientRect().width)}x${Math.round(e.getBoundingClientRect().height)}`),
         kids: [...(sc ? sc.children : [])].map(e => `${e.className.split(' ')[0]}:${Math.round(e.getBoundingClientRect().height)}`),
       };
     });
@@ -66,7 +67,7 @@ for (const lang of ['he', 'en']) {
       `reveal ${m.reveal?.t}..${m.reveal?.b}`.padEnd(22),
       `scroll ch=${m.scroll?.ch} sh=${m.scroll?.sh} over=${m.scroll?.over}`.padEnd(34),
       `rows=${m.rows} lastRow ${m.lastRow?.t}..${m.lastRow?.b}`,
-      `| ${m.kids.join(" ")}`);
+      `| ${m.kids.join(" ")} | ${m.cols.join(" ")}`);
   }
 }
 await browser.close();

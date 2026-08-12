@@ -22342,8 +22342,23 @@ void main() {
     bestLap: {},
     // trackId -> ms
     muted: false,
-    championshipAsked: []
+    volume: 0.75,
+    // master volume 0..1 — separate from `muted` (D31)
+    championshipAsked: [],
     // quiz question ids already asked THIS championship
+    // ── האוסף שלי (Wave 4) ─────────────────────────────────────────────────
+    // Deliberately OUTSIDE the championship reset. A badge is something the child
+    // earned once and keeps; a glossary term is something they have been taught.
+    // resetChampionship() in ui/menus.js clears the ledger and leaves these two
+    // alone; only the settings screen's full wipe (save.reset()) removes them.
+    badges: [],
+    // unlocked badge ids
+    glossary: [],
+    // unlocked glossary term ids
+    stats: {},
+    // lifetime counters the badges are measured against
+    funTitle: null
+    // certificate title, chosen from PRESETS only
   };
   var state = load();
   function load() {
@@ -22725,12 +22740,41 @@ void main() {
     document.head.appendChild(el);
   }
   var _modals = /* @__PURE__ */ new Set();
+  var _modalSubs = /* @__PURE__ */ new Set();
+  var _lastAnyOpen = false;
+  function _notifyModalChange() {
+    const any = _modals.size > 0;
+    if (any === _lastAnyOpen) return;
+    _lastAnyOpen = any;
+    for (const fn of _modalSubs) {
+      try {
+        fn(any);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }
+  function onModalChange(fn) {
+    if (typeof fn !== "function") return () => {
+    };
+    _modalSubs.add(fn);
+    try {
+      fn(_modals.size > 0);
+    } catch (e) {
+      console.error(e);
+    }
+    return () => {
+      _modalSubs.delete(fn);
+    };
+  }
   function pushModal(id) {
     _modals.add(id);
+    _notifyModalChange();
     return () => popModal(id);
   }
   function popModal(id) {
     _modals.delete(id);
+    _notifyModalChange();
   }
   function h(sel, props, ...kids) {
     const [tag, ...cls] = sel.split(".");
@@ -22821,6 +22865,15 @@ void main() {
   ];
   var MAX_VOICES = 56;
   var MUSIC_HEADROOM = 20;
+  var ENGINE_BUS = 0.21;
+  var ENGINE_LEVEL = 0.34;
+  var AI_ENGINE_LEVEL = 0.075;
+  var MODAL_DUCK_RAMP = 0.12;
+  var MODAL_MUSIC = 0.34;
+  function readSavedVolume() {
+    const v = save.read("volume");
+    return typeof v === "number" && isFinite(v) ? clamp2(v, 0, 1) : 0.75;
+  }
   function softClipCurve(knee = 0.55, ceil = 0.97) {
     const n = 2048, c = new Float32Array(n), r = ceil - knee;
     for (let i = 0; i < n; i++) {
@@ -22830,7 +22883,7 @@ void main() {
     }
     return c;
   }
-  function driveCurve(k = 6) {
+  function driveCurve(k = 2) {
     const n = 1024, c = new Float32Array(n), d = Math.tanh(k);
     for (let i = 0; i < n; i++) {
       const x = i / (n - 1) * 2 - 1;
@@ -22998,12 +23051,12 @@ void main() {
       this.shaper.curve = A._driveCurve;
       this.shaper.connect(this.out);
       this.drive = c.createGain();
-      this.drive.gain.value = 0.55;
+      this.drive.gain.value = 0.4;
       this.drive.connect(this.shaper);
       this.lp = c.createBiquadFilter();
       this.lp.type = "lowpass";
-      this.lp.frequency.value = 500;
-      this.lp.Q.value = 3.5;
+      this.lp.frequency.value = 420;
+      this.lp.Q.value = 1.6;
       this.lp.connect(this.drive);
       this.wob = c.createGain();
       this.wob.gain.value = 1;
@@ -23018,13 +23071,15 @@ void main() {
         o.start(0);
         return { o, g: gg };
       };
-      this.sawA = mk("sawtooth", 0.34);
-      this.sawB = mk("sawtooth", 0.28);
-      this.sawB.o.detune.value = 11;
-      this.sqr = mk("square", 0.13);
-      this.sub = mk("sine", 0.3);
+      this.triA = mk("triangle", 0.32);
+      this.triB = mk("triangle", 0.24);
+      this.triB.o.detune.value = 9;
+      this.saw = mk("sawtooth", 0.085);
+      this.sqr = mk("square", 0.022);
+      this.sub = mk("sine", 0.26);
       this.whine = mk("sine", 0);
       this.whine.o.detune.value = 4;
+      this.oscs = [this.triA, this.triB, this.saw, this.sqr, this.sub, this.whine];
       this.nz = c.createBufferSource();
       this.nz.buffer = A._noiseBuf;
       this.nz.loop = true;
@@ -23062,12 +23117,12 @@ void main() {
       this.jitB = c.createGain();
       this.jitB.gain.value = 6;
       this.ampA = c.createGain();
-      this.ampA.gain.value = 0.18;
+      this.ampA.gain.value = 0.12;
       this.lfoA.connect(this.jitA);
       this.lfoB.connect(this.jitB);
       this.lfoA.connect(this.ampA);
       this.ampA.connect(this.wob.gain);
-      for (const v of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) {
+      for (const v of this.oscs) {
         this.jitA.connect(v.o.detune);
         this.jitB.connect(v.o.detune);
       }
@@ -23094,37 +23149,46 @@ void main() {
         } catch {
         }
       };
-      sq(this.sawA.o.frequency, f);
-      sq(this.sawB.o.frequency, f * 1.004);
+      sq(this.triA.o.frequency, f);
+      sq(this.triB.o.frequency, f * 1.004);
+      sq(this.saw.o.frequency, f);
       sq(this.sqr.o.frequency, f * 2);
       sq(this.sub.o.frequency, f * 0.5);
       sq(this.whine.o.frequency, f * 6);
-      for (const v of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) sq(v.o.detune, det);
-      sq(this.lp.frequency, clamp2((280 + Math.pow(rpm, 1.4) * 4200 * (boost ? 1.5 : 1) * (0.7 + 0.5 * load2) + 950 * strain) * lerp2(1, 0.5, coast), 120, 12e3));
-      sq(this.lp.Q, (boost ? 6.5 : lerp2(2.2, 4.6, rpm)) + 1.6 * strain);
-      sq(this.drive.gain, (lerp2(0.42, 0.78, load2) + 0.28 * strain) * (boost ? 1.22 : 1) * lerp2(1, 0.72, coast));
-      sq(this.sqr.g.gain, 0.1 + 0.17 * strain - 0.05 * coast);
-      sq(this.bp.frequency, 420 + rpm * 2600);
-      sq(this.nzg.gain, lerp2(0.03, 0.115, rpm) * lerp2(0.6, 1.25, load2) * lerp2(1, 0.45, coast));
-      sq(this.whine.g.gain, boost ? 0.045 : 0);
+      for (const v of this.oscs) sq(v.o.detune, det);
+      sq(this.lp.frequency, clamp2((300 + Math.pow(rpm, 1.25) * 2350 * (boost ? 1.35 : 1) * (0.75 + 0.4 * load2) + 420 * strain) * lerp2(1, 0.55, coast), 140, 5200));
+      sq(this.lp.Q, (boost ? 3.2 : lerp2(1.2, 2.4, rpm)) + 0.9 * strain);
+      sq(this.drive.gain, (lerp2(0.32, 0.52, load2) + 0.14 * strain) * (boost ? 1.12 : 1) * lerp2(1, 0.75, coast));
+      sq(this.sqr.g.gain, clamp2(0.018 + 0.055 * strain - 0.012 * coast, 0, 0.09));
+      sq(this.bp.frequency, 420 + rpm * 1900);
+      sq(this.nzg.gain, lerp2(0.014, 0.052, rpm) * lerp2(0.6, 1.25, load2) * lerp2(1, 0.45, coast));
+      sq(this.whine.g.gain, boost ? 0.022 : 0);
       sq(this.lfoA.frequency, lerp2(4.1, 23, rpm) * lerp2(1, 0.68, strain));
       sq(this.lfoB.frequency, lerp2(9.3, 47, rpm));
-      sq(this.ampA.gain, lerp2(0.26, 0.05, rpm) + 0.14 * strain + 0.05 * coast);
-      sq(this.jitA.gain, lerp2(22, 5, rpm) + 10 * strain);
-      sq(this.jitB.gain, lerp2(9, 2.5, rpm));
+      sq(this.ampA.gain, lerp2(0.17, 0.035, rpm) + 0.09 * strain + 0.035 * coast);
+      sq(this.jitA.gain, lerp2(16, 4, rpm) + 7 * strain);
+      sq(this.jitB.gain, lerp2(7, 2, rpm));
       const rum = surf === "grass" ? 0.22 : surf === "sand" ? 0.19 : surf === "dirt" ? 0.16 : 0;
       sq(this.rlp.frequency, surf === "sand" ? 420 : 240);
       sq(this.rzg.gain, rum * lerp2(0.35, 1, rpm));
-      if (this.enabled) sq(this.out.gain, this.level * lerp2(0.72, 1, load2) * lerp2(1, 0.62, coast));
+      if (this.enabled) sq(this.out.gain, this.level * this._levelFor(rpm, load2, coast));
+    }
+    // Loudness as a function of speed. The old voice scaled with LOAD alone, so
+    // idling and flat-out measured within 1 dB of each other and the engine read as
+    // a constant buzz. ~2.4x (7.6 dB) across the rev range is the difference
+    // between "a noise is happening" and "I am accelerating".
+    _levelFor(rpm, load2, coast) {
+      return (0.3 + 0.72 * Math.pow(rpm, 0.85)) * lerp2(0.8, 1, load2) * lerp2(1, 0.55, coast);
     }
     enable(time, fade = 0.25) {
       if (this.enabled) return;
       this.enabled = true;
       const g = this.out.gain;
+      const v = this.level * this._levelFor(0, 0.5, 0);
       try {
         g.cancelScheduledValues(time);
         g.setValueAtTime(g.value, time);
-        g.linearRampToValueAtTime(this.level, time + fade);
+        g.linearRampToValueAtTime(v, time + fade);
       } catch {
       }
     }
@@ -23140,7 +23204,7 @@ void main() {
       }
     }
     dispose() {
-      for (const n of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) {
+      for (const n of this.oscs) {
         try {
           n.o.stop();
         } catch {
@@ -23165,7 +23229,7 @@ void main() {
       this.active = false;
       this.out = c.createGain();
       this.out.gain.value = 0;
-      this.out.connect(A.sfxBus);
+      this.out.connect(A.worldBus);
       this.bp = c.createBiquadFilter();
       this.bp.type = "bandpass";
       this.bp.frequency.value = 1200;
@@ -23314,7 +23378,9 @@ void main() {
       this.broken = false;
       this._ownsCtx = true;
       this.muted = !!save.read("muted");
-      this.vol = { master: 0.9, music: 0.85, sfx: 1, engine: 0.32 };
+      this.vol = { master: readSavedVolume(), music: 0.85, sfx: 1, engine: ENGINE_BUS };
+      this._ducked = false;
+      this._modalDucked = false;
       this.sounds = /* @__PURE__ */ new Map();
       this._pending = [];
       this._nodes = /* @__PURE__ */ new Set();
@@ -23328,7 +23394,18 @@ void main() {
       this.music = null;
       this._registerSounds();
       this._wireBus();
+      this._wireModalDuck();
       this._installUnlock();
+    }
+    // ── automatic modal ducking ────────────────────────────────────────────────
+    // Subscribing to the registry itself — NOT to a list of modal ids, and NOT at
+    // each modal's call site. Wave 3's five modals were wired one at a time and the
+    // sixth would have been forgotten; `onModalChange` fires for every id that will
+    // ever be pushed, including ones that do not exist yet. tests/audio.test.mjs
+    // pins that by pushing an invented id.
+    _wireModalDuck() {
+      if (this._offModal) return;
+      this._offModal = onModalChange((any) => this.setModalDuck(any));
     }
     // ── lifecycle ──────────────────────────────────────────────────────────────
     /**
@@ -23366,7 +23443,7 @@ void main() {
       this._noiseBuf = buf;
       this._grainSlow = grainBuffer(c, makeRng(6048414), 46, 1900);
       this._grainFast = grainBuffer(c, makeRng(8299537), 190, 2900);
-      this._driveCurve = driveCurve(6);
+      this._driveCurve = driveCurve(2);
       this.master = c.createGain();
       this.master.gain.value = this.muted ? 0 : this.vol.master;
       this.clip = c.createWaveShaper();
@@ -23390,6 +23467,9 @@ void main() {
       this.sfxBus.gain.value = this.vol.sfx;
       this.engineBus = c.createGain();
       this.engineBus.gain.value = this.vol.engine;
+      this.worldBus = c.createGain();
+      this.worldBus.gain.value = 1;
+      this.worldBus.connect(this.sfxBus);
       this.musicBus.connect(this.comp);
       this.sfxBus.connect(this.comp);
       this.engineBus.connect(this.comp);
@@ -23397,9 +23477,10 @@ void main() {
       this.limiter.connect(this.clip);
       this.clip.connect(this.master);
       this.master.connect(c.destination);
-      this.engine = new EngineVoice(this, { level: 0.3, player: true });
+      this.engine = new EngineVoice(this, { level: ENGINE_LEVEL, player: true });
       this.drift = new DriftVoice(this);
       this.music = new MusicEngine(this);
+      this._applyBuses(0);
     }
     // ── autoplay unlock ────────────────────────────────────────────────────────
     // Rules learned the hard way, all of them load-bearing:
@@ -23522,40 +23603,90 @@ void main() {
       if (!this.muted) this.unlock();
     }
     /**
-     * duck(on) — pull the race bed down under a modal (pause menu, quiz card) so
-     * the child can think. Never a hard cut: the world is still there, quieter.
+     * setMasterVolume(v, persist = true) — the settings screen's volume slider.
+     *   v        0..1, clamped; anything non-finite is treated as 0.
+     *   persist  write it to save (`volume`); pass false for a preview drag.
+     * Returns the clamped value. Independent of `muted`: while muted the output
+     * stays at zero and unmuting restores exactly this level.
+     */
+    setMasterVolume(v, persist = true) {
+      const x = clamp2(typeof v === "number" && isFinite(v) ? v : 0, 0, 1);
+      this.vol.master = x;
+      if (persist) {
+        try {
+          save.set({ volume: x });
+        } catch {
+        }
+      }
+      this._applyMute(0.05);
+      try {
+        bus.emit("audio:masterVolume", x);
+      } catch {
+      }
+      return x;
+    }
+    /** @returns {number} the current master volume, 0..1 (NOT affected by mute). */
+    getMasterVolume() {
+      return this.vol.master;
+    }
+    /**
+     * setModalDuck(on) — called automatically by the modal registry subscription in
+     * _wireModalDuck(); nothing needs to call it by hand. While ANY modal owns the
+     * screen the engine and the world bus go to true zero and the music steps back
+     * to MODAL_MUSIC. Both moves are linear ramps over MODAL_DUCK_RAMP, so they
+     * fade rather than click, and the state survives volume changes because every
+     * bus gain is written from one place (_applyBuses).
+     */
+    setModalDuck(on) {
+      const v = !!on;
+      if (v === this._modalDucked) return;
+      this._modalDucked = v;
+      this._applyBuses(MODAL_DUCK_RAMP);
+    }
+    /**
+     * duck(on) — the SOFT duck: the pause menu's "pull the race bed down a bit".
+     * Kept for `race:pause` / `race:resume`, and now subordinate to the modal duck,
+     * which is a full stop rather than an attenuation.
      */
     duck(on = true) {
       this._ducked = !!on;
+      this._applyBuses(0.12);
+    }
+    /**
+     * The ONLY place the three group buses are written. Every state that can move
+     * them — the per-group volumes, the soft duck, the modal duck — is folded in
+     * here, so they can never disagree. That mattered: the old code applied the
+     * duck and the volumes from two places, and a volume change mid-duck undid it.
+     */
+    _applyBuses(fade = 0.08) {
       if (!this.ready) return;
-      const tN = this.now;
-      const set = (node, v) => {
+      const t2 = this.now;
+      const ramp = (node, v) => {
+        if (!node) return;
+        const g = node.gain;
         try {
-          node.gain.setTargetAtTime(v, tN, 0.08);
+          g.cancelScheduledValues(t2);
+          g.setValueAtTime(g.value, t2);
+          if (fade > 0) g.linearRampToValueAtTime(v, t2 + fade);
+          else g.setValueAtTime(v, t2);
         } catch {
-          node.gain.value = v;
+          try {
+            g.value = v;
+          } catch {
+          }
         }
       };
-      set(this.musicBus, this.vol.music * (on ? 0.42 : 1));
-      set(this.engineBus, this.vol.engine * (on ? 0.2 : 1));
-      set(this.sfxBus, this.vol.sfx * (on ? 0.72 : 1));
+      const m = this._modalDucked, d = this._ducked;
+      ramp(this.engineBus, m ? 0 : this.vol.engine * (d ? 0.2 : 1));
+      ramp(this.worldBus, m ? 0 : 1);
+      ramp(this.musicBus, this.vol.music * (m ? MODAL_MUSIC : d ? 0.42 : 1));
+      ramp(this.sfxBus, this.vol.sfx * (d && !m ? 0.72 : 1));
     }
     setVolume(p = {}) {
       Object.assign(this.vol, p);
       if (!this.ready) return;
-      const tN = this.now;
-      const set = (node, v) => {
-        try {
-          node.gain.setTargetAtTime(v, tN, 0.03);
-        } catch {
-          node.gain.value = v;
-        }
-      };
-      if (p.music !== void 0) set(this.musicBus, this.vol.music);
-      if (p.sfx !== void 0) set(this.sfxBus, this.vol.sfx);
-      if (p.engine !== void 0) set(this.engineBus, this.vol.engine);
       if (p.master !== void 0) this._applyMute(0.03);
-      if (this._ducked) this.duck(true);
+      this._applyBuses(0.03);
     }
     // ── voice budget ───────────────────────────────────────────────────────────
     // Uses the *scheduler* clock, not wall time, so it behaves identically when a
@@ -23759,14 +23890,14 @@ void main() {
       const n = Math.min(3, list.length);
       while (this._ai.length < n) {
         const i = this._ai.length;
-        this._ai.push(new EngineVoice(this, { level: 0.085, detune: [-72, 58, 121][i], player: false }));
+        this._ai.push(new EngineVoice(this, { level: AI_ENGINE_LEVEL, detune: [-72, 58, 121][i], player: false }));
       }
       for (let i = 0; i < this._ai.length; i++) {
         const v = this._ai[i];
         if (i < n) {
           const s = list[i];
           const d = clamp2(1 - (s.dist ?? 0) / 45, 0.05, 1);
-          v.level = 0.09 * d * d;
+          v.level = AI_ENGINE_LEVEL * d * d;
           v.enable(tN);
           v.setAt(tN, s, 0.09);
         } else v.disable(tN);
@@ -23810,6 +23941,13 @@ void main() {
         }
       }
       this._offs.length = 0;
+      if (this._offModal) {
+        try {
+          this._offModal();
+        } catch {
+        }
+        this._offModal = null;
+      }
       this._removeUnlock();
       if (this.ok) {
         try {
@@ -23854,6 +23992,7 @@ void main() {
       this.ctx = null;
       this.music = null;
       this._wireBus();
+      this._wireModalDuck();
       this._installUnlock();
     }
     // ── registry ───────────────────────────────────────────────────────────────
@@ -24142,10 +24281,10 @@ void main() {
       S2("engine.ai", "engine", 2.6, "Engine: 3 AI karts nearby", function(t2) {
         while (this._ai.length < 3) {
           const i = this._ai.length;
-          this._ai.push(new EngineVoice(this, { level: 0.085, detune: [-72, 58, 121][i], player: false }));
+          this._ai.push(new EngineVoice(this, { level: AI_ENGINE_LEVEL, detune: [-72, 58, 121][i], player: false }));
         }
         this._ai.forEach((v, i) => {
-          v.level = 0.09 - i * 0.015;
+          v.level = AI_ENGINE_LEVEL - i * 0.012;
           v.enable(t2 + i * 0.1, 0.15);
           v.setAt(t2 + i * 0.1, { rpm01: 0.35 + i * 0.12, load: 0.7 }, 0.1);
           v.setAt(t2 + 1, { rpm01: 0.8 - i * 0.1, load: 0.9 }, 0.35);
@@ -24178,6 +24317,7 @@ void main() {
       on("audio:mute", (m) => this.setMuted(typeof m === "boolean" ? m : m && m.muted));
       on("audio:toggleMute", () => this.toggleMute());
       on("audio:volume", (p) => this.setVolume(p || {}));
+      on("audio:masterVolume:set", (p) => this.setMasterVolume(typeof p === "number" ? p : p && (p.volume ?? p.value)));
       on("audio:music", (p) => {
         if (!p || p.stop) this.stopMusic();
         else this.playMusic(p.track || p.id || "menu", p);
@@ -24520,6 +24660,7 @@ void main() {
   try {
     if (typeof window !== "undefined") {
       audio.bus = bus;
+      audio.modal = { push: pushModal, pop: popModal };
       window.__AUDIO = audio;
     }
   } catch {
@@ -26174,6 +26315,10 @@ void main() {
       "garage.reveal.tokens": "\u05D4\u05E8\u05D5\u05D5\u05D7\u05EA\u05DD {n} \u05D8\u05D5\u05E7\u05E0\u05D9\u05DD",
       "garage.reveal.install": "\u05D4\u05EA\u05E7\u05E0\u05D4 \u05D5\u05D4\u05DE\u05E9\u05DA",
       "garage.reveal.again": "\u05E4\u05E8\u05D5\u05DE\u05E4\u05D8 \u05D0\u05D7\u05E8",
+      // The debrief is taller than a short school-laptop screen. When it is, the
+      // screen has to SAY so — a silent overflow reads as "the page is broken".
+      "garage.reveal.more": "\u05D9\u05E9 \u05E2\u05D5\u05D3 \u2014 \u05D2\u05DC\u05DC\u05D5 \u05DC\u05DE\u05D8\u05D4",
+      "garage.reveal.region": "\u05D4\u05E1\u05D1\u05E8 \u05E2\u05DC \u05D4\u05E4\u05E8\u05D5\u05DE\u05E4\u05D8 \u05E9\u05DC\u05DB\u05DD",
       "garage.expert.toggle": "\u05DE\u05E6\u05D1 \u05DE\u05D5\u05DE\u05D7\u05D4",
       "garage.expert.badge": "\u05DC\u05D0 \u05D7\u05D5\u05D1\u05D4 \xB7 \u05D2\u05D9\u05DC\u05D0\u05D9 \u200E12+",
       "garage.expert.label": "\u05DB\u05D5\u05EA\u05D1\u05D9\u05DD \u05DC\u05D1\u05D5\u05E8\u05D2 \u05D1\u05DE\u05D9\u05DC\u05D9\u05DD \u05E9\u05DC\u05DB\u05DD",
@@ -26284,6 +26429,8 @@ void main() {
       "garage.reveal.tokens": "You earned {n} tokens",
       "garage.reveal.install": "Install and continue",
       "garage.reveal.again": "A different prompt",
+      "garage.reveal.more": "More below \u2014 scroll down",
+      "garage.reveal.region": "What your prompt did",
       "garage.expert.toggle": "Expert mode",
       "garage.expert.badge": "optional \xB7 ages 12+",
       "garage.expert.label": "Write to Boreg in your own words",
@@ -26562,7 +26709,9 @@ void main() {
 /* Reveal */
 .grg-scrim{position:absolute;inset:0;background:rgba(6,6,12,.66);backdrop-filter:blur(2px);
   display:flex;align-items:center;justify-content:center;padding:22px}
-.grg-reveal{width:min(1060px,96%);max-height:96%;padding:18px 24px 18px;
+/* max-height:100%, not 96%: the scrim's own 22px padding is already the breathing
+   room, and on a 640px panel the extra 4% was 24px of the debrief. */
+.grg-reveal{width:min(1060px,96%);max-height:100%;padding:18px 24px 18px;
   display:flex;flex-direction:column;gap:10px;overflow:hidden}
 .grg-tierbadge{align-self:flex-start;font-size:12.5px;font-weight:900;padding:6px 15px;
   border-radius:var(--r-pill);color:#2a1c00;
@@ -26651,6 +26800,7 @@ void main() {
 
 /* \u2500\u2500 The debrief: one row per filled slot, one prompting idea each \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .grg-debrief{display:flex;flex-direction:column;gap:7px}
+.grg-dbrow{padding-block:46px!important}
 .grg-dbrow{display:flex;gap:11px;align-items:flex-start;padding:9px 13px;border-radius:var(--r-s);
   background:rgba(255,255,255,.05);border:1px solid var(--stroke);
   border-inline-start:4px solid var(--rc1)}
@@ -26665,8 +26815,103 @@ void main() {
   background:rgba(255,194,71,.12);border:1px solid rgba(255,194,71,.28);
   border-radius:var(--r-pill);padding:4px 10px;white-space:nowrap}
 .grg-dbpts.zero{color:var(--txt-dim);background:rgba(255,255,255,.05);border-color:var(--stroke)}
-.grg-rev-scroll{overflow:auto;min-height:0;display:flex;flex-direction:column;gap:10px;
-  padding-inline-end:4px}
+/* \u2500\u2500 The scrolling body of the debrief, and its "there is more" affordance \u2500\u2500
+   The debrief is the payoff of the whole educational core, and it is taller than
+   a 768px school laptop can show. It has always been inside a scrolling
+   box (overflow:auto), which is exactly the failure: it was cut mid-row with no
+   scrollbar (macOS/Chrome overlay scrollbars are invisible until you already
+   scroll), so a child saw a broken page rather than a scrollable one.
+   Two answers, both applied: cut the height (the two-column rule below, which
+   makes it FIT outright at most sizes) and, when it still overflows, say so \u2014
+   a permanently visible gold scrollbar, a fade, and a labelled pill. */
+.grg-revbody{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+.grg-rev-scroll{overflow-y:auto;overflow-x:hidden;min-height:0;flex:1;
+  display:flex;flex-direction:column;gap:10px;
+  padding-inline-end:8px;scrollbar-gutter:stable;
+  scrollbar-width:thin;scrollbar-color:var(--gold-2) rgba(255,255,255,.10)}
+/* Not overlay scrollbars: this one has to be visible BEFORE the child scrolls. */
+.grg-rev-scroll::-webkit-scrollbar{width:10px}
+.grg-rev-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.08);border-radius:999px}
+.grg-rev-scroll::-webkit-scrollbar-thumb{background:var(--gold-2);border-radius:999px;
+  border:2px solid rgba(0,0,0,.35);box-shadow:0 0 10px rgba(255,194,71,.5)}
+.grg-rev-scroll:focus-visible{outline:3px solid var(--info);outline-offset:2px}
+.grg-morecue{position:absolute;inset-inline:0;inset-block-end:0;height:54px;pointer-events:none;
+  display:flex;align-items:flex-end;justify-content:center;opacity:0;transition:opacity .18s var(--ease);
+  background:linear-gradient(to bottom,rgba(12,10,18,0),rgba(12,10,18,.86))}
+.grg-revbody.has-more .grg-morecue{opacity:1}
+.grg-morepill{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:900;color:#2a1c00;
+  padding:5px 13px;border-radius:var(--r-pill);
+  background:linear-gradient(180deg,var(--gold-1),var(--gold-3));
+  box-shadow:0 0 20px rgba(255,194,71,.5)}
+.grg-morepill i{font-style:normal;animation:grg-nudge 1.1s var(--ease) infinite}
+@keyframes grg-nudge{0%,100%{transform:translateY(0)}50%{transform:translateY(3px)}}
+@media (prefers-reduced-motion:reduce){.grg-morepill i{animation:none}}
+/* Column layout inside the debrief. One column while there is room for it; on
+   any short panel the two halves sit side by side, which is what actually buys
+   back the ~300px the clipped section needed. */
+/* Nothing inside a scroll box may shrink: a squeezed flex item overflows its own
+   border box, which is how a section can be clipped while the container still
+   reports that everything fits. */
+.grg-rev-scroll>*{flex:none}
+.grg-revmain{display:flex;flex-direction:column;gap:10px}
+.grg-revcol{display:flex;flex-direction:column;gap:10px;min-width:0}
+@media (min-width:980px) and (max-height:1000px){
+  .grg-revmain{flex-direction:row;align-items:flex-start}
+  /* The lesson column is the tall one \u2014 English wraps more than Hebrew \u2014 so it
+     gets the extra width, not the karts (whose canvases are capped anyway). */
+  .grg-revcol.a{flex:1}
+  .grg-revcol.b{flex:1.28}
+}
+/* Short panels: trim the reveal's own chrome (padding, gaps, display sizes) \u2014
+   never its content. Nothing here drops a sentence the debrief teaches with, and
+   no rule takes text below the 11px floor the layout gate enforces. */
+@media (max-height:790px){
+  .grg-scrim{padding:14px}
+  .grg-reveal{padding:13px 18px;gap:8px}
+  .grg-rev-scroll,.grg-revmain,.grg-revcol{gap:7px}
+  .grg-debrief{gap:6px}
+  .grg-mini{gap:5px}
+  .grg-ministat{padding:4px 8px}
+  .grg-recap{font-size:15px;padding:9px 13px;line-height:1.45}
+  .ltr .grg-recap{font-size:14px}
+  .grg-partcard{padding:10px 12px 11px;gap:5px}
+  .grg-partcard .grg-partname{font-size:22px;line-height:1.1}
+  .ltr .grg-partcard .grg-partname{font-size:19px}
+  .grg-partcard.ghost .grg-partname{font-size:18px}
+  .ltr .grg-partcard.ghost .grg-partname{font-size:16px}
+  .grg-flavour{font-size:13.5px;line-height:1.4}
+  .grg-dbrow{padding:7px 11px}
+  .grg-dbtxt{font-size:12.5px;line-height:1.35}
+  .grg-tierbadge{padding:4px 12px;font-size:11.5px}
+}
+@media (max-height:700px){
+  .grg-recap{font-size:14px;padding:8px 12px}
+  .ltr .grg-recap{font-size:13px}
+  .grg-partcard .grg-partname{font-size:19px}
+  .ltr .grg-partcard .grg-partname{font-size:17px}
+  .grg-flavour{font-size:12.5px}
+  .grg-bafrom{font-size:13px}.grg-bato{font-size:17px}
+  .grg-bacell{padding:6px 9px}
+}
+/* 1024x640, the smallest panel the project tests, in English \u2014 the longest copy
+   in the tightest box. These last few rules are what make it fit rather than
+   scroll; if a translation ever grows past them the cue takes over. */
+@media (max-height:660px){
+  /* Buy height back from the frame before taking it from the words. */
+  .grg-scrim{padding:10px}
+  .grg-reveal{padding:9px 16px;gap:7px}
+  .grg-recap{font-size:13.5px;line-height:1.4;padding:7px 11px}
+  .ltr .grg-recap{font-size:12.5px}
+  .grg-rev-scroll,.grg-revmain,.grg-revcol{gap:6px}
+  .grg-partcard{padding:8px 11px 9px;gap:4px}
+  .grg-minicv{max-width:104px}
+  .grg-dbrow{padding:6px 10px}
+  .grg-mini{gap:4px}
+  .grg-ministat{padding:3px 7px}
+  .grg-ghostnote{font-size:11.5px;line-height:1.3}
+  .ltr .grg-partcard .grg-partname{font-size:16px}
+  .ltr .grg-partcard.ghost .grg-partname{font-size:15px}
+}
 
 /* \u2500\u2500 Mode badge: championship vs practice \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .grg-mode{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:900;
@@ -27731,22 +27976,26 @@ void main() {
         onclick: () => opts.onExit?.()
       }, t("garage.freeplay.exit"));
       const recap = st.expert ? h("div.grg-recap", null, st.freeText) : h("div.grg-recap", null, sentenceNode(st.sel, { recap: true }));
-      return h(
-        "div.grg-scrim",
-        null,
+      const scroller = h(
+        "div.grg-rev-scroll",
+        {
+          tabindex: "0",
+          role: "region",
+          "aria-label": t("garage.reveal.region")
+        },
+        // Cause first, then effect. The prompt is reprinted here because the
+        // modal covers the board, and this is the exact moment the link matters.
+        h("div.label", null, t("garage.reveal.ask")),
+        recap,
+        specChips(r),
         h(
-          "div.panel-lift.grg-reveal.pop-in",
+          "div.grg-revmain",
           null,
+          // The thing they received, and — dimmed beside it — the thing a
+          // different prompt would have handed them instead.
           h(
-            "div.grg-rev-scroll",
+            "div.grg-revcol.a",
             null,
-            // Cause first, then effect. The prompt is reprinted here because the
-            // modal covers the board, and this is the exact moment the link matters.
-            h("div.label", null, t("garage.reveal.ask")),
-            recap,
-            specChips(r),
-            // The thing they received, and — dimmed beside it — the thing a
-            // different prompt would have handed them instead.
             h(
               "div.grg-cardrow",
               null,
@@ -27758,12 +28007,45 @@ void main() {
                 title: t(ghost.invite ? "garage.ghost.invite" : "garage.ghost.title"),
                 note: t(ghost.invite ? "garage.ghost.noteInvite" : "garage.ghost.note")
               })
-            ),
+            )
+          ),
+          // The numbers, and then the lesson. On a short panel this column sits
+          // beside the karts instead of below them — which is the whole reason the
+          // debrief stopped falling off the bottom edge.
+          h(
+            "div.grg-revcol.b",
+            null,
             h("div.label", null, t("garage.beforeafter")),
             beforeAfter(r),
             h("div.label", null, t("garage.debrief.title")),
             debriefPanel(r)
-          ),
+          )
+        )
+      );
+      const cue = h(
+        "div.grg-morecue",
+        { "aria-hidden": "true" },
+        h("div.grg-morepill", null, t("garage.reveal.more"), h("i", null, "\u2193"))
+      );
+      const body = h("div.grg-revbody", null, scroller, cue);
+      const syncCue = () => {
+        const hidden = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+        body.classList.toggle("has-more", hidden > 6);
+      };
+      scroller.addEventListener("scroll", syncCue, { passive: true });
+      if (typeof ResizeObserver === "function") {
+        const ro = new ResizeObserver(syncCue);
+        ro.observe(scroller);
+        for (const c of scroller.children) ro.observe(c);
+      }
+      requestAnimationFrame(syncCue);
+      return h(
+        "div.grg-scrim",
+        null,
+        h(
+          "div.panel-lift.grg-reveal.pop-in",
+          null,
+          body,
           h(
             "div.grg-revactions",
             null,

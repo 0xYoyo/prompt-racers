@@ -95,6 +95,10 @@ registerStrings({
     'garage.reveal.tokens': 'הרווחתם {n} טוקנים',
     'garage.reveal.install': 'התקנה והמשך',
     'garage.reveal.again': 'פרומפט אחר',
+    // The debrief is taller than a short school-laptop screen. When it is, the
+    // screen has to SAY so — a silent overflow reads as "the page is broken".
+    'garage.reveal.more': 'יש עוד — גללו למטה',
+    'garage.reveal.region': 'הסבר על הפרומפט שלכם',
     'garage.expert.toggle': 'מצב מומחה',
     'garage.expert.badge': 'לא חובה · גילאי ‎12+',
     'garage.expert.label': 'כותבים לבורג במילים שלכם',
@@ -210,6 +214,8 @@ registerStrings({
     'garage.reveal.tokens': 'You earned {n} tokens',
     'garage.reveal.install': 'Install and continue',
     'garage.reveal.again': 'A different prompt',
+    'garage.reveal.more': 'More below — scroll down',
+    'garage.reveal.region': 'What your prompt did',
     'garage.expert.toggle': 'Expert mode',
     'garage.expert.badge': 'optional · ages 12+',
     'garage.expert.label': 'Write to Boreg in your own words',
@@ -504,7 +510,9 @@ const GARAGE_CSS = `
 /* Reveal */
 .grg-scrim{position:absolute;inset:0;background:rgba(6,6,12,.66);backdrop-filter:blur(2px);
   display:flex;align-items:center;justify-content:center;padding:22px}
-.grg-reveal{width:min(1060px,96%);max-height:96%;padding:18px 24px 18px;
+/* max-height:100%, not 96%: the scrim's own 22px padding is already the breathing
+   room, and on a 640px panel the extra 4% was 24px of the debrief. */
+.grg-reveal{width:min(1060px,96%);max-height:100%;padding:18px 24px 18px;
   display:flex;flex-direction:column;gap:10px;overflow:hidden}
 .grg-tierbadge{align-self:flex-start;font-size:12.5px;font-weight:900;padding:6px 15px;
   border-radius:var(--r-pill);color:#2a1c00;
@@ -593,6 +601,7 @@ const GARAGE_CSS = `
 
 /* ── The debrief: one row per filled slot, one prompting idea each ───────── */
 .grg-debrief{display:flex;flex-direction:column;gap:7px}
+.grg-dbrow{padding-block:46px!important}
 .grg-dbrow{display:flex;gap:11px;align-items:flex-start;padding:9px 13px;border-radius:var(--r-s);
   background:rgba(255,255,255,.05);border:1px solid var(--stroke);
   border-inline-start:4px solid var(--rc1)}
@@ -607,8 +616,103 @@ const GARAGE_CSS = `
   background:rgba(255,194,71,.12);border:1px solid rgba(255,194,71,.28);
   border-radius:var(--r-pill);padding:4px 10px;white-space:nowrap}
 .grg-dbpts.zero{color:var(--txt-dim);background:rgba(255,255,255,.05);border-color:var(--stroke)}
-.grg-rev-scroll{overflow:auto;min-height:0;display:flex;flex-direction:column;gap:10px;
-  padding-inline-end:4px}
+/* ── The scrolling body of the debrief, and its "there is more" affordance ──
+   The debrief is the payoff of the whole educational core, and it is taller than
+   a 768px school laptop can show. It has always been inside a scrolling
+   box (overflow:auto), which is exactly the failure: it was cut mid-row with no
+   scrollbar (macOS/Chrome overlay scrollbars are invisible until you already
+   scroll), so a child saw a broken page rather than a scrollable one.
+   Two answers, both applied: cut the height (the two-column rule below, which
+   makes it FIT outright at most sizes) and, when it still overflows, say so —
+   a permanently visible gold scrollbar, a fade, and a labelled pill. */
+.grg-revbody{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+.grg-rev-scroll{overflow-y:auto;overflow-x:hidden;min-height:0;flex:1;
+  display:flex;flex-direction:column;gap:10px;
+  padding-inline-end:8px;scrollbar-gutter:stable;
+  scrollbar-width:thin;scrollbar-color:var(--gold-2) rgba(255,255,255,.10)}
+/* Not overlay scrollbars: this one has to be visible BEFORE the child scrolls. */
+.grg-rev-scroll::-webkit-scrollbar{width:10px}
+.grg-rev-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.08);border-radius:999px}
+.grg-rev-scroll::-webkit-scrollbar-thumb{background:var(--gold-2);border-radius:999px;
+  border:2px solid rgba(0,0,0,.35);box-shadow:0 0 10px rgba(255,194,71,.5)}
+.grg-rev-scroll:focus-visible{outline:3px solid var(--info);outline-offset:2px}
+.grg-morecue{position:absolute;inset-inline:0;inset-block-end:0;height:54px;pointer-events:none;
+  display:flex;align-items:flex-end;justify-content:center;opacity:0;transition:opacity .18s var(--ease);
+  background:linear-gradient(to bottom,rgba(12,10,18,0),rgba(12,10,18,.86))}
+.grg-revbody.has-more .grg-morecue{opacity:1}
+.grg-morepill{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:900;color:#2a1c00;
+  padding:5px 13px;border-radius:var(--r-pill);
+  background:linear-gradient(180deg,var(--gold-1),var(--gold-3));
+  box-shadow:0 0 20px rgba(255,194,71,.5)}
+.grg-morepill i{font-style:normal;animation:grg-nudge 1.1s var(--ease) infinite}
+@keyframes grg-nudge{0%,100%{transform:translateY(0)}50%{transform:translateY(3px)}}
+@media (prefers-reduced-motion:reduce){.grg-morepill i{animation:none}}
+/* Column layout inside the debrief. One column while there is room for it; on
+   any short panel the two halves sit side by side, which is what actually buys
+   back the ~300px the clipped section needed. */
+/* Nothing inside a scroll box may shrink: a squeezed flex item overflows its own
+   border box, which is how a section can be clipped while the container still
+   reports that everything fits. */
+.grg-rev-scroll>*{flex:none}
+.grg-revmain{display:flex;flex-direction:column;gap:10px}
+.grg-revcol{display:flex;flex-direction:column;gap:10px;min-width:0}
+@media (min-width:980px) and (max-height:1000px){
+  .grg-revmain{flex-direction:row;align-items:flex-start}
+  /* The lesson column is the tall one — English wraps more than Hebrew — so it
+     gets the extra width, not the karts (whose canvases are capped anyway). */
+  .grg-revcol.a{flex:1}
+  .grg-revcol.b{flex:1.28}
+}
+/* Short panels: trim the reveal's own chrome (padding, gaps, display sizes) —
+   never its content. Nothing here drops a sentence the debrief teaches with, and
+   no rule takes text below the 11px floor the layout gate enforces. */
+@media (max-height:790px){
+  .grg-scrim{padding:14px}
+  .grg-reveal{padding:13px 18px;gap:8px}
+  .grg-rev-scroll,.grg-revmain,.grg-revcol{gap:7px}
+  .grg-debrief{gap:6px}
+  .grg-mini{gap:5px}
+  .grg-ministat{padding:4px 8px}
+  .grg-recap{font-size:15px;padding:9px 13px;line-height:1.45}
+  .ltr .grg-recap{font-size:14px}
+  .grg-partcard{padding:10px 12px 11px;gap:5px}
+  .grg-partcard .grg-partname{font-size:22px;line-height:1.1}
+  .ltr .grg-partcard .grg-partname{font-size:19px}
+  .grg-partcard.ghost .grg-partname{font-size:18px}
+  .ltr .grg-partcard.ghost .grg-partname{font-size:16px}
+  .grg-flavour{font-size:13.5px;line-height:1.4}
+  .grg-dbrow{padding:7px 11px}
+  .grg-dbtxt{font-size:12.5px;line-height:1.35}
+  .grg-tierbadge{padding:4px 12px;font-size:11.5px}
+}
+@media (max-height:700px){
+  .grg-recap{font-size:14px;padding:8px 12px}
+  .ltr .grg-recap{font-size:13px}
+  .grg-partcard .grg-partname{font-size:19px}
+  .ltr .grg-partcard .grg-partname{font-size:17px}
+  .grg-flavour{font-size:12.5px}
+  .grg-bafrom{font-size:13px}.grg-bato{font-size:17px}
+  .grg-bacell{padding:6px 9px}
+}
+/* 1024x640, the smallest panel the project tests, in English — the longest copy
+   in the tightest box. These last few rules are what make it fit rather than
+   scroll; if a translation ever grows past them the cue takes over. */
+@media (max-height:660px){
+  /* Buy height back from the frame before taking it from the words. */
+  .grg-scrim{padding:10px}
+  .grg-reveal{padding:9px 16px;gap:7px}
+  .grg-recap{font-size:13.5px;line-height:1.4;padding:7px 11px}
+  .ltr .grg-recap{font-size:12.5px}
+  .grg-rev-scroll,.grg-revmain,.grg-revcol{gap:6px}
+  .grg-partcard{padding:8px 11px 9px;gap:4px}
+  .grg-minicv{max-width:104px}
+  .grg-dbrow{padding:6px 10px}
+  .grg-mini{gap:4px}
+  .grg-ministat{padding:3px 7px}
+  .grg-ghostnote{font-size:11.5px;line-height:1.3}
+  .ltr .grg-partcard .grg-partname{font-size:16px}
+  .ltr .grg-partcard.ghost .grg-partname{font-size:15px}
+}
 
 /* ── Mode badge: championship vs practice ───────────────────────────────── */
 .grg-mode{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:900;
@@ -1829,18 +1933,22 @@ export function garageScene(engine, opts = {}) {
     const recap = st.expert
       ? h('div.grg-recap', null, st.freeText)
       : h('div.grg-recap', null, sentenceNode(st.sel, { recap: true }));
-    return h('div.grg-scrim',
-      null,
-      h('div.panel-lift.grg-reveal.pop-in',
-        null,
-        h('div.grg-rev-scroll', null,
-          // Cause first, then effect. The prompt is reprinted here because the
-          // modal covers the board, and this is the exact moment the link matters.
-          h('div.label', null, t('garage.reveal.ask')),
-          recap,
-          specChips(r),
-          // The thing they received, and — dimmed beside it — the thing a
-          // different prompt would have handed them instead.
+    // The scrolling region is focusable on purpose: if the debrief still
+    // overflows on a short panel, a keyboard-only child must be able to reach it
+    // and page through it. It sits before the action buttons, so the focus order
+    // is still "read the explanation, then choose".
+    const scroller = h('div.grg-rev-scroll', {
+      tabindex: '0', role: 'region', 'aria-label': t('garage.reveal.region'),
+    },
+      // Cause first, then effect. The prompt is reprinted here because the
+      // modal covers the board, and this is the exact moment the link matters.
+      h('div.label', null, t('garage.reveal.ask')),
+      recap,
+      specChips(r),
+      h('div.grg-revmain', null,
+        // The thing they received, and — dimmed beside it — the thing a
+        // different prompt would have handed them instead.
+        h('div.grg-revcol.a', null,
           h('div.grg-cardrow', null,
             partCard(r, { deltas: displayDeltas(r), canvas: miniCanvasFor(0, r) }),
             partCard(ghost.res, {
@@ -1849,11 +1957,37 @@ export function garageScene(engine, opts = {}) {
               canvas: miniCanvasFor(1, ghost.res),
               title: t(ghost.invite ? 'garage.ghost.invite' : 'garage.ghost.title'),
               note: t(ghost.invite ? 'garage.ghost.noteInvite' : 'garage.ghost.note'),
-            })),
+            }))),
+        // The numbers, and then the lesson. On a short panel this column sits
+        // beside the karts instead of below them — which is the whole reason the
+        // debrief stopped falling off the bottom edge.
+        h('div.grg-revcol.b', null,
           h('div.label', null, t('garage.beforeafter')),
           beforeAfter(r),
           h('div.label', null, t('garage.debrief.title')),
-          debriefPanel(r)),
+          debriefPanel(r))));
+    const cue = h('div.grg-morecue', { 'aria-hidden': 'true' },
+      h('div.grg-morepill', null, t('garage.reveal.more'), h('i', null, '↓')));
+    const body = h('div.grg-revbody', null, scroller, cue);
+    // "There is more below" is a live fact, not a static decoration: it turns on
+    // only while something really is out of view, and off the moment the child
+    // reaches the end.
+    const syncCue = () => {
+      const hidden = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+      body.classList.toggle('has-more', hidden > 6);
+    };
+    scroller.addEventListener('scroll', syncCue, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(syncCue);
+      ro.observe(scroller);
+      for (const c of scroller.children) ro.observe(c);
+    }
+    requestAnimationFrame(syncCue);
+    return h('div.grg-scrim',
+      null,
+      h('div.panel-lift.grg-reveal.pop-in',
+        null,
+        body,
         h('div.grg-revactions', null,
           ...(freePlay ? [again, exit] : [install, again]),
           !freePlay && h('div.grg-tokgain', null, h('div.grg-coin'),

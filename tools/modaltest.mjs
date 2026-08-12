@@ -43,9 +43,67 @@ const vis = sel => page.evaluate(s=>[...document.querySelectorAll(s)].some(e=>
   e.offsetParent!==null && getComputedStyle(e).visibility!=='hidden' && +getComputedStyle(e).opacity>0.05), sel);
 const has = sel => page.evaluate(s=>document.querySelectorAll(s).length>0, sel);
 
+// ── POINTER INPUT, for the same reason keys go through the browser ──────────
+// `element.click()` proves only that a handler does the right thing. It cannot
+// see that the element is unreachable — covered by an overlay, or killed by
+// style.js's `#ui *{pointer-events:none}` (every clickable thing in the game has
+// to opt back in with `.on`). page.mouse.click() and page.touchscreen.tap()
+// hit-test a POINT, so they exercise the path a child's finger takes: if the
+// wrong element is on top, nothing happens, exactly as it would for the child.
+// Every negative assertion below ("this click must NOT answer") is therefore
+// paired with the same click succeeding once the blocker is gone — otherwise the
+// negative would pass just as happily against coordinates that hit nothing.
+const boxOf = async (sel, i=0) => page.evaluate((s,ix)=>{
+  const el=[...document.querySelectorAll(s)][ix];
+  if(!el) return null;
+  const r=el.getBoundingClientRect();
+  if(!r.width||!r.height) return null;
+  return {x:r.x+r.width/2, y:r.y+r.height/2, w:r.width, h:r.height};
+}, sel, i);
+const clickAt = async box => { if(box) await page.mouse.click(box.x, box.y); };
+const tapAt   = async box => { if(box) await page.touchscreen.tap(box.x, box.y); };
+// Everything a state transition is made of, from BOTH layers: the quiz system's
+// own state and the DOM the child is actually looking at. `via` is the one field
+// that is allowed to differ between a keyboard run and a pointer run — and it is
+// asserted to differ, so neither run can silently be the other one.
+const quizState = () => evalp(()=>{
+  const q = window.__DEBUG.engine.active.quiz;
+  const root = [...document.querySelectorAll('.quiz-root')].find(e=>e.classList.contains('show'));
+  const opts = root ? [...root.querySelectorAll('.quiz-opt')] : [];
+  const r = q.lastResult;
+  return {
+    phase: q.phase, id: q.currentId, frozen: q.frozen, scale: q.timeScale,
+    answered: !!root?.querySelector('.quiz-card.quiz-answered'),
+    marks: opts.map(o=>['ok','no','dim'].filter(c=>o.classList.contains(c)).join('+')).join('|'),
+    disabled: opts.map(o=>o.disabled?1:0).join(''),
+    verdict: root?.querySelector('.quiz-verdict')?.textContent.trim()||'',
+    why: (root?.querySelector('.quiz-why')?.textContent.trim()||'').slice(0,80),
+    hint: root?.querySelector('.quiz-hint')?.textContent.trim()||'',
+    result: r && { id:r.id, correct:r.correct, chosen:r.chosen, tokens:r.tokens, timedOut:r.timedOut },
+    tokens: window.__DEBUG.engine.active.state.tokens,
+    boosting: !!window.__DEBUG.engine.active.player.boosting,
+    input: window.__DEBUG.engine.active.input.enabled,
+    via: q.lastVia,
+  };
+});
+// first differing field, or '' — so a failure says WHICH transition drifted
+function stateDiff(a, b) {
+  for (const k of Object.keys(a)) {
+    if (k === 'via') continue;
+    if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return `${k}: ${JSON.stringify(a[k])} ≠ ${JSON.stringify(b[k])}`;
+  }
+  return '';
+}
+
+// `seen` = "this child has already met every one-time explainer". It has to
+// cover the QUIZ-box explainer as well as the token one: with a fresh save the
+// first question box in a race now teaches what a question box is before it asks
+// anything, so every section below that opens a quiz directly would otherwise be
+// looking at the explainer and reporting the panel missing.
 async function boot(seen, opts={}) {
   await page.goto('file://' + dist, { waitUntil: 'load' });
-  await page.evaluate(v => { localStorage.setItem('promptracers.v1', JSON.stringify(v ? {garageTokenIntroSeen:true} : {})); }, seen);
+  await page.evaluate(v => { localStorage.setItem('promptracers.v1', JSON.stringify(
+    v ? {garageTokenIntroSeen:true, quizBoxIntroSeen:true} : {})); }, seen);
   await page.reload({ waitUntil: 'load' });
   await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
   await page.evaluate(o=>window.__DEBUG.goto('race',{track:0,difficulty:1,...o}), opts);
@@ -291,13 +349,21 @@ for (let i=0;i<110;i++) {
   await page.evaluate(()=>window.__DEBUG.advance(2));
   const r = await page.evaluate(()=>({
     q: [...document.querySelectorAll('.quiz-root')].some(e=>e.classList.contains('show')),
-    tok: document.querySelectorAll('.grgtok-scrim').length > 0 }));
+    tok: document.querySelectorAll('.grgtok-scrim').length > 0,
+    // …and the first-question-box explainer, which on a fresh save stands in
+    // front of the first question. It freezes the world exactly like the other
+    // two, so the loop has to clear it or nothing else ever happens again.
+    intro: document.querySelectorAll('.qzint-scrim').length > 0 }));
   if (r.q) quizFrames++;
   if (r.tok) { tokFrames++; tokenSeen = true; if (r.q) stacked++; }
+  if (r.intro && r.q) stacked++;
+  if (r.intro) { await tap('Escape'); await wait(120); }
   // Both of these freeze the sim, so nothing else can happen until they are
   // gone: clear whichever is up and keep driving.
-  if (r.tok) { await tap('Escape'); await wait(120); }
-  else if (r.q) { await tap('Digit1'); await wait(60); await tap('Space'); await wait(60); }
+  else if (r.tok) { await tap('Escape'); await wait(120); }
+  // (the advance is the DISMISS_AFTER_S arming delay: the press that ANSWERED
+  //  must never also dismiss, so Space at phaseT≈0 is deliberately ignored)
+  else if (r.q) { await tap('Digit1'); await wait(60); await evalp(()=>window.__DEBUG.advance(1)); await tap('Space'); await wait(60); }
   if (tokenSeen && quizFrames >= 4) break;
 }
 ok('the token explainer fires during a race', tokenSeen, `${tokFrames} explainer samples`);
@@ -317,8 +383,9 @@ await boot(false, { autopilot:true });
   for (let s=0;s<140 && !up;s+=2) {
     await page.evaluate(()=>window.__DEBUG.advance(2));
     up = await vis('.grgtok-scrim');
-    if (!up && await vis('.quiz-root.show')) {
-      await tap('Digit1'); await wait(60); await tap('Space'); await wait(60);
+    if (!up && await vis('.qzint-scrim')) { await tap('Escape'); await wait(120); }
+    else if (!up && await vis('.quiz-root.show')) {
+      await tap('Digit1'); await wait(60); await evalp(()=>window.__DEBUG.advance(1)); await tap('Space'); await wait(60);
     }
   }
   ok('the token explainer is up', up);
@@ -329,6 +396,194 @@ ok('…and does not open the pause menu over it', !(await vis('.mn-dialog.pause'
 const ran = await page.evaluate(()=>{ const a=window.__DEBUG.engine.active, t0=a.state.raceTime;
   window.__DEBUG.advance(1); return a.state.raceTime-t0; });
 ok('the race is running again afterwards', ran > 0.5, `+${ran.toFixed(2)}s`);
+
+// ── 9. mouse and touch are the KEYBOARD's code path, not a second one ────
+// The quiz is answered with 1/2/3 and continued with Space, and Wave 4 added
+// click/tap for both. The risk is not that the pointer does nothing — it is that
+// the pointer gets its own quietly different implementation, which then drifts
+// (that is exactly how the `.quiz-opt` onclick came to skip the modal-registry
+// guard the key handler honoured). So this does not check "a click answers": it
+// runs the SAME question three times, once per input, and demands the resulting
+// state be identical field for field.
+console.log('\n  9. pointer parity: click and tap take the keyboard\'s path');
+async function runQuiz(via) {
+  await page.setViewport({ width:1366, height:768, hasTouch: via==='touch' });
+  await boot(true, { autopilot:true });
+  await evalp(()=>window.__DEBUG.advance(6));
+  await openQuiz(); await wait(80);
+  const opened = await vis('.quiz-root.show');
+  const box = await boxOf('.quiz-root.show .quiz-opt', 2);   // the THIRD option
+  if (via==='key') await tap('Digit3');
+  else if (via==='click') await clickAt(box);
+  else await tapAt(box);
+  await wait(100);
+  const answered = await quizState();
+  await evalp(()=>window.__DEBUG.advance(1));                // past the arming delay
+  if (via==='key') await tap('Space');
+  else {
+    const cont = await boxOf('.quiz-root.show .quiz-cont');
+    if (via==='click') await clickAt(cont); else await tapAt(cont);
+  }
+  await wait(100);
+  const resumed = { phase: await quizPhase(), gone: !(await has('.quiz-root.show')),
+                    input: await evalp(()=>window.__DEBUG.engine.active.input.enabled) };
+  return { opened, box, answered, resumed };
+}
+const K = await runQuiz('key');
+const C = await runQuiz('click');
+const Tp = await runQuiz('touch');
+// The precondition. Every assertion under this one is over these three samples;
+// if a run never reached a question, they would all compare `null` to `null` and
+// pass without testing anything.
+ok('all three runs actually reached a question',
+   K.opened && C.opened && Tp.opened && K.answered.id && K.answered.id === C.answered.id,
+   `question ${K.answered.id||'?'}`);
+ok('each run really used the input it claims',
+   K.answered.via==='key' && C.answered.via==='pointer' && Tp.answered.via==='pointer',
+   `${K.answered.via} / ${C.answered.via} / ${Tp.answered.via}`);
+ok('a real mouse click answers, and lands on the same state as 1/2/3',
+   K.answered.answered && stateDiff(K.answered, C.answered)==='', stateDiff(K.answered, C.answered)||'identical');
+ok('a real finger tap does too', Tp.answered.answered && stateDiff(K.answered, Tp.answered)==='',
+   stateDiff(K.answered, Tp.answered)||'identical');
+ok('…including the freeze and the reward', K.answered.scale===0 && C.answered.scale===0 && Tp.answered.scale===0
+   && K.answered.tokens===C.answered.tokens,
+   `scale 0, tokens ${K.answered.tokens}`);
+ok('the continue BUTTON resumes exactly as Space does',
+   K.resumed.phase==='resume' && C.resumed.phase===K.resumed.phase && Tp.resumed.phase===K.resumed.phase
+   && C.resumed.gone===K.resumed.gone && C.resumed.input===K.resumed.input,
+   `${K.resumed.phase} / ${C.resumed.phase} / ${Tp.resumed.phase}`);
+ok('answer targets are big enough for a child\'s finger', K.box.h>=44 && K.box.w>=240,
+   `${Math.round(K.box.w)}×${Math.round(K.box.h)}px`);
+await page.setViewport({ width:1366, height:768 });
+
+// The registry guard belongs to the STATE MACHINE, not to whatever geometry
+// happens to sit on top. A real click at the option's own coordinates is the
+// honest test of that — and it is paired with the same click working seconds
+// later, so it cannot pass by hitting nothing.
+await boot(true, { autopilot:true });
+await evalp(()=>window.__DEBUG.advance(6));
+await openQuiz(); await wait(80);
+const optBox = await boxOf('.quiz-root.show .quiz-opt', 0);
+await tap('Escape'); await wait(220);
+ok('the pause menu is over the quiz', await vis('.mn-dialog.pause') && await has('.quiz-root.show'));
+await clickAt(optBox); await wait(140);
+ok('a real click where the option IS cannot answer a quiz behind the pause menu',
+   !(await has('.quiz-root.show .quiz-card.quiz-answered')));
+await tap('Escape'); await wait(220);
+await clickAt(optBox); await wait(140);
+ok('…and the very same click answers once the pause menu is gone',
+   await has('.quiz-root.show .quiz-card.quiz-answered'));
+// Same story for the continue button, and for the arming delay that stops the
+// press which ANSWERED from also dismissing.
+const contBox = await boxOf('.quiz-root.show .quiz-cont');
+ok('the continue button is a finger-sized target too', contBox && contBox.h>=44,
+   contBox ? `${Math.round(contBox.w)}×${Math.round(contBox.h)}px` : 'missing');
+await clickAt(contBox); await wait(120);
+ok('a click on continue in the first fraction of a second does NOT dismiss',
+   await has('.quiz-root.show .quiz-card.quiz-answered'));
+await evalp(()=>window.__DEBUG.advance(1));
+await clickAt(contBox); await wait(120);
+ok('…and dismisses once the explanation has been up long enough',
+   !(await has('.quiz-root.show')) && (await quizPhase())==='resume');
+
+// RTL is the game's first direction and LTR is the toggle; a pointer target that
+// only works in one of them works for half the players.
+await boot(true, { autopilot:true, lang:'en' });
+await evalp(()=>window.__DEBUG.advance(6));
+await openQuiz(); await wait(80);
+ok('the page really is LTR for this run', (await evalp(()=>document.documentElement.dir))==='ltr');
+const enBox = await boxOf('.quiz-root.show .quiz-opt', 1);
+await clickAt(enBox); await wait(140);
+ok('a click answers in LTR (English) too', await has('.quiz-root.show .quiz-card.quiz-answered'),
+   enBox ? `${Math.round(enBox.w)}×${Math.round(enBox.h)}px` : 'missing');
+
+// ── 10. the first question box explains itself, exactly once ─────────────
+console.log('\n  10. the one-time first-question-box explainer');
+const introFlag = () => evalp(()=>{
+  try { return !!JSON.parse(localStorage.getItem('promptracers.v1')||'{}').quizBoxIntroSeen; }
+  catch { return null; } });
+await boot(false, { autopilot:true });          // a save that has never seen anything
+await evalp(()=>window.__DEBUG.advance(4));
+ok('a fresh save has not seen the question-box explainer', (await introFlag())===false);
+// (a) it DEFERS behind anything already open, and does not burn its flag doing it
+await tap('Escape'); await wait(220);
+ok('another panel owns the screen', await vis('.mn-dialog.pause'));
+await openQuiz(); await wait(150);
+ok('a question box behind another panel opens NOTHING',
+   !(await vis('.qzint-scrim')) && !(await vis('.quiz-root.show')));
+ok('…and the one-time flag is left untouched, so the next box explains',
+   (await introFlag())===false);
+await tap('Escape'); await wait(220);
+await openQuiz(); await wait(150);
+ok('the first question box shows the explainer', await vis('.qzint-scrim'));
+ok('…instead of the question itself', !(await vis('.quiz-root.show')));
+ok('…and only now is the flag written', (await introFlag())===true);
+ok('…and the world is frozen behind it, input gated off, like any quiz panel',
+   await evalp(()=>window.__DEBUG.engine.active.quiz.frozen===true
+     && window.__DEBUG.engine.active.input.enabled===false));
+{
+  const a = await simSnap();
+  await evalp(()=>window.__DEBUG.advance(3));
+  const d = simDelta(a, await simSnap());
+  ok('…measured: ZERO sim steps while it is up', d.race===0 && d.lap===0 && d.move===0,
+     `race +${d.race.toFixed(3)}s, moved ${d.move.toFixed(3)}m`);
+}
+ok('it names both halves of what a box does', await evalp(()=>{
+  const txt=[...document.querySelectorAll('.qzint-p')].map(e=>e.textContent).join(' ');
+  return txt.length>40 && /טורבו|boost/i.test(txt) && /טוקנ|token/i.test(txt); }));
+// Its button is a pointer target too, and it leads STRAIGHT into the question
+// the box was for — the explainer is not a detour that costs the child the box.
+const goBox = await boxOf('.qzint-scrim .btn');
+ok('its button is a finger-sized target', goBox && goBox.h>=44,
+   goBox ? `${Math.round(goBox.w)}×${Math.round(goBox.h)}px` : 'missing');
+await clickAt(goBox); await wait(200);
+ok('clicking it leads straight into the question', await vis('.quiz-root.show'));
+ok('…and the explainer is gone', !(await vis('.qzint-scrim')));
+ok('…with the world still frozen for the question', await evalp(()=>
+  window.__DEBUG.engine.active.quiz.timeScale===0));
+// (b) exactly once — this race, and every race after a reload
+await tap('Digit1'); await wait(80);
+await evalp(()=>window.__DEBUG.advance(1));
+await tap('Space'); await wait(80);
+await evalp(()=>window.__DEBUG.advance(4));      // through the 3·2·1
+await openQuiz(); await wait(150);
+ok('the SECOND question box does not explain again',
+   !(await vis('.qzint-scrim')) && await vis('.quiz-root.show'));
+// The claim the explainer makes, checked against what the code actually pays.
+// A teaching screen that says something a child can see is false stops being
+// believed about anything else on it.
+{
+  const pay = await evalp(async ()=>{
+    const a=window.__DEBUG.engine.active, q=a.quiz, out=[];
+    q.close();
+    for (let i=0;i<9;i++) {
+      const t0=a.state.tokens;
+      q.openQuestion();
+      const root=[...document.querySelectorAll('.quiz-root')].find(e=>e.classList.contains('show'));
+      root.querySelectorAll('.quiz-opt')[i%3].click();
+      out.push({ correct:q.lastResult.correct, tokens:q.lastResult.tokens,
+                 banked:a.state.tokens-t0, boosting:!!a.player.boosting });
+      q.close();
+    }
+    return out;
+  });
+  const good = pay.filter(p=>p.correct), bad = pay.filter(p=>!p.correct);
+  ok('both outcomes were sampled', good.length>0 && bad.length>0,
+     `${good.length} right, ${bad.length} wrong`);
+  ok('a right answer really does pay tokens AND a turbo',
+     good.length>0 && good.every(p=>p.tokens>=3 && p.banked===p.tokens && p.boosting),
+     good.map(p=>`+${p.banked}`).join(' '));
+  ok('a wrong answer really does cost nothing',
+     bad.length>0 && bad.every(p=>p.tokens===0 && p.banked===0),
+     bad.map(p=>`${p.banked>=0?'+':''}${p.banked}`).join(' '));
+}
+await page.reload({ waitUntil: 'load' });
+await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+await page.evaluate(()=>window.__DEBUG.goto('race',{track:0,difficulty:1,autopilot:true}));
+await wait(300);
+await evalp(()=>window.__DEBUG.advance(4));
+await openQuiz(); await wait(150);
+ok('…nor does the next RACE, on the same save', !(await vis('.qzint-scrim')) && await vis('.quiz-root.show'));
 
 ok('no page errors', errs.length===0, errs[0]||'');
 console.log('  ' + '─'.repeat(74));

@@ -1,0 +1,16 @@
+import puppeteer from 'puppeteer-core';
+const b = await puppeteer.launch({headless:'new',executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',args:['--no-sandbox','--use-gl=swiftshader','--enable-unsafe-swiftshader','--mute-audio']});
+const p = await b.newPage(); await p.setViewport({width:1366,height:768});
+p.on('pageerror',e=>console.log('ERR',e.message));
+await p.goto('file:///Users/yoyopc/repos/kart-project/dist/index.html',{waitUntil:'load'});
+await p.waitForFunction('window.__DEBUG&&window.__DEBUG.ready===true');
+await p.evaluate(()=>window.__DEBUG.goto('race',{track:0,lang:'he',introCard:true}));
+console.log('quiz phase before', await p.evaluate(()=>window.__DEBUG.engine.active.quiz.phase));
+await p.evaluate(()=>window.__DEBUG.engine.active.quiz.openQuestion());
+console.log('after blocked open:', await p.evaluate(()=>({phase:window.__DEBUG.engine.active.quiz.phase, roots:[...document.querySelectorAll('.quiz-root')].map(e=>e.className), qz:document.querySelectorAll('.qzint-scrim').length})));
+await p.keyboard.press('Space');
+console.log('card gone?', await p.evaluate(()=>document.querySelectorAll('.ic-card').length));
+await p.evaluate(()=>window.__DEBUG.engine.active.quiz.openQuestion());
+await new Promise(r=>setTimeout(r,500));
+console.log('after open:', await p.evaluate(()=>({phase:window.__DEBUG.engine.active.quiz.phase, roots:[...document.querySelectorAll('.quiz-root')].map(e=>e.className+'|op:'+getComputedStyle(e).opacity+'|par:'+(e.offsetParent!==null)), qz:[...document.querySelectorAll('.qzint-scrim')].map(e=>'op:'+getComputedStyle(e).opacity+'|par:'+(e.offsetParent!==null))})));
+await b.close();
