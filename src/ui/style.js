@@ -182,11 +182,44 @@ export function injectStyles() {
 // ─────────────────────────────────────────────────────────────────────────────
 const _modals = new Set();
 
+// ── SUBSCRIPTION (Wave 4) ───────────────────────────────────────────────────
+// Anything that must react to "a panel owns the screen" now subscribes here
+// instead of being wired modal-by-modal. Added for audio ducking: the engine
+// and the world must go silent while ANY modal is up, and doing that at each
+// of the five call sites guarantees the sixth modal someone adds next wave
+// forgets. Subscribers are called with the current boolean whenever the set
+// transitions between empty and non-empty, and once immediately on subscribe.
+//
+// Deliberately still dependency-free: a Set, a Set of callbacks, no imports.
+const _modalSubs = new Set();
+let _lastAnyOpen = false;
+
+function _notifyModalChange() {
+  const any = _modals.size > 0;
+  if (any === _lastAnyOpen) return;
+  _lastAnyOpen = any;
+  for (const fn of _modalSubs) {
+    try { fn(any); } catch (e) { console.error(e); }
+  }
+}
+
+/**
+ * Subscribe to "is any modal open". Called immediately with the current value,
+ * then on every empty↔non-empty transition. Returns an unsubscribe function.
+ */
+export function onModalChange(fn) {
+  if (typeof fn !== 'function') return () => {};
+  _modalSubs.add(fn);
+  try { fn(_modals.size > 0); } catch (e) { console.error(e); }
+  return () => { _modalSubs.delete(fn); };
+}
+
 export function pushModal(id) {
   _modals.add(id);
+  _notifyModalChange();
   return () => popModal(id);
 }
-export function popModal(id) { _modals.delete(id); }
+export function popModal(id) { _modals.delete(id); _notifyModalChange(); }
 /** @param {string} [except] ignore this id — pass your own to ask about others. */
 export function modalOpen(except) {
   for (const m of _modals) if (m !== except) return true;
@@ -195,7 +228,7 @@ export function modalOpen(except) {
 /** Is this specific panel open? */
 export function modalHas(id) { return _modals.has(id); }
 /** Teardown safety valve: a disposed scene must not leave a phantom modal. */
-export function clearModals() { _modals.clear(); }
+export function clearModals() { _modals.clear(); _notifyModalChange(); }
 
 // Small helper used across UI modules: h('div.panel.row', {onclick}, ...children)
 export function h(sel, props, ...kids) {

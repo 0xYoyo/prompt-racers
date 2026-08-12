@@ -27,10 +27,7 @@ import * as THREE from 'three';
 import { bus } from '../core/bus.js';
 import { save } from '../core/save.js';
 import { makeRng } from '../core/rng.js';
-// style.js is deliberately dependency-free (see its modal-registry header), so
-// importing it here creates no cycle. `onModalChange` is the seam that makes the
-// modal duck automatic — see AudioSystem._modalDucked / setModalDuck.
-import { h, onModalChange, pushModal, popModal } from '../ui/style.js';
+import { h } from '../ui/style.js';
 import { registerStrings, t, num } from '../ui/i18n.js';
 
 // ── small maths helpers ──────────────────────────────────────────────────────
@@ -61,13 +58,8 @@ function softClipCurve(knee = 0.55, ceil = 0.97) {
   }
   return c;
 }
-// Gentle asymmetric saturation for the engine. Wave 4: `k` was 6, which is not a
-// warm saturator at all — tanh(6x)/tanh(6) has a slope of ~6 near zero, so the
-// stage was a 15 dB distortion boost that turned the oscillator stack into a
-// constant grating buzz. At k≈2 the slope near zero is ~2 and the curve only
-// rounds the peaks, which is what "warm" actually means. The asymmetry is kept:
-// it is what stops the tone sounding like a plain filtered synth pad.
-function driveCurve(k = 2) {
+// harder asymmetric drive for the engine — this is what makes a two-stroke rasp.
+function driveCurve(k = 6) {
   const n = 1024, c = new Float32Array(n), d = Math.tanh(k);
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
@@ -193,34 +185,13 @@ function buildMelody(theme, role) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Persistent engine voice. Allocated ONCE; every state change is an AudioParam
-// automation, never a new node.
-//
-// ── WAVE 4 REDESIGN ─────────────────────────────────────────────────────────
-// The Wave-3 voice was two detuned SAWS plus a square, through a heavy tanh(6)
-// drive, at a bus level of 0.32. Measured on the real build it sat at rms 0.080
-// at rpm 0.15 and only 0.101 at full throttle: a loud, constant, grating buzz
-// that barely acknowledged the throttle and covered the music and the SFX.
-// Three separate things were wrong, and all three are fixed here:
-//   1. TIMBRE. Saws + square + hard drive is an all-harmonics wall. The body is
-//      now two detuned TRIANGLES (odd harmonics, rolling off fast = warm) with a
-//      single quiet saw for something for the filter to bite on, and the square
-//      is down to a trace that only appears under strain. The drive is tanh(2).
-//   2. DYNAMICS. Output level was a function of load only, so idle and flat-out
-//      measured almost the same. It now scales with rpm as well, ~2.4x across
-//      the range, so a child hears the kart accelerate rather than just hearing
-//      a filter open.
-//   3. MIX. The engine is a CONTINUOUS bed under intermittent SFX and music, so
-//      it must sit well below both. Bus level 0.32 → ENGINE_BUS.
-//
-// Layers:
-//   triangle A + triangle B (detuned) → warm body
-//   sawtooth (quiet)                  → harmonic food for the resonant sweep
-//   square @ 2x (trace, strain-only)  → the two-stroke edge, now an accent
-//   sine sub @ 0.5x                   → weight
-//   band-passed noise                 → induction roar / air
-//   + a lowpassed noise bed           → off-track surface rumble
-// then a shared resonant lowpass whose cutoff sweeps with rpm — that sweep, not
-// distortion, is what now carries the "revving" sensation — and a soft drive.
+// automation, never a new node. Layers:
+//   saw A + saw B (detuned)  → body
+//   square @ 2x (quiet)      → the buzzy two-stroke edge
+//   sine sub @ 0.5x          → weight
+//   band-passed noise        → induction roar / air
+//   + a lowpassed noise bed  → off-track surface rumble
+// then a shared lowpass (cutoff tracks rpm) and a tanh drive stage.
 // Irregularity comes from two incommensurate LFOs on detune + amplitude, so the
 // pitch never sits perfectly still — that is the difference between an engine
 // and a test tone.

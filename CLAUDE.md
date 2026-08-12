@@ -21,6 +21,16 @@ Read DECISIONS.md, GAPS.md, README.md and skim progress.html before touching any
 - Maintain progress.html as you go. Log judgment calls in DECISIONS.md. Do not
   ask the user questions mid-wave. One smoothing agent at the end for
   copy/difficulty/art consistency, then STOP for the user's playtest.
+- MODEL POLICY, absolute: every subagent runs on **Opus**. Never spawn a
+  Fable-class subagent. If a subagent cannot be spawned as Opus, the lead does
+  that piece in the main thread instead.
+- FILE OWNERSHIP, absolute: each builder is given an explicit, exclusive list of
+  files it may edit, and the lists across a live batch must be disjoint —
+  including the gate files, which are what agents most often collide on. An
+  agent that needs a change outside its list REPORTS it to the lead rather than
+  making it. The lead owns scenes.js, style.js, save.js, package.json,
+  DECISIONS.md, GAPS.md and CLAUDE.md, and does all cross-module wiring.
+  This is what makes "many agents, one working tree" safe; see D25.
 
 ## GIT SAFETY — absolute, for every agent including critics
 

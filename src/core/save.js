@@ -14,7 +14,18 @@ const DEFAULTS = {
   expertUnlocked: false,
   bestLap: {},              // trackId -> ms
   muted: false,
+  volume: 0.75,             // master volume 0..1 — separate from `muted` (D31)
   championshipAsked: [],    // quiz question ids already asked THIS championship
+
+  // ── האוסף שלי (Wave 4) ─────────────────────────────────────────────────
+  // Deliberately OUTSIDE the championship reset. A badge is something the child
+  // earned once and keeps; a glossary term is something they have been taught.
+  // resetChampionship() in ui/menus.js clears the ledger and leaves these two
+  // alone; only the settings screen's full wipe (save.reset()) removes them.
+  badges: [],               // unlocked badge ids
+  glossary: [],             // unlocked glossary term ids
+  stats: {},                // lifetime counters the badges are measured against
+  funTitle: null,           // certificate title, chosen from PRESETS only
 };
 
 let state = load();

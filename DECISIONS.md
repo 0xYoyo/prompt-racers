@@ -376,3 +376,37 @@ not a balance test — it asserts the imbalance **exists**, so fixing the econom
 red and the fixer must come back and update it. A green tick that means less than it looks
 like is worse than a red one, and this wave produced three of them (the garage's 3D
 checks, modaltest's Escape checks, this).
+
+---
+
+# WAVE 4
+
+## D30 — Reading of six truncated passages in the Wave-4 brief
+The brief arrived with several sentences cut mid-word. Per D10's precedent (and the
+standing "no questions mid-wave" instruction) they are read here rather than asked
+about, so the reading is auditable and can be corrected in the playtest.
+
+| # | As received | Read as |
+|---|---|---|
+| 2 | "…(the הא + איך משחקים): steering arrows must point outward" | The controls legend wherever it appears — the title screen's key strip **and** the `איך משחקים` overlay. Both fixed. |
+| 6 | "Target: a winning,e max spend, so choosing where to be precise still matters." | Target: a winning **player still cannot afford the maximum garage spend**, so the choice of where to be precise still bites. This is D17's rule restated with quiz rewards now included. |
+| 9 | "Both paths through mod." | Both input paths (keys and pointer) go through **the same code path and the same modal-registry guards** — not two implementations that can drift. |
+| 11 | "Charming, two sentences, not preac" | not **preachy**. |
+| 12 | "answering a quiz about X how a hint of where to find them" | Answering a quiz about a topic unlocks that topic's term; **locked terms show a hint of where to find them**, not the definition. |
+| 15 | "an optional fun-title picker from PRESET options only (e.g. אלוף/ת ⟨cut⟩contest rule)" | Preset titles only, no free text — because free text is a personal-data entry point, and the contest rule forbids collecting any. The `אלוף/ת` form also confirms titles must be offered in both grammatical genders (D27). |
+
+## D31 — Ducking is a registry subscription, not five call sites
+Item 8 asks that engine and world audio stop while **any** modal is open, "for every
+current and future modal". Wiring that at each of the five existing modals guarantees
+the sixth one forgets — which is precisely the failure class D15 was created to end.
+
+`ui/style.js` therefore grows `onModalChange(fn)`: subscribers are called once
+immediately and then on every empty↔non-empty transition of the modal set. The
+registry stays a Set of ids plus a Set of callbacks and keeps its defining property of
+having **no imports of its own**, so audio can subscribe to it without creating a
+cycle. A modal id invented next wave ducks the audio without anyone remembering to
+wire it, and that property is gated rather than merely intended.
+
+Master volume is a **separate** save key from `muted`, not a replacement for it. A
+child who mutes and later unmutes must land back on the volume they chose, and a
+volume of 0 must not be indistinguishable from mute in the UI.
