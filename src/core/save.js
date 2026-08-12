@@ -22,6 +22,7 @@ const DEFAULTS = {
   // earned once and keeps; a glossary term is something they have been taught.
   // resetChampionship() in ui/menus.js clears the ledger and leaves these two
   // alone; only the settings screen's full wipe (save.reset()) removes them.
+  quizBoxIntroSeen: false,  // the one-time first-quiz-box explainer (race/quiz.js)
   badges: [],               // unlocked badge ids
   glossary: [],             // unlocked glossary term ids
   stats: {},                // lifetime counters the badges are measured against

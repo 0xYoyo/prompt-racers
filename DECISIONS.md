@@ -651,3 +651,50 @@ properties**, so a per-track accent passed as an inline `--var` silently fell ba
 on all three tracks; and a "nothing stacks on the card" assertion that checked only DOM
 visibility passed against a broken build because the quiz panel's fade-in had not yet
 reached a non-zero opacity — it now asserts on `quiz.phase` as well.
+
+## D36 — Two input paths, one funnel; and `.on` is a global, not a decoration
+The quiz gained full mouse/touch alongside 1/2/3 + Space. The requirement the brief
+actually cares about is that both go through **one code path**, because two
+implementations drift and only one of them ends up gated. `answer(slot, via)` and
+`dismiss(via)` are the single funnel; `via` is recorded and nothing else, so the
+registry guard, the freeze, the feedback state and the resume countdown are literally
+the same lines for both. Building it this way immediately surfaced a rule the keyboard
+respected and the pointer did not — the `DISMISS_AFTER_S` arming delay lived inside the
+key handler — which moved into `dismiss()`.
+
+**The bug this uncovered is the one worth recording.** The celebration flash added the
+class `.on` to a full-screen element. `.on` is not decorative: `ui/style.js` defines
+`#ui *{pointer-events:none}` and `#ui .on{pointer-events:auto}` as the global opt-in for
+interactivity, and it out-specifies the element's own `pointer-events:none`. So after
+every correct answer an invisible full-screen sheet covered the panel and swallowed every
+click: **a mouse or touch player could not press the continue button at all**, while the
+keyboard sailed straight through. It had been invisible for three waves because the game
+was keyboard-only. Renamed to `.fx`. The general form — *a shared utility class carries
+behaviour, so reusing it as a state marker silently grants that behaviour* — is why the
+gate now hit-tests the continue button rather than merely asserting it exists.
+
+Two gate lessons from the same round. A **real mouse click cannot catch a missing modal
+guard**, because the pause overlay swallows it by geometry — a programmatic `.click()` is
+what tests the policy, and a `page.mouse.click` is what tests the hit-testing; both are
+needed and neither substitutes. And a touch-target floor asserted at 1366×768 did **not**
+bite (padding alone makes the row ~47px there); it only bites at the height-bound
+1024×640, which is where it now lives.
+
+## D37 — A drift can be swallowed by a same-frame quiz turbo
+`driveFeedback()` emits at most one `drift:boost` per frame from the body's `last*`
+provenance fields, which record only the most recent boost. The quiz applies its turbo
+from `quiz.update()` while a drift release happens inside `simulate()`, so when both land
+in the same 1/60 frame the release's tier and source are overwritten and the drift is
+reported as `external` — lost entirely. Forced same-frame in a test: 19 real releases,
+0 counted.
+
+Real odds are one frame-width per answer, so this is rare rather than dangerous. It is
+fixed anyway, because it is the third instance of the same class in one wave — D35's
+rising-edge read, the chained-corner re-boost, and now this — and the class is "a
+per-frame observer sampling a state that can change more than once per frame". Rare bugs
+of a class you have already been bitten by twice are not rare, they are pending.
+
+`KartBody` now keeps a bounded `boostLog` and exposes `drainBoosts()`, returning every
+boost since the last call with its own provenance, oldest first. It returns a shared
+frozen empty array when there is nothing to report, because the common case is every
+frame and the per-frame-allocation ban applies.

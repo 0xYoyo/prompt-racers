@@ -17,6 +17,12 @@ import { getTrack, gridSlots } from '../track/trackdef.js';
 import { ChaseCamera } from './camera.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
+// Boost provenance log (see applyBoost/drainBoosts). Bounded because nothing
+// legitimately produces more than a couple of boosts in one 1/60 frame, and a
+// shared frozen empty array keeps the common "no boosts this frame" drain
+// allocation-free — the audio/particle path bans per-frame allocation.
+const BOOST_LOG_MAX = 8;
+const EMPTY_BOOSTS = Object.freeze([]);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
 // Frame-rate independent exponential approach. `l` is a rate in 1/seconds.
@@ -198,6 +204,10 @@ export class KartBody {
     // to watch. These three fields answer both, and are the only honest source
     // for anything that counts drifts.
     this.boostSeq = 0;          // +1 on EVERY applyBoost(); watch for a change
+    // Every boost since the consumer last drained, oldest first, so a frame
+    // that produces two boosts reports BOTH with their own provenance rather
+    // than only the last one. Drain with drainBoosts(); see applyBoost().
+    this.boostLog = [];
     this.lastBoostSource = 'none';   // 'drift' | 'external' | 'none' (no boost yet)
     this.lastBoostTier = 0;     // 1..3 for a drift release, 0 for anything else
     this.lastBoostStrength = 1; // the post-boostPower strength that was applied
@@ -329,8 +339,34 @@ export class KartBody {
     this.lastBoostSource = source === 'drift' ? 'drift' : 'external';
     this.lastBoostTier = source === 'drift' ? (tier | 0) : 0;
     this.lastBoostStrength = s;
+    // …and the `last*` fields alone are still not enough. A consumer polling
+    // once per frame sees only the MOST RECENT boost, so when a quiz turbo
+    // lands in the same 16ms frame as a drift release (the quiz applies its
+    // boost from quiz.update(), the release happens inside simulate()), the
+    // release's provenance is overwritten and the drift is reported as
+    // 'external' — lost entirely. Rare, one frame-width per answer, but it is
+    // the same "swallowed by an edge" class D35 was written to end, so it is
+    // closed the same way rather than left as a known-rare bug.
+    // Bounded: a frame cannot realistically produce more than a couple of
+    // boosts, and dropping the OLDEST keeps the newest provenance correct even
+    // in the pathological case.
+    this.boostLog.push({ seq: this.boostSeq, source: this.lastBoostSource, tier: this.lastBoostTier });
+    if (this.boostLog.length > BOOST_LOG_MAX) this.boostLog.shift();
     if (impulse) this._vLong = Math.min(this._vLong + impulse, this.p.topSpeed * s);
     return this;
+  }
+
+  /**
+   * Take every boost applied since the last call, oldest first, and clear the
+   * log. Returns `[{seq, source, tier}]`. A per-frame consumer must drain this
+   * rather than compare `boostSeq` and read `lastBoost*`, or it silently
+   * reports only the last boost of any frame that produced two.
+   */
+  drainBoosts() {
+    if (!this.boostLog.length) return EMPTY_BOOSTS;
+    const out = this.boostLog;
+    this.boostLog = [];
+    return out;
   }
 
   /** Convenience for boost pads laid on the track. */

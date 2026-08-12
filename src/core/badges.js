@@ -543,48 +543,49 @@ export function startBadgeTracker(opts = {}) {
 
   /* ── drift ────────────────────────────────────────────────────────────────
    * `drift:boost` is NOT the same thing as "the player drifted", and reading it
-   * as if it were is the bug this section exists to survive. Two facts, both
-   * verified in the tree:
+   * as if it were is the bug this section exists to survive. What went wrong
+   * before the D35 contract landed:
    *
-   *   1. race.js emits it on the `boosting` false→true edge with
+   *   1. race.js emitted it on the `boosting` false→true edge with
    *      `{ tier: player.driftTier }` — but kartphysics `_releaseDrift()` calls
-   *      applyBoost() and zeroes `driftTier` in the same call, so by the time
-   *      race.js reads the body the tier is ALWAYS 0. A first version of this
+   *      applyBoost() and zeroed `driftTier` in the same call, so by the time
+   *      race.js read the body the tier was ALWAYS 0. A first version of this
    *      file believed the payload; `drift-top` was therefore unearnable, and
    *      the unit test hid it by hand-emitting `{tier:3}` — a payload no code
-   *      path in the game produces.
+   *      path in the game produced.
    *   2. quiz.js calls `body.applyBoost()` on every correct answer, which
-   *      raises the same edge. Roughly 17 of the ~25 "drifts" a child would
+   *      raised the same edge. Roughly 17 of the ~25 "drifts" a child would
    *      have been credited with per championship were quiz answers.
    *
-   * So the tier is taken from `drift:tier` — which fires WHILE drifting, from a
-   * live value, and is correct today — and a boost only counts as a drift when
-   * a drift was actually charged and has just ended. The incoming Wave-4
-   * contract (`{ tier: 1-3 | 0, source: 'drift' | 'external' }`) is honoured
-   * first when it is present, so this reads correctly before and after that
-   * lands, and neither reading invents a payload.
+   * The contract now landed (D35): kartphysics stamps every boost with its
+   * provenance (`lastBoostSource` 'drift' | 'external', `lastBoostTier` = the
+   * tier actually spent) and race.js forwards it verbatim off a `boostSeq`
+   * counter. `source === 'drift'` is therefore the WHOLE discriminator.
+   *
+   * There is deliberately NO fallback for a payload without a source. The
+   * pre-contract heuristic (drift:tier peak + "a drift just ended") lived here
+   * only to bridge the old tree, and it mis-classified: a quiz turbo taken in
+   * the frames around a real release was counted as a drift. Dead compatibility
+   * code that silently mis-classifies is worse than none, so an unsourced or
+   * unknown-source payload now counts NOTHING — the safe direction — and
+   * tests/badges.test.mjs gates that no `bus.emit('drift:boost')` in src/ can
+   * produce one, so the dropped case cannot arrive unnoticed.
+   *
+   * `drift:tier` still feeds bestDriftTier and a driftPeak cross-check: the
+   * payload tier is authoritative, driftPeak only ever raises a released tier
+   * that the payload under-reports, and never turns a non-drift into a drift.
    */
   let driftPeak = 0;        // top tier reached by the drift in progress / just ended
-  let driftingNow = false;
 
-  on('drift:start', () => { driftingNow = true; driftPeak = 0; });
-  on('drift:end', () => { driftingNow = false; });
+  on('drift:start', () => { driftPeak = 0; });
   on('drift:tier', p => {
     const tier = Number(p.tier) || 0;
     if (tier > driftPeak) driftPeak = tier;
     if (tier > s.bestDriftTier) { s.bestDriftTier = tier; dirty = true; }
   });
   on('drift:boost', p => {
+    if (p.source !== 'drift') return;               // quiz turbo / boost pad / unsourced
     const tier = Number(p.tier) || 0;
-    const source = p.source;
-    // New contract wins outright where it exists.
-    const isDrift = source === 'drift' ? true
-      : source != null ? false
-      // Legacy: a real release emits drift:end in the SAME frame, before the
-      // boost, so `driftingNow` is already false and `driftPeak` still holds the
-      // charge. A quiz turbo has neither. That is the whole discriminator.
-        : (tier >= 1 || (driftPeak >= 1 && !driftingNow));
-    if (!isDrift) return;
     const released = Math.max(tier, driftPeak);
     driftPeak = 0;                                  // consumed; never paid twice
     s.driftBoosts++;
@@ -745,7 +746,10 @@ export function showBadgeToast(id, opts = {}) {
 export const CONSUMED_EVENTS = [
   'quiz:correct', 'quiz:wrong', 'quiz:timeout',
   'token:pickup',
-  'drift:start', 'drift:end', 'drift:tier', 'drift:boost',
+  // NOTE: `drift:end` is no longer consumed — the pre-D35 discriminator needed
+  // "a drift just ended", the source-stamped payload does not. It is listed
+  // nowhere on purpose: this array must describe what is really listened for.
+  'drift:start', 'drift:tier', 'drift:boost',
   'garage:built',
   'race:complete', 'race:finish',
   'championship:complete', 'championship:reset',

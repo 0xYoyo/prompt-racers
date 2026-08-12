@@ -222,28 +222,16 @@ try {
   // Measured on the racer-select screen for the same reason the silence check is
   // — the title screen's backdrop is a live raceScene that emits `kart:engine`
   // every frame, so anything measured there is measuring the game, not the test.
-  // Wave 4 measures 0.0256 / 0.0629 / x3.47. The ceilings sit ~1.7x above that,
+  // Wave 4 measures 0.026 / 0.065 / x2.5. The ceilings sit ~1.7x above that,
   // which is loose enough not to be flaky and far below every Wave-3 number.
+  // EVERY number below comes from the long-window meter and the single sweep
+  // underneath. An earlier version took each of these on its own 900ms window
+  // through the 2048-sample analyser, which reported the ratio as anywhere from
+  // x1.94 to x3.25 on one unchanged build — the same beat artifact described at
+  // __measureLF, and the reason the figures first written into D34 were wrong.
   const ENGINE_RMS_CEIL = 0.045;   // full throttle; was 0.1012 in Wave 3
   const ENGINE_PEAK_CEIL = 0.090;  // full throttle; was 0.1350 in Wave 3
   const ENGINE_RISE = 1.6;         // min loud/quiet rms ratio; Wave 3 managed 1.26
-
-  // Hold ONE rpm at 60Hz (race.js's rate — never 30ms, which aliases against the
-  // ~30Hz throttle in setEngineState and drops writes), let the ramp settle, then
-  // measure. Returns {rms, peak}.
-  const holdEngine = async (rpm, ms = 900) => {
-    await page.evaluate(() => window.__hush());
-    return page.evaluate(async ({ rpm, ms }) => {
-      const bus = window.__AUDIO.bus;
-      const iv = setInterval(() => bus.emit('kart:engine',
-        { rpm01: rpm, load: Math.min(1, 0.35 + rpm * 0.65), boosting: false, surface: 'asphalt' }), 16);
-      await new Promise(r => setTimeout(r, 500));
-      const out = await window.__measure(ms);
-      clearInterval(iv);
-      window.__AUDIO.stopEngine();
-      return out;
-    }, { rpm, ms });
-  };
 
   // ── 2b-i. THE SHAPE OF THE LEVEL CURVE ────────────────────────────────────
   // A ceiling at full throttle + a floor at full throttle + a ratio can ALL be
@@ -269,16 +257,19 @@ try {
       await page.evaluate(() => window.__hush());
       passes.push(await page.evaluate(({ r }) => window.__holdLF(r, 2500), { r }));
     }
-    shape.push({ rpm: r, rms: passes.reduce((s, m) => s + m.rms, 0) / passes.length });
+    shape.push({
+      rpm: r,
+      rms: passes.reduce((s, m) => s + m.rms, 0) / passes.length,
+      peak: passes.reduce((s, m) => s + m.peak, 0) / passes.length,
+    });
   }
   const curve = shape.map(s => `${s.rpm}:${s.rms.toFixed(4)}`).join('  ');
   ok('engine is audible at IDLE (not "fixed" by silencing it)',
     shape[0].rms > IDLE_FLOOR_RMS, `rpm 0 → ${shape[0].rms.toFixed(4)} > ${IDLE_FLOOR_RMS}`);
   ok('engine is clearly audible pulling away (rpm 0.3, vs music bed 0.027)',
     shape[2].rms > ROLL_FLOOR_RMS, `rpm 0.3 → ${shape[2].rms.toFixed(4)} > ${ROLL_FLOOR_RMS}`);
-  // From 0.15 up: rpm 0 vs 0.15 is deliberately flat (IDLE_FLOOR dominates there)
-  // and its measured step swings 0.99x–1.63x between page loads, so it is covered
-  // by its own floor above rather than by this chain.
+  // From rpm 0.15 up. rpm 0 vs 0.15 is deliberately flat (IDLE_FLOOR dominates
+  // there), so it is covered by its own floor above rather than by this chain.
   const dips = [];
   for (let i = 2; i < shape.length; i++) {
     if (shape[i].rms < shape[i - 1].rms * MONO_TOL) {
@@ -287,8 +278,9 @@ try {
   }
   ok('engine never gets QUIETER as the kart speeds up', dips.length === 0, dips.join('; ') || curve);
 
-  const engLow = await holdEngine(0.15);
-  const engHigh = await holdEngine(1.0);
+  // Same sweep, no extra measurements: buckets 0.15 and 1.0 are the quiet and
+  // loud ends of the curve just measured.
+  const engLow = shape[1], engHigh = shape[5];
   ok('engine is QUIET at full throttle (not the Wave-3 buzz)',
     engHigh.rms < ENGINE_RMS_CEIL && engHigh.peak < ENGINE_PEAK_CEIL,
     `rms ${engHigh.rms.toFixed(4)} < ${ENGINE_RMS_CEIL}, peak ${engHigh.peak.toFixed(3)} < ${ENGINE_PEAK_CEIL}`);

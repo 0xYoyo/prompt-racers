@@ -100,21 +100,22 @@ const FINISH_TOKENS = (finishMatch?.[1] || '').split(',').map(s => +s.trim()).fi
 const keepMatch = raceSrc.match(/const TOKEN_KEEP = ([\d.]+)/);
 const TOKEN_KEEP = +(keepMatch?.[1] ?? NaN);
 
-// ── which `drift:boost` contract is in the tree RIGHT NOW ───────────────────
-// Wave 4 is replacing it with `{ tier: 1-3 | 0, source: 'drift' | 'external' }`
-// fired off a boostSeq counter. Until that lands, race.js emits
-// `{ tier: player.driftTier }` on a rising edge — and that tier is ALWAYS 0.
-// The gate reads the tree instead of assuming either, so it tells the truth in
-// both states and cannot go on testing a contract that has been replaced.
+// ── the `drift:boost` contract (D35) ────────────────────────────────────────
+// kartphysics stamps every boost with `boostSeq` / `lastBoostTier` /
+// `lastBoostSource`, and race.js forwards it as
+// `{ tier: 1-3 | 0, source: 'drift' | 'external' }` off the seq counter. Before
+// it landed race.js emitted `{ tier: player.driftTier }` on the `boosting`
+// rising edge, and that tier was ALWAYS 0 (see §6). The dual-mode scaffolding
+// this file carried while that was in flight is gone: the gate now asserts the
+// landed contract is what is in the tree, so a revert fails loudly HERE instead
+// of quietly re-testing a world the game left.
 const boostEmitSrc = (raceSrc.match(/bus\.emit\('drift:boost',\s*\{[^}]*\}/) || [''])[0];
 const CONTRACT_LANDED = /source/.test(boostEmitSrc);
 
-/** The payload the game really puts on the bus, in whichever state it is in. */
+/** The payload the game really puts on the bus — see the §6 pins. */
 function DRIFT_BOOST_PAYLOAD(peakTier, source = 'drift') {
-  if (!CONTRACT_LANDED) return { tier: 0 };            // the measured legacy lie
   return { tier: source === 'drift' ? peakTier : 0, source };
 }
-const LEGACY_PAYLOAD_TIER = CONTRACT_LANDED;
 
 const QUESTIONS = [10, 8, 7];
 const TIER_OF_RACE = [1, 2, 3];
@@ -132,7 +133,9 @@ const TOPICS = ['whatai', 'prompt', 'tokens', 'iterate', 'mistakes', 'vibe'];
 function emitDriftRelease(peakTier) {
   bus.emit('drift:start', { tier: 0 });
   for (let t = 1; t <= peakTier; t++) bus.emit('drift:tier', { tier: t });
-  bus.emit('drift:end', { tier: LEGACY_PAYLOAD_TIER ? peakTier : 0 });
+  // The real drift:end carries tier 0: _releaseDrift() zeroes driftTier before
+  // race.js reads the body. Mirrored exactly, so the fast stream stays honest.
+  bus.emit('drift:end', { tier: 0 });
   bus.emit('drift:boost', DRIFT_BOOST_PAYLOAD(peakTier));
 }
 
@@ -548,52 +551,68 @@ console.log('\n  5. the unlock toast cannot own the screen');
 // exercises a payload no player can produce is worth less than no gate.
 //
 // So this section drives a real KartBody around a real track with the game's own
-// autopilot, mirrors race.js's emit block over the observed body state, and
-// feeds the result to the real tracker.
+// autopilot, runs RACE.JS'S OWN emit block over the resulting body state, and
+// feeds what lands on the bus to the real tracker.
+//
+// Round 2 wrote a hand-written MIRROR of that emit block instead. It went stale
+// the day the D35 contract landed — it hardcoded `source: 'drift'` on every
+// boost — so the quiz-turbo scenario below emitted 20 external boosts labelled
+// as drifts and the tracker counted all 20. That is round 1's invented-payload
+// hazard one level along: a copy of the emitter is still not the emitter. The
+// block is therefore EXTRACTED FROM race.js's source and executed. Source pins
+// are kept anyway (the extraction is by regex): they name the shape being
+// lifted, and fail loudly the moment race.js stops having it.
 
 console.log('\n  6. drift badges, driven through the real KartBody');
 
 {
-  // The mirror below reproduces race.js's emit block. If race.js changes shape,
-  // the mirror is a lie — so pin the lines being mirrored.
-  ok('race.js still emits drift:start/end from player.drifting',
-    /bus\.emit\(player\.drifting \? 'drift:start' : 'drift:end'/.test(raceSrc));
-  ok('race.js still emits drift:tier on a rising tier',
-    /player\.driftTier > prev\.tier && player\.driftTier > 0\) bus\.emit\('drift:tier'/.test(raceSrc));
-  ok('race.js still emits drift:boost when boosting turns on',
-    /if \(player\.boosting\) \{ bus\.emit\('drift:boost'/.test(raceSrc));
+  const prevSrc = (raceSrc.match(/\n {2}const prev = \{[^}]*\};/) || [''])[0];
+  const feedbackSrc = (raceSrc.match(/\n {2}function driveFeedback\(dt\) \{[\s\S]*?\n {2}\}/) || [''])[0];
 
-  /** race.js lines 566-580, applied to a body this test drives itself. */
-  function raceEmitMirror() {
-    const prev = { drifting: false, tier: 0, boosting: false };
-    let peak = 0;
-    return body => {
-      if (body.drifting !== prev.drifting) {
-        prev.drifting = body.drifting;
-        bus.emit(body.drifting ? 'drift:start' : 'drift:end', { tier: body.driftTier });
-      }
-      if (body.driftTier !== prev.tier) {
-        if (body.driftTier > prev.tier && body.driftTier > 0) {
-          bus.emit('drift:tier', { tier: body.driftTier });
-          peak = Math.max(peak, body.driftTier);
-        }
-        prev.tier = body.driftTier;
-      }
-      if (body.boosting !== prev.boosting) {
-        prev.boosting = body.boosting;
-        if (body.boosting) {
-          const payload = CONTRACT_LANDED
-            ? { tier: peak, source: 'drift' }        // what the new contract will carry
-            : { tier: body.driftTier };              // what the tree carries today
-          observed.push({ ...payload, peakSeen: peak });
-          bus.emit('drift:boost', payload);
-          peak = 0;
-        }
-      }
-    };
+  ok('race.js\'s prev + driveFeedback() were extracted for execution',
+    feedbackSrc.length > 400 && /const prev = \{/.test(prevSrc),
+    `prev ${prevSrc.length} chars, driveFeedback ${feedbackSrc.length} chars`);
+  ok('race.js still emits drift:start/end from player.drifting',
+    /bus\.emit\(player\.drifting \? 'drift:start' : 'drift:end'/.test(feedbackSrc));
+  ok('race.js still emits drift:tier on a rising tier',
+    /player\.driftTier > prev\.tier && player\.driftTier > 0\) bus\.emit\('drift:tier'/.test(feedbackSrc));
+  // THE SOURCE PIN. It flipped the day the D35 contract landed, and it flips
+  // again if anyone rewinds it — which is the only reason the stale mirror was
+  // ever noticed. Do not soften it into "emits drift:boost somehow".
+  ok('race.js emits drift:boost off boostSeq, with the body\'s own tier + source',
+    /if \(player\.boostSeq !== prev\.boostSeq\) \{/.test(feedbackSrc)
+    && /prev\.boostSeq = player\.boostSeq;/.test(feedbackSrc)
+    && /bus\.emit\('drift:boost', \{ tier: player\.lastBoostTier, source: player\.lastBoostSource \}\)/.test(feedbackSrc)
+    && /boostSeq: 0/.test(prevSrc));
+  ok('…and NOT off the `boosting` rising edge (the bug D35 removed)',
+    !/if \(player\.boosting\) \{ bus\.emit\('drift:boost'/.test(raceSrc));
+  ok('…and driveFeedback() is really called by the race loop, not dead code',
+    (raceSrc.match(/driveFeedback\(/g) || []).length >= 2,
+    `${(raceSrc.match(/driveFeedback\(/g) || []).length} occurrences`);
+  ok('the landed contract is the one in the tree (tier + source)', CONTRACT_LANDED, boostEmitSrc);
+
+  /** race.js's real driveFeedback(), lifted verbatim, given a body to watch. */
+  function realRaceFeedback() {
+    const factory = new Function('bus', 'chase', 'backdrop', `
+      let player = null;
+      ${prevSrc}
+      ${feedbackSrc}
+      return { setPlayer(p) { player = p; }, driveFeedback };
+    `);
+    return factory(bus, { shake() {} }, false);
   }
 
-  const observed = [];
+  /** Watch what actually lands on the bus, and what tier the drift had reached. */
+  function observeBoosts() {
+    const list = [];
+    let peak = 0;
+    const offs = [
+      bus.on('drift:tier', p => { peak = Math.max(peak, Number(p.tier) || 0); }),
+      bus.on('drift:boost', p => { list.push({ ...p, peakSeen: peak }); peak = 0; }),
+    ];
+    return { list, stop: () => offs.forEach(f => f()) };
+  }
+
   const { def, spline } = getTrack('cloud');
   const slots = gridSlots(spline, def, 8);
   // A quick, well-handling kart on the track with the longest corners, held in
@@ -605,11 +624,15 @@ console.log('\n  6. drift badges, driven through the real KartBody');
   });
 
   freshTracker();
-  const emit = raceEmitMirror();
+  const watch = observeBoosts();
+  const feedback = realRaceFeedback();
+  feedback.setPlayer(body);
   for (let i = 0; i < 60 * 90; i++) {
     body.update(1 / 60, autopilotInput(body, spline, { drift: true, look: 22 }));
-    emit(body);
+    feedback.driveFeedback(1 / 60);
   }
+  watch.stop();
+  const observed = watch.list;
 
   const topSeen = observed.filter(o => o.peakSeen >= 3).length;
   const s = getStats();
@@ -621,19 +644,12 @@ console.log('\n  6. drift badges, driven through the real KartBody');
   ok('the real physics reach the TOP drift tier', topSeen >= 1,
     `${topSeen} — if this is 0 the badge is unearnable by a real player`);
 
-  // The measurement that round 1 got wrong. Kept as a characterisation: it
-  // FAILS the day the physics/race contract is fixed, which forces whoever
-  // fixes it back here to update the expectation rather than leaving a gate
-  // that silently tests the old world.
-  if (!CONTRACT_LANDED) {
-    ok('CHARACTERISATION: every legacy drift:boost carries tier 0',
-      observed.every(o => o.tier === 0),
-      'kartphysics zeroes driftTier inside _releaseDrift — fix this and this line flips');
-  } else {
-    ok('the landed contract carries the real released tier',
-      observed.filter(o => o.peakSeen >= 1).every(o => o.tier === o.peakSeen));
-    ok('…and marks the source', observed.every(o => o.source === 'drift'));
-  }
+  // What round 1 got wrong, now asserted the other way round: before D35 every
+  // one of these carried tier 0, which is why drift-top was unearnable.
+  ok('the landed contract carries the real released tier',
+    observed.length > 0 && observed.filter(o => o.peakSeen >= 1).every(o => o.tier === o.peakSeen),
+    `${observed.filter(o => o.peakSeen >= 1).length} tiered releases checked`);
+  ok('…and marks the source', observed.length > 0 && observed.every(o => o.source === 'drift'));
 
   // THE POINT: whatever the payload says, the tracker must count real drifts.
   ok('the tracker counts every real drift release', s.driftBoosts === observed.length,
@@ -651,24 +667,91 @@ console.log('\n  6. drift badges, driven through the real KartBody');
   const BOOST = {};
   for (const [, k, v] of (quizBoostSrc?.[1] || '').matchAll(/(\w+):\s*([\d.]+)/g)) BOOST[k] = +v;
 
+  // Pinned because the whole discrimination rests on it: quiz.js must keep
+  // applying its turbo as a plain (source-defaulted, i.e. 'external') boost.
+  ok('quiz.js still applies its turbo as an unsourced/external applyBoost()',
+    /body\.applyBoost\(BOOST\.strength, BOOST\.duration, BOOST\.impulse\)/.test(quizSrc));
+
   freshTracker();
-  const emit2 = raceEmitMirror();
+  const watch2 = observeBoosts();
+  const feedback2 = realRaceFeedback();
   // Straight-line driving, no drift input, with a correct-answer turbo every
   // 3 seconds — exactly what a child who answers well and never drifts sees.
   const b2 = new KartBody({
     spline, stats: { speed: 3, accel: 3, handling: 3, weight: 3 },
     startSlot: slots[1], surface: def.surface,
   });
+  feedback2.setPlayer(b2);
   let turbos = 0;
   for (let i = 0; i < 60 * 60; i++) {
     if (i % 180 === 0) { b2.applyBoost(BOOST.strength, BOOST.duration, BOOST.impulse); turbos++; }
     b2.update(1 / 60, autopilotInput(b2, spline, { drift: false, look: 22 }));
-    emit2(b2);
+    feedback2.driveFeedback(1 / 60);
   }
+  watch2.stop();
   ok('a child who only answers quizzes triggers real boosts', turbos >= 5, `${turbos} turbos`);
+  // The assertion the stale mirror broke. It is only meaningful if the turbos
+  // REACHED the bus, so that is asserted too (a gate can pass vacuously).
+  ok('…and every one of them reaches the bus marked external',
+    watch2.list.length === turbos && watch2.list.every(o => o.source === 'external' && o.tier === 0),
+    `${watch2.list.length} boosts on the bus: ${[...new Set(watch2.list.map(o => o.source))].join(', ')}`);
   ok('…and earns NO drift badges from them',
     !badges().includes('drift-first') && getStats().driftBoosts === 0,
     `driftBoosts ${getStats().driftBoosts}`);
+
+  // A drift release and a quiz turbo INTERLEAVED: the case the deleted legacy
+  // heuristic got wrong (it read the drift's charge onto the turbo that landed
+  // just after it). Both are driven through the real body and the real emit
+  // block; exactly one drift may be counted.
+  freshTracker();
+  const watch3 = observeBoosts();
+  const feedback3 = realRaceFeedback();
+  const b3 = new KartBody({
+    spline, stats: { speed: 5, accel: 5, handling: 5, weight: 1 },
+    startSlot: slots[2], surface: def.surface,
+  });
+  feedback3.setPlayer(b3);
+  let drifts3 = 0, turbos3 = 0, turboAt = -1;
+  for (let i = 0; i < 60 * 40; i++) {
+    // A correct answer 5 frames after each release — a click cannot land on the
+    // same frame as the release often, but it lands DURING the boost it starts,
+    // which is precisely when driftPeak used to still be warm.
+    if (i === turboAt) { b3.applyBoost(BOOST.strength, BOOST.duration, BOOST.impulse); turbos3++; }
+    const seqBefore = b3.boostSeq;
+    b3.update(1 / 60, autopilotInput(b3, spline, { drift: true, look: 22 }));
+    if (b3.boostSeq !== seqBefore && b3.lastBoostSource === 'drift') { drifts3++; turboAt = i + 5; }
+    feedback3.driveFeedback(1 / 60);
+  }
+  watch3.stop();
+  ok('the interleaved scenario really produced both kinds of boost',
+    drifts3 >= 3 && turbos3 >= 3, `${drifts3} drift releases, ${turbos3} turbos`);
+  ok('a turbo landing right after a release is still not a drift',
+    getStats().driftBoosts === drifts3,
+    `tracker ${getStats().driftBoosts} vs ${drifts3} real releases (+${turbos3} turbos)`);
+
+  // The legacy `source == null` branch is GONE (it could not tell the two apart
+  // above). An unsourced payload must therefore pay nothing — and nothing in
+  // src/ may be able to emit one, or badges would silently stop counting.
+  freshTracker();
+  bus.emit('drift:start', { tier: 0 });
+  bus.emit('drift:tier', { tier: 3 });
+  bus.emit('drift:end', { tier: 0 });
+  bus.emit('drift:boost', { tier: 3 });                 // no source: unreachable in-game
+  ok('an unsourced drift:boost counts nothing (legacy branch deleted)',
+    getStats().driftBoosts === 0 && getStats().driftBoostsTop === 0,
+    `${getStats().driftBoosts} drifts`);
+  {
+    const emits = [];
+    for (const f of execSync('grep -rl "drift:boost" src/', { cwd: root, encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean)) {
+      for (const [, args] of read(f).matchAll(/bus\.emit\(\s*'drift:boost'\s*,([\s\S]{0,160}?)\)\s*;/g)) {
+        emits.push({ f, args });
+      }
+    }
+    ok('…and every drift:boost emitter in src/ carries a source',
+      emits.length > 0 && emits.every(e => /\bsource\s*:/.test(e.args)),
+      emits.map(e => e.f).join(', ') || 'NO EMITTER FOUND — this scan is asserting nothing');
+  }
 
   // Finally: the fast helper used by the calibration must emit what reality does.
   freshTracker();
