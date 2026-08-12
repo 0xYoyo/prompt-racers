@@ -95,7 +95,11 @@ import { applyTheme } from '../gfx/sky.js';
 
 registerStrings({
   he: {
-    'quiz.badge': 'שאלת פרומפט',
+    // "שאלת פרומפט" named one of the six topics (quiz.topic.*) as if it were all
+    // of them, and it was the only surface still using that name: the new
+    // explainer says "שאלה אחת על AI", the badge conditions say "שאלה במרוץ" and
+    // the glossary hints say "שאלה בנושא … במרוץ". One thing, one name (D27).
+    'quiz.badge': 'שאלת AI',
     'quiz.hint': 'בוחרים עם {k}',
     'quiz.correct': 'נכון!',
     'quiz.reward': 'טורבו ועוד {n} טוקנים',
@@ -140,7 +144,7 @@ registerStrings({
     'quiz.intro.go': 'קדימה לשאלה! (רווח)',
   },
   en: {
-    'quiz.badge': 'Prompt question',
+    'quiz.badge': 'AI question',
     'quiz.hint': 'Choose with {k}',
     'quiz.correct': 'Correct!',
     'quiz.reward': 'Boost and {n} tokens',

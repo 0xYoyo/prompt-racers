@@ -95,7 +95,9 @@ registerStrings({
     'learn.cert.downloadFail': 'הדפדפן הזה לא מאפשר שמירה. אפשר לצלם מסך.',
 
     /* ---- did-you-know ---- */
-    'learn.fact.title': 'הידעת?',
+    // Plural, like the intro card's chip (race/introcard.js 'intro.know') and
+    // like every other line in the game (D27). It was the one הידעת singular left.
+    'learn.fact.title': 'הידעתם?',
     'learn.fact.1': 'מודל שפה לא "יודע" עובדות — הוא מנחש איזו מילה הכי מתאימה לבוא עכשיו.',
     'learn.fact.2': 'אותה שאלה בדיוק יכולה לקבל תשובה אחרת בכל פעם, כי בבחירת המילה יש קצת אקראיות.',
     'learn.fact.3': 'טוקן הוא לא בהכרח מילה שלמה — לפעמים הוא חצי מילה, ולפעמים רק פסיק.',

@@ -98,7 +98,10 @@ registerStrings({
     'garage.reveal.again': 'פרומפט אחר',
     // The debrief is taller than a short school-laptop screen. When it is, the
     // screen has to SAY so — a silent overflow reads as "the page is broken".
-    'garage.reveal.more': 'יש עוד — גללו למטה',
+    // "גללו" was the last imperative left in the game's own voice, and a Hebrew
+    // plural imperative is the masculine form — the exact thing D27 exists to
+    // keep out. Impersonal present, like ui/collection.js's own 'col.more'.
+    'garage.reveal.more': 'יש עוד — גוללים למטה',
     'garage.reveal.region': 'הסבר על הפרומפט שלכם',
     'garage.expert.toggle': 'מצב מומחה',
     'garage.expert.badge': 'לא חובה · גילאי ‎12+',

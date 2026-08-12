@@ -368,7 +368,14 @@ export const BADGE_STRINGS = {
     'badge.champ-finish.cond': 'מסיימים אליפות שלמה — שלושה מרוצים',
     'badge.champ-podium3.name': 'שלוש פעמים על הפודיום',
     'badge.champ-podium3.cond': 'מסיימים בשלושת הראשונים בכל שלושת המרוצים',
-    'badge.champ-win.name': 'אלופי העונה',
+    // אלוף/ת, not אלופי: the two other "champion" badges in this very table are
+    // 'אלוף/ת ההחלקות' and 'אלוף/ת הפרומפטים', and the certificate's title picker
+    // is written in the same slashed form (D30 #15). The house-voice plural
+    // (D27) is a plural of ADDRESS — "you do X" said without gender — not a
+    // claim that the player is several people; every one of these badges names
+    // the single child holding it, so the trophy badge follows its two siblings
+    // rather than standing alone in the masculine plural.
+    'badge.champ-win.name': 'אלוף/ת העונה',
     'badge.champ-win.cond': 'מסיימים אליפות במקום הראשון',
   },
   en: {
@@ -402,7 +409,8 @@ export const BADGE_STRINGS = {
     'badge.champ-finish.cond': 'Finish a whole championship — three races',
     'badge.champ-podium3.name': 'Podium Hat-trick',
     'badge.champ-podium3.cond': 'Finish top three in all three races',
-    'badge.champ-win.name': 'Season Champions',
+    // Singular, like 'Drift Champion' and 'Prompt Champion' two rows above it.
+    'badge.champ-win.name': 'Season Champion',
     'badge.champ-win.cond': 'Finish a championship in first place',
   },
 };

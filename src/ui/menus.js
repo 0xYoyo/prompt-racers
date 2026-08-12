@@ -239,7 +239,10 @@ registerStrings({
     'menu.set.wipeAsk': 'למחוק את כל ההתקדמות?',
     'menu.set.wipeWhat': 'מוחקים הכול: האליפות, הטוקנים והחלקים — וגם המדליות והמילון שבאוסף שלכם. אין דרך חזרה.',
     'menu.set.wipeYes': 'כן, למחוק הכול',
-    'menu.set.wipeNo': 'לא, להשאיר',
+    // Same words as the twin confirm's 'menu.newChamp.no' — the two modals are
+    // deliberately read side by side, and the safe button was an infinitive on
+    // one and the house-voice present plural on the other.
+    'menu.set.wipeNo': 'לא, משאירים',
 
     // menu.pause.* is registered by ui/pause.js, which owns that screen.
 
