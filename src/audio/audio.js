@@ -381,9 +381,9 @@ class EngineVoice {
     // BACKWARDS as the kart speeds up. Monotonicity is gated; this is the term
     // that would break it.
     sq(this.lp.frequency, clamp((300 + Math.pow(rpm, 1.25) * 2350 * (boost ? 1.35 : 1) * (0.75 + 0.4 * load)
-      + 120 * strain) * lerp(1, 0.55, coast), 140, 5200));
-    sq(this.lp.Q, (boost ? 3.2 : lerp(1.2, 2.4, rpm)) + 0.4 * strain);
-    sq(this.drive.gain, lerp(0.32, 0.52, load) * (boost ? 1.12 : 1) * lerp(1, 0.75, coast));
+      + 420 * strain) * lerp(1, 0.55, coast), 140, 5200));
+    sq(this.lp.Q, (boost ? 3.2 : lerp(1.2, 2.4, rpm)) + 0.9 * strain);
+    sq(this.drive.gain, (lerp(0.32, 0.52, load) + 0.14 * strain) * (boost ? 1.12 : 1) * lerp(1, 0.75, coast));
     // the square layer IS the strain: buzzy odd harmonics when it is working hard,
     // and essentially absent the rest of the time
     sq(this.sqr.g.gain, clamp(0.018 + 0.055 * strain - 0.012 * coast, 0, 0.09));

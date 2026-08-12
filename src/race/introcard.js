@@ -240,29 +240,23 @@ export function introContent(def, lang = null) {
  *                 and by nothing else. Covers shot.mjs, layoutcheck, modaltest
  *                 and flowtest's P0 gates, all of which jump straight into a
  *                 race, without any of them having to know this file exists.
- *   • webdriver — an automated browser is driving the page. This one is not
- *                 belt-and-braces, it is load-bearing: flowtest's PLAYABILITY
- *                 slice reaches a race by CLICKING the real menu buttons, so it
- *                 never calls `__DEBUG.goto` and `_headless` is still false —
- *                 the card blocked it at "countdown completed, kart is moving,
- *                 phase=intro" and took thirteen downstream checks with it. A
- *                 tool that drives the real UI is indistinguishable from a child
- *                 by every in-game signal there is; `navigator.webdriver` is the
- *                 one honest difference, and it is not `window.__DEBUG` (which
- *                 D3 forbids game code from reading).
- *                 FOR THE LEAD: the durable version of this is one line in
- *                 flowtest's playability slice — either `introCard:false` on the
- *                 race it starts, or a Space press after "reaches race scene",
- *                 which would also let that slice gate the card on the real
- *                 player path. When that lands, this clause can be deleted.
- * An explicit `opts.introCard` boolean overrides all of it in both directions,
+ *
+ * There is deliberately NO `navigator.webdriver` clause. The builder added one,
+ * because flowtest's playability slice reaches a race by CLICKING the real menu
+ * buttons — it never calls `__DEBUG.goto`, so `_headless` is false and the card
+ * blocked it at "countdown completed, kart is moving, phase=intro". Sniffing
+ * webdriver made that green, at the price that NO automated gate would ever again
+ * see the card on the path a real child takes: production behaviour and gated
+ * behaviour would have permanently diverged, on the one screen every race opens
+ * with. The honest fix was to teach flowtest to dismiss the card the way a child
+ * does, which is now in `playerBeat()` alongside the other blocking modals.
+ * An explicit `opts.introCard` boolean overrides everything in both directions,
  * which is how the gate drives the real built game through the real card.
  */
 export function introCardEnabled(opts = {}, engine = null) {
   if (typeof opts.introCard === 'boolean') return opts.introCard;
   if (opts.backdrop || opts.autopilot) return false;
   if (engine && engine._headless) return false;
-  if (typeof navigator !== 'undefined' && navigator.webdriver) return false;
   return true;
 }
 

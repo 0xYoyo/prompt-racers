@@ -615,3 +615,39 @@ machine-perfect line will still occasionally win race 1 outright. Tightening it 
 gradient that matters more (`SLOT_STRETCH_EASY = 1.7` buys 2.27 at 100% but slides 85% back to
 4.8 and collapses the race1/race2 ladder). The struggling child's gradient was chosen over the
 last tenth of a place at the top.
+
+## D35 — The intro card, and a gate-sniffing shortcut that was rejected
+Each race now opens on a welcome card: the track's name at display weight and one
+`הידעתם` line tying that track's theme to AI (data / neural networks / cloud computing).
+It registers as `'intro'` and behaves like the one-time explainers rather than like the
+quiz: it **defers** if anything else already owns the screen (a welcome has nothing to
+lose, and stacking one on a panel a child is still reading is the Wave-2 failure the
+registry exists to end), and nothing stacks on **it** — the scrim swallows pointer events
+and it takes Escape in the capture phase, so Escape dismisses the card instead of reaching
+`input.js` and opening pause behind it. `pause.js` now refuses over `'intro'` alongside
+`'token'`/`'meet'`, for their reason: it freezes the sim, it is short, and there is no
+moving kart to rescue a child from.
+
+**The rejected shortcut is the part worth recording.** The card broke `flowtest`'s
+playability slice at *"countdown completed, kart is moving — phase=intro"*, taking thirteen
+downstream checks with it. That slice reaches a race by **clicking the real menu buttons**,
+so it never calls `__DEBUG.goto` and the existing `engine._headless` opt-out did not apply.
+The builder's fix was a `navigator.webdriver` check, argued as load-bearing: a tool driving
+the real UI is indistinguishable from a child by every in-game signal there is.
+
+It was correct that it worked, and it has been **removed anyway**. Sniffing for the test
+harness would have meant that no automated gate ever again sees the card on the path a real
+child takes — production behaviour and gated behaviour permanently divergent, on the one
+screen every single race opens with, and green for exactly that reason. That is the
+"green tick that means less than it looks like" failure D29 was written about, installed
+deliberately. The honest fix was one line in `flowtest`'s `playerBeat()`, which already
+dismisses every other blocking modal the way a child would; the card joins that list, and
+so does the quiz's new first-box explainer. `flowtest --only=play` is green through the
+real card, on the real player path.
+
+Two implementation traps found by mutation and screenshot rather than by review, both worth
+knowing: `h()` applies styles with `Object.assign`, which **cannot set CSS custom
+properties**, so a per-track accent passed as an inline `--var` silently fell back to gold
+on all three tracks; and a "nothing stacks on the card" assertion that checked only DOM
+visibility passed against a broken build because the quiz panel's fade-in had not yet
+reached a non-zero opacity — it now asserts on `quiz.phase` as well.

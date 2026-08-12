@@ -515,6 +515,24 @@ await clickAt(enBox); await wait(140);
 ok('a click answers in LTR (English) too', await has('.quiz-root.show .quiz-card.quiz-answered'),
    enBox ? `${Math.round(enBox.w)}×${Math.round(enBox.h)}px` : 'missing');
 
+// The size check above is taken at 1366×768, where an option row is already
+// ~47px tall from its own padding — so the min-block-size floor is doing no work
+// there and deleting it changes nothing (measured: that mutant passed every
+// check). A target check has to be taken where it can FAIL. 1024×640 is this
+// project's height-bound case, and there the floor is the only thing between a
+// child's fingertip and a ~30px row.
+await page.setViewport({ width:1024, height:640 });
+await boot(true, { autopilot:true });
+await evalp(()=>window.__DEBUG.advance(6));
+await openQuiz(); await wait(80);
+const smallBox = await boxOf('.quiz-root.show .quiz-opt', 0);
+ok('answers are STILL finger-sized at the height-bound 1024×640',
+   smallBox && Math.round(smallBox.h)>=44,
+   smallBox ? `${Math.round(smallBox.w)}×${Math.round(smallBox.h)}px` : 'missing');
+await clickAt(smallBox); await wait(140);
+ok('…and a tap there still answers', await has('.quiz-root.show .quiz-card.quiz-answered'));
+await page.setViewport({ width:1366, height:768 });
+
 // ── 10. the first question box explains itself, exactly once ─────────────
 console.log('\n  10. the one-time first-question-box explainer');
 const introFlag = () => evalp(()=>{

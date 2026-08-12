@@ -1759,6 +1759,71 @@ export function previewCorner(engine) { return previewCornerFor(engine, 'oasis')
 export function previewCornerCircuit(engine) { return previewCornerFor(engine, 'circuit'); }
 export function previewCornerCloud(engine) { return previewCornerFor(engine, 'cloud'); }
 
+/**
+ * THE SIGNAGE FRAME: the chase camera, at the point on the lap where the
+ * roadside curriculum reads largest. Exists so "can a child read this?" is a
+ * question anyone can answer by LOOKING, not only by trusting the numbers in
+ * tests/signage.test.mjs — the sizing bug this frame was added for survived a
+ * round of review precisely because every existing preview was a static pose
+ * that happened to stand close to a board.
+ */
+export function previewSigns(engine) { return previewSignsFor(engine, 'oasis'); }
+export function previewSignsCircuit(engine) { return previewSignsFor(engine, 'circuit'); }
+export function previewSignsCloud(engine) { return previewSignsFor(engine, 'cloud'); }
+
+function previewSignsFor(engine, id) {
+  const ctx = baseScene(engine, id);
+  return wrap(engine, ctx, (camera, track, rig) => {
+    const sp = track.spline;
+    // Sign panel centres, in world space.
+    const pts = [];
+    track.group.updateMatrixWorld(true);
+    track.group.traverse(o => {
+      if (!o.isMesh || o.name !== 'signage') return;
+      const pos = o.geometry.attributes.position;
+      for (let q = 0; q < pos.count / 4; q += 2) {          // one per board
+        const c = new THREE.Vector3();
+        for (let k = 0; k < 4; k++) {
+          c.add(new THREE.Vector3().fromBufferAttribute(pos, q * 4 + k).applyMatrix4(o.matrixWorld));
+        }
+        pts.push(c.multiplyScalar(0.25));
+      }
+    });
+    // CHASE_PRESETS.chase at rest, walked round the lap: keep the pose where a
+    // board is both in frame and closest.
+    const FOV = 62, DIST = 5.5, HGT = 3.25;
+    const half = Math.tan((FOV * Math.PI / 180) / 2) * (16 / 9);
+    let bestT = 0, bestScore = 0;
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < 600; i++) {
+      const t = i / 600;
+      const fr = sp.frameAt(t);
+      const eye = new THREE.Vector3(fr.pos.x - fr.tan.x * DIST, fr.pos.y + HGT, fr.pos.z - fr.tan.z * DIST);
+      for (const p of pts) {
+        tmp.subVectors(p, eye);
+        const fwd = tmp.x * fr.tan.x + tmp.z * fr.tan.z;
+        if (fwd < 8) continue;
+        const side = Math.abs(tmp.x * -fr.tan.z + tmp.z * fr.tan.x);
+        if (side > fwd * half * 0.8) continue;               // outside the frame
+        // Ignore anything nearer than 20 m: a board at arm's length proves
+        // nothing about the roadside curriculum, and framing one is how the
+        // sizing miss went unnoticed. This frame is about the MID-GROUND read.
+        if (tmp.length() < 20) continue;
+        const score = 1 / tmp.length();
+        if (score > bestScore) { bestScore = score; bestT = t; }
+      }
+    }
+    const fr = sp.frameAt(bestT);
+    camera.fov = FOV; camera.updateProjectionMatrix();
+    camera.position.set(fr.pos.x - fr.tan.x * DIST, fr.pos.y + HGT, fr.pos.z - fr.tan.z * DIST);
+    const near = sp.offsetPoint((bestT + 9 / sp.length) % 1, 0);
+    const far = sp.offsetPoint((bestT + 24 / sp.length) % 1, 0);
+    camera.lookAt(near.x * 0.76 + far.x * 0.24, near.y * 0.76 + far.y * 0.24 + 0.15,
+      near.z * 0.76 + far.z * 0.24);
+    rig.setShadowFocus(near);
+  });
+}
+
 function previewCornerFor(engine, id) {
   const ctx = baseScene(engine, id);
   return wrap(engine, ctx, (camera, track, rig) => {

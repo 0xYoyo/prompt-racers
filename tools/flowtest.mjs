@@ -51,7 +51,12 @@ try {
     // Blocking one-time modals FIRST — they pause the sim, and the quiz container
     // (.quiz-root) is always in the DOM, so checking quizzes first short-circuits
     // forever and the run silently stalls.
-    for (const sel of ['.grgtok-scrim', '.grg-meet-scrim', '[data-onetime]']) {
+    // '.qzint-scrim' is the Wave-4 first-quiz-box explainer and '.intro-scrim'
+    // the pre-race welcome card. Both freeze the sim exactly as the first-token
+    // explainer does, so both stall the whole run if the gate does not dismiss
+    // them the way a child would. This list is the single reason a new blocking
+    // modal must be added here the day it ships.
+    for (const sel of ['.grgtok-scrim', '.grg-meet-scrim', '.qzint-scrim', '.ic-scrim', '[data-onetime]']) {
       const scrim = document.querySelector(sel);
       if (visible(scrim)) {
         const b = scrim.querySelector('button');

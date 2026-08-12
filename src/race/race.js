@@ -158,10 +158,21 @@ export function raceScene(engine, opts = {}) {
   });
 
   // AI visuals. Distant opponents use the cheap LOD so eight karts stay in budget.
+  //
+  // The opponents buy garage parts on races 2-3 (D33's `aiPartTier`), and half
+  // the argument for that change was legibility: the child should SEE the
+  // rivals upgrading alongside them, which is what makes the garage read as the
+  // thing that matters. That argument was false until this line — every
+  // opponent mesh was built with `parts: null`, so they drove tier-1/tier-2
+  // hardware and were drawn stock.
+  const aiVisualParts = field.partTier ? toVisualParts({
+    engine: field.partTier, tires: field.partTier,
+    wing: field.partTier, chassis: field.partTier,
+  }) : null;
   const aiKarts = [];
   for (const k of fieldKarts(field)) {
     const mk = (engine.q.propDensity < 0.5 ? createKartLOD : createKart)(
-      { racer: k.racer, parts: null, engine, lod: engine.q.propDensity < 0.5 ? 1 : 0 });
+      { racer: k.racer, parts: aiVisualParts, engine, lod: engine.q.propDensity < 0.5 ? 1 : 0 });
     scene.add(mk.group);
     aiKarts.push({ ...k, mesh: mk });
   }
@@ -562,7 +573,7 @@ export function raceScene(engine, opts = {}) {
   }
 
   // ── feedback: turn physics state changes into bus events ────────────────
-  const prev = { drifting: false, tier: -1, boosting: false, wallHit: false, kartHit: false, offTrack: false };
+  const prev = { drifting: false, tier: -1, boosting: false, boostSeq: 0, wallHit: false, kartHit: false, offTrack: false };
   function driveFeedback(dt) {
     void dt;
     if (backdrop) return;   // a menu backdrop must never make engine noise
@@ -575,10 +586,22 @@ export function raceScene(engine, opts = {}) {
       if (player.driftTier > prev.tier && player.driftTier > 0) bus.emit('drift:tier', { tier: player.driftTier });
       prev.tier = player.driftTier;
     }
-    if (player.boosting !== prev.boosting) {
-      prev.boosting = player.boosting;
-      if (player.boosting) { bus.emit('drift:boost', { tier: player.driftTier }); chase.shake(0.35, 0.25); }
+    // Watch the boost SEQUENCE, not the `boosting` rising edge, and read the
+    // tier off the body's recorded provenance rather than off `driftTier`.
+    // Three bugs lived in the two lines this replaces (D35):
+    //   • `_releaseDrift()` zeroes `driftTier` in the same call that starts the
+    //     boost, so every drift:boost the game has ever emitted carried tier 0;
+    //   • quiz.js calls `applyBoost()` on a correct answer, raising the same
+    //     edge, so quiz turbos were indistinguishable from drifts;
+    //   • an edge on `boosting` cannot see a release that lands while a
+    //     previous boost is still running — chained corners, i.e. exactly the
+    //     skill the drift reward exists to celebrate, emitted nothing.
+    if (player.boostSeq !== prev.boostSeq) {
+      prev.boostSeq = player.boostSeq;
+      bus.emit('drift:boost', { tier: player.lastBoostTier, source: player.lastBoostSource });
+      chase.shake(0.35, 0.25);
     }
+    prev.boosting = player.boosting;
     if (player.wallHit && !prev.wallHit) { bus.emit('kart:collide', { kind: 'wall', speed: player.speed }); chase.shake(0.6, 0.3); }
     prev.wallHit = !!player.wallHit;
     if (player.kartHit && !prev.kartHit) { bus.emit('kart:collide', { kind: 'kart', speed: player.speed }); chase.shake(0.3, 0.2); }
