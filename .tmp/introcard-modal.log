@@ -53,3 +53,8 @@
   [32m✓[0m …and dismisses it once the pause menu is gone              
 
   5. integration: the beacons themselves
+  [32m✓[0m a quiz beacon opens a panel while driving                  
+  [32m✓[0m …and a beacon-opened quiz freezes the world too            
+
+  6. no repeats across the championship
+  [32m✓[0m a race draws distinct questions                            mistakes-private-info, iterate-stop-point, tokens-not-words…

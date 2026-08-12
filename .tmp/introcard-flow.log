@@ -34,3 +34,19 @@
   [32m✓[0m C#1 no "undefined" anywhere in the podium      [2mclean[0m
   [32m✓[0m C#1 podium total matches the player row        [2mtotal 24[0m
   [32m✓[0m C#2 each podium step shows its own racer's kart [2mkart:zuzi kart:nitzotz kart:plada[0m
+  [32m✓[0m C#3 tie 24–24 (player takes it): table follows the tie-break [2m1.ניצוץ 24*  2.זוזי 24[0m
+  [32m✓[0m C#3 tie 24–24 (player takes it): header place === table place [2mtable P1 · "כל הכבוד, ניצוץ! לקחתם את גביע מרוץ הפרומפטים."[0m
+  [32m✓[0m C#3 tie 24–24 (rival takes it): table follows the tie-break [2m1.זוזי 24  2.ניצוץ 24*[0m
+  [32m✓[0m C#3 tie 24–24 (rival takes it): header place === table place [2mtable P2 · "סיימתם את האליפות במקום השני, ניצוץ. מרוץ יפה!"[0m
+  [32m✓[0m C#3b tie 21–21 is broken by WINS, not by the final race [2mפלדה 22, זוזי 21, ניצוץ 21  (want פלדה 22, זוזי 21, ניצוץ 21 — zuzi has 2 wins, nitzotz the better final race)[0m
+  [32m✓[0m C#3c dead heat (points, wins AND final race all level) → the PLAYER takes the higher spot [2mme זוזי P2 18pts · rival ניצוץ P3 18pts[0m
+  [32m✓[0m C#3d an unknown racerId falls back to a real roster racer — exactly one row is the player [2m1 highlighted row(s): ניצוץ[0m
+  [32m✓[0m C#3d ...and the total, the header and the certificate all name THAT racer [2mtotal=24 playerRow=24 congrats="סיימתם את האליפות במקום השני, ניצוץ. מרוץ יפ"[0m
+  [32m✓[0m C#4 podium CTA opens the certificate           
+  [32m✓[0m C#4 certificate quotes the player's best prompt [2m"מנוע קליל שמאיץ מהר ביציאה מפנייה, בלי ל…"[0m
+  [32m✓[0m C#4 certificate names what was learned         
+  [32m✓[0m C#4 certificate → main menu                    [2mok, scene=menu[0m
+  [32m✓[0m C#5 new championship clears the whole ledger   [2mrace=0 results=0 tokens=0 parts=0 bestPrompt=cleared[0m
+  [32m✓[0m C#5 new championship lands on racer select, not a black screen [2mscene=select, 8 cards, 5 buttons[0m
+  [32m✓[0m C#5 championshipsDone counted exactly once     [2mchampionshipsDone=1[0m
+  [32m✓[0m C#6 finished championship offers no "continue" [2mהגדרות | איך נבנה המשחק הזה? | אליפות חדשה[0m

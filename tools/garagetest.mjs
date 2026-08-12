@@ -812,7 +812,7 @@ console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'
           // scroll": the debrief's kart canvases can still be settling, and a cue
           // that is on while content genuinely remains is telling the truth.
           const leftAtEnd = end.sh - end.ch - end.scrollTop;
-          if (end.hasMore && leftAtEnd <= 8) issues.push('still says "more below" at the bottom');
+          if (end.hasMore && leftAtEnd <= 8) issues.push(`still says "more below" at the bottom (top ${Math.round(end.scrollTop)} of ${end.sh - end.ch}, opacity ${end.cueOpacity})`);
         }
         ok(`${tag}: the explanation is readable (${mode})`, issues.length === 0, issues.join(' · ') || `${m.sh}px of content in ${m.ch}px`);
         ok(`${tag}: the explanation is keyboard-reachable, before the buttons`,

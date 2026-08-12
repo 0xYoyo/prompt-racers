@@ -63,3 +63,12 @@
   6. no repeats across the championship
   [32m✓[0m a race draws distinct questions                            mistakes-private-info, iterate-stop-point, tokens-not-words…
   [32m✓[0m the same seed draws the same questions without askedIds    
+  [32m✓[0m askedIds are never drawn again                             no overlap
+  [32m✓[0m …and the pool is still healthy                             28 questions eligible
+
+  7. the one-time explainers
+  [32m✓[0m the token explainer fires during a race                    1 explainer samples
+  [32m✓[0m quiz panels were actually sampled                          4 quiz samples
+  [32m✓[0m …and the explainer never lands on a live quiz              4 quiz samples, 0 stacked
+
+  8. Escape belongs to the topmost panel

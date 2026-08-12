@@ -20,8 +20,14 @@
 // in-memory when localStorage is missing. ui/ is deliberately NOT imported here
 // (it pulls in three).
 // ═══════════════════════════════════════════════════════════════════════════
+import { readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import * as THREE from 'three';
 import { bus } from '../src/core/bus.js';
 import { save } from '../src/core/save.js';
+import { getTrack, gridSlots } from '../src/track/trackdef.js';
+import { KartBody, DRIFT_TIERS } from '../src/kart/kartphysics.js';
 import {
   BADGES, BADGE_IDS, GLOSSARY, GLOSSARY_IDS, ICONS, HARD_BADGE_IDS,
   BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS,
@@ -55,16 +61,37 @@ const badges = () => save.read('badges') || [];
 const terms = () => save.read('glossary') || [];
 
 /* ── the measured event stream ────────────────────────────────────────────── */
-// Every number here comes from the codebase, not from a guess:
-//   • questions per race 10 / 8 / 7          — DECISIONS.md D28, stopwatched
-//   • token pickups ~15 per race             — tests/economy.test.mjs
-//   • quiz reward 3 / 4 / 5 by tier          — quiz.js REWARD_TOKENS
-//   • finish bonus 6 for a win, 3 for last   — race.js FINISH_TOKENS
-//   • drift boosts ~12 per race              — a conservative read of a lap that
-//     hits four corners hard over three laps
+// The calibration below is only worth anything if it is measured against the
+// economy the game ACTUALLY has. The first version of this file copied
+// REWARD_TOKENS and FINISH_TOKENS into local literals; another agent is
+// rebalancing the economy this wave, and a copy would have gone on asserting a
+// calibration that no longer described the game, in green — which is D29's
+// failure exactly. So the constants are READ OUT OF THEIR OWNING MODULES (the
+// same technique tests/economy.test.mjs uses), the parse is asserted, and the
+// simulated stream is DERIVED from them.
+//
+// Two numbers cannot be read because no constant holds them:
+//   • questions per race 10 / 8 / 7 — DECISIONS.md D28, stopwatched on the built
+//     game. There is no constant; the quiz draws against beacons and cooldowns.
+//   • token pickups ~15 per race — a measurement, governed by race.js's
+//     TOKEN_KEEP thinning factor. That factor IS pinned below, so if the pickup
+//     yield is retuned this gate fails and says to re-measure, rather than
+//     quietly carrying a stale number.
+const quizSrc = read('src/race/quiz.js');
+const raceSrc = read('src/race/race.js');
+
+const rewardMatch = quizSrc.match(/const REWARD_TOKENS = \{([^}]*)\}/);
+const REWARD = {};
+for (const [, k, v] of (rewardMatch?.[1] || '').matchAll(/(\d+)\s*:\s*(\d+)/g)) REWARD[+k] = +v;
+
+const finishMatch = raceSrc.match(/const FINISH_TOKENS = \[([^\]]*)\]/);
+const FINISH_TOKENS = (finishMatch?.[1] || '').split(',').map(s => +s.trim()).filter(n => !Number.isNaN(n));
+
+const keepMatch = raceSrc.match(/const TOKEN_KEEP = ([\d.]+)/);
+const TOKEN_KEEP = +(keepMatch?.[1] ?? NaN);
+
 const QUESTIONS = [10, 8, 7];
 const TIER_OF_RACE = [1, 2, 3];
-const REWARD = { 1: 3, 2: 4, 3: 5 };
 const PICKUPS_PER_RACE = 15;
 const BOOSTS_PER_RACE = 12;
 const TOPICS = ['whatai', 'prompt', 'tokens', 'iterate', 'mistakes', 'vibe'];

@@ -283,13 +283,13 @@ export const BADGE_STRINGS = {
     'badge.quiz-15.cond': 'עונים נכון על ‎15 שאלות',
     'badge.quiz-40.name': 'מוח על',
     'badge.quiz-40.cond': 'עונים נכון על ‎40 שאלות',
-    'badge.tokens-50.name': 'אספן טוקנים',
+    'badge.tokens-50.name': 'אוצר טוקנים',
     'badge.tokens-50.cond': 'אוספים ‎50 טוקנים בסך הכול',
     'badge.tokens-200.name': 'ארנק כבד',
     'badge.tokens-200.cond': 'אוספים ‎200 טוקנים בסך הכול',
     'badge.drift-first.name': 'החלקה ראשונה',
     'badge.drift-first.cond': 'מסיימים החלקה אחת ומקבלים טורבו',
-    'badge.drift-25.name': 'מלך ההחלקות',
+    'badge.drift-25.name': 'אלוף/ת ההחלקות',
     'badge.drift-25.cond': 'מסיימים ‎25 החלקות עם טורבו',
     'badge.drift-top.name': 'טורבו סגול',
     'badge.drift-top.cond': 'מחזיקים החלקה עד הדרגה הגבוהה ביותר',
@@ -297,7 +297,7 @@ export const BADGE_STRINGS = {
     'badge.prompt-good.cond': 'כותבים לבורג פרומפט באיכות ‎55 ומעלה',
     'badge.prompt-80.name': 'פרומפט מדויק',
     'badge.prompt-80.cond': 'כותבים לבורג פרומפט באיכות ‎80 ומעלה',
-    'badge.prompt-max.name': 'אלוף הפרומפטים',
+    'badge.prompt-max.name': 'אלוף/ת הפרומפטים',
     'badge.prompt-max.cond': 'מגיעים לאיכות ‎90 ומעלה — רק במצב מומחה',
     'badge.prompt-expert.name': 'מצב מומחה',
     'badge.prompt-expert.cond': 'כותבים פרומפט במילים שלכם במצב מומחה',
@@ -317,13 +317,13 @@ export const BADGE_STRINGS = {
     'badge.quiz-15.cond': 'Answer 15 questions correctly',
     'badge.quiz-40.name': 'Super Brain',
     'badge.quiz-40.cond': 'Answer 40 questions correctly',
-    'badge.tokens-50.name': 'Token Collector',
+    'badge.tokens-50.name': 'Token Treasure',
     'badge.tokens-50.cond': 'Collect 50 tokens in total',
     'badge.tokens-200.name': 'Heavy Wallet',
     'badge.tokens-200.cond': 'Collect 200 tokens in total',
     'badge.drift-first.name': 'First Drift',
     'badge.drift-first.cond': 'Finish one drift and get a boost',
-    'badge.drift-25.name': 'Drift King',
+    'badge.drift-25.name': 'Drift Champion',
     'badge.drift-25.cond': 'Finish 25 drifts with a boost',
     'badge.drift-top.name': 'Purple Boost',
     'badge.drift-top.cond': 'Hold a drift all the way to the top tier',
@@ -541,15 +541,54 @@ export function startBadgeTracker(opts = {}) {
   // resets every race.
   on('token:pickup', () => { s.tokensPickups++; s.tokensLifetime++; bump(); });
 
-  /* ── drift ────────────────────────────────────────────────────────────── */
+  /* ── drift ────────────────────────────────────────────────────────────────
+   * `drift:boost` is NOT the same thing as "the player drifted", and reading it
+   * as if it were is the bug this section exists to survive. Two facts, both
+   * verified in the tree:
+   *
+   *   1. race.js emits it on the `boosting` false→true edge with
+   *      `{ tier: player.driftTier }` — but kartphysics `_releaseDrift()` calls
+   *      applyBoost() and zeroes `driftTier` in the same call, so by the time
+   *      race.js reads the body the tier is ALWAYS 0. A first version of this
+   *      file believed the payload; `drift-top` was therefore unearnable, and
+   *      the unit test hid it by hand-emitting `{tier:3}` — a payload no code
+   *      path in the game produces.
+   *   2. quiz.js calls `body.applyBoost()` on every correct answer, which
+   *      raises the same edge. Roughly 17 of the ~25 "drifts" a child would
+   *      have been credited with per championship were quiz answers.
+   *
+   * So the tier is taken from `drift:tier` — which fires WHILE drifting, from a
+   * live value, and is correct today — and a boost only counts as a drift when
+   * a drift was actually charged and has just ended. The incoming Wave-4
+   * contract (`{ tier: 1-3 | 0, source: 'drift' | 'external' }`) is honoured
+   * first when it is present, so this reads correctly before and after that
+   * lands, and neither reading invents a payload.
+   */
+  let driftPeak = 0;        // top tier reached by the drift in progress / just ended
+  let driftingNow = false;
+
+  on('drift:start', () => { driftingNow = true; driftPeak = 0; });
+  on('drift:end', () => { driftingNow = false; });
   on('drift:tier', p => {
     const tier = Number(p.tier) || 0;
+    if (tier > driftPeak) driftPeak = tier;
     if (tier > s.bestDriftTier) { s.bestDriftTier = tier; dirty = true; }
   });
   on('drift:boost', p => {
+    const tier = Number(p.tier) || 0;
+    const source = p.source;
+    // New contract wins outright where it exists.
+    const isDrift = source === 'drift' ? true
+      : source != null ? false
+      // Legacy: a real release emits drift:end in the SAME frame, before the
+      // boost, so `driftingNow` is already false and `driftPeak` still holds the
+      // charge. A quiz turbo has neither. That is the whole discriminator.
+        : (tier >= 1 || (driftPeak >= 1 && !driftingNow));
+    if (!isDrift) return;
+    const released = Math.max(tier, driftPeak);
+    driftPeak = 0;                                  // consumed; never paid twice
     s.driftBoosts++;
-    // race.js emits drift:boost with the tier that was released.
-    if ((Number(p.tier) || 0) >= 3) s.driftBoostsTop++;
+    if (released >= 3) s.driftBoostsTop++;
     bump();
   });
 

@@ -152,7 +152,9 @@ const THEMES = {
     lead: 'pluck', bassWave: 'triangle', padWave: 'triangle',
     perc: 'hand', padCut: 1500, leadOct: 12, colour: '#ffc247',
   },
-  // Circuit City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+  // Neuron City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+  // (The theme id and the track id both stay `circuit`; only the display name
+  // changed this wave — עיר המעגלים → עיר הנוירונים.)
   circuit: {
     bpm: 124, root: 45 /* A2 */, scale: SCALES.minor, seed: 55019,
     prog: [{ r: 0, c: [0, 3, 7, 10] }, { r: 7, c: [0, 3, 7, 10] },
@@ -1800,7 +1802,7 @@ registerStrings({
     'audio.s.music.race': 'מרוץ',
     'audio.s.music.garage': 'מוסך',
     'audio.s.music.race.oasis': 'מרוץ — נווה הנתונים',
-    'audio.s.music.race.circuit': 'מרוץ — עיר המעגלים',
+    'audio.s.music.race.circuit': 'מרוץ — עיר הנוירונים',
     'audio.s.music.race.cloud': 'מרוץ — פסגת הענן',
   },
   en: {
