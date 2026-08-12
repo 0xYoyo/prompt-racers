@@ -731,9 +731,6 @@ console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'
       reveal: box(q('.grg-reveal')), actions: box(q('.grg-revactions')),
       scroller: box(sc), last: box(last),
       ch: sc.clientHeight, sh: sc.scrollHeight, scrollTop: sc.scrollTop,
-      // A styled, non-overlay scrollbar reserves width. An overlay scrollbar
-      // reserves none — which is exactly how the overflow stayed invisible.
-      gutter: sc.offsetWidth - sc.clientWidth,
       hasMore: !!(body && body.classList.contains('has-more')),
       cueOpacity: cue ? +getComputedStyle(cue).opacity : 0,
       cueBox: cue ? box(cue) : null,
@@ -742,6 +739,19 @@ console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'
       scrollerBeforeButtons: !!(install && (sc.compareDocumentPosition(install) & Node.DOCUMENT_POSITION_FOLLOWING)),
     };
   }, expectTitle);
+
+  // The cue fades in and out over 180ms. Reading it mid-transition measures the
+  // transition, not the design, so every measurement waits for it to settle on
+  // 0 or 1 first — the same class of mistake as measuring "silence" on a screen
+  // that is secretly still running the game.
+  const settle = async () => {
+    await lp.waitForFunction(() => {
+      const c = document.querySelector('.grg-morecue');
+      if (!c) return true;
+      const o = +getComputedStyle(c).opacity;
+      return o < 0.02 || o > 0.98;
+    }, { timeout: 5000 }).catch(() => {});
+  };
 
   for (const lang of ['he', 'en']) {
     console.log(`  \x1b[2m── lang ${lang} ──\x1b[0m`);
@@ -754,6 +764,7 @@ console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'
           });
         }, sel, lang);
         await wait(420);
+        await settle();
         const tag = `${w}x${h} ${name}`;
         const m = await measure(TITLE[lang]);
         // 1. The state under test was really reached, in the language under test.
@@ -775,18 +786,33 @@ console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'
           if (m.hasMore) issues.push('claims there is more below when there is not');
         } else {
           mode = `scrolls ${overflow}px`;
+          // The affordance has to be PAINTED, over the end of the box, at a size
+          // a child can see. (A reserved scrollbar gutter cannot be asserted
+          // here: this platform draws overlay scrollbars, which reserve no width
+          // and ignore scrollbar-gutter — which is precisely why the overflow
+          // was invisible in the first place and why the cue has to exist.)
           if (!m.hasMore || m.cueOpacity < 0.9) issues.push(`overflows ${overflow}px with no visible cue (opacity ${m.cueOpacity})`);
-          if (m.cueBox && m.cueBox.b > m.vh + 1) issues.push('the cue itself is off-screen');
-          if (m.gutter < 6) issues.push(`no scrollbar gutter (${m.gutter}px) — an overlay scrollbar is not an affordance`);
+          if (!m.cueBox) issues.push('no cue element at all');
+          else {
+            if (m.cueBox.b > m.vh + 1) issues.push('the cue itself is off-screen');
+            if (m.cueBox.h < 24 || m.cueBox.r - m.cueBox.l < 120) issues.push(`the cue is too small to notice (${Math.round(m.cueBox.r - m.cueBox.l)}x${Math.round(m.cueBox.h)})`);
+            if (Math.abs(m.cueBox.b - m.scroller.b) > 3) issues.push('the cue is not at the bottom edge of the box');
+          }
           // …and the end must be reachable: scrolled to the bottom, the last row
           // has to be ENTIRELY inside the visible box.
           await lp.evaluate(() => { const s = document.querySelector('.grg-rev-scroll'); s.scrollTop = s.scrollHeight; });
-          await wait(160);
+          await wait(200);
+          await settle();
           const end = await measure(TITLE[lang]);
           if (end.last.b > end.scroller.b + 1 || end.last.t < end.scroller.t - 1) {
             issues.push(`scrolled to the bottom the last row is still ${Math.round(end.last.b - end.scroller.b)}px out`);
           }
-          if (end.hasMore) issues.push('still says "more below" at the bottom');
+          // …and once there really is nothing left below, the cue has to say so.
+          // Measured against the LIVE numbers, not against "we asked it to
+          // scroll": the debrief's kart canvases can still be settling, and a cue
+          // that is on while content genuinely remains is telling the truth.
+          const leftAtEnd = end.sh - end.ch - end.scrollTop;
+          if (end.hasMore && leftAtEnd <= 8) issues.push('still says "more below" at the bottom');
         }
         ok(`${tag}: the explanation is readable (${mode})`, issues.length === 0, issues.join(' · ') || `${m.sh}px of content in ${m.ch}px`);
         ok(`${tag}: the explanation is keyboard-reachable, before the buttons`,

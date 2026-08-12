@@ -27334,6 +27334,14 @@ void main() {
         if (!st.seenTips.includes(r.tips[0])) st.seenTips.push(r.tips[0]);
       }
       applyKartPreview(r);
+      bus.emit("garage:built", {
+        score: r.score,
+        tier: r.tier,
+        expert: !!st.expert,
+        slotKey: r.slotKey,
+        coherent: !!r.coherent,
+        freePlay: !!freePlay
+      });
       render();
     }
     function render() {
@@ -28030,15 +28038,19 @@ void main() {
       const body = h("div.grg-revbody", null, scroller, cue);
       const syncCue = () => {
         const hidden = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
-        body.classList.toggle("has-more", hidden > 6);
+        body.classList.toggle("has-more", hidden > 8);
       };
       scroller.addEventListener("scroll", syncCue, { passive: true });
       if (typeof ResizeObserver === "function") {
         const ro = new ResizeObserver(syncCue);
         ro.observe(scroller);
         for (const c of scroller.children) ro.observe(c);
+        scroller.__cueObserver = ro;
       }
-      requestAnimationFrame(syncCue);
+      requestAnimationFrame(() => {
+        syncCue();
+        requestAnimationFrame(syncCue);
+      });
       return h(
         "div.grg-scrim",
         null,

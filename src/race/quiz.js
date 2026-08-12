@@ -439,9 +439,16 @@ const QUIZ_CSS = `
 
 .quiz-flash{position:absolute;inset:0;pointer-events:none;opacity:0;
   background:radial-gradient(60% 46% at 50% 50%,rgba(255,214,107,.34),transparent 72%)}
-.quiz-flash.on{animation:quizFlash .55s var(--ease) both}
+/* NOT ".on" — that class is style.js's global pointer-events opt-in (#ui * is
+   pointer-events:none and #ui .on turns it back on), and it out-specifies the
+   pointer-events:none above. The celebration flash is a full-screen sibling
+   drawn OVER the card, so as a side effect of a RIGHT answer it became a
+   transparent sheet that swallowed every click on the panel underneath: after a
+   correct answer, a mouse or touch player could not press the continue button at
+   all, while the keyboard sailed through. Found by the pointer-parity gate. */
+.quiz-flash.fx{animation:quizFlash .55s var(--ease) both}
 @keyframes quizFlash{0%{opacity:0}18%{opacity:1}100%{opacity:0}}
-@media (prefers-reduced-motion:reduce){.quiz-flash.on{animation:none}}
+@media (prefers-reduced-motion:reduce){.quiz-flash.fx{animation:none}}
 
 /* ── the one-time "what is a question box" explainer ──────────────────────────
    Same shape as the garage's first-token popup so a child reads a familiar
@@ -1051,7 +1058,7 @@ export function createQuizSystem(engine, opts = {}) {
     renderResult();
 
     if (good) {
-      elFlash.classList.remove('on'); void elFlash.offsetWidth; elFlash.classList.add('on');
+      elFlash.classList.remove('fx'); void elFlash.offsetWidth; elFlash.classList.add('fx');
       if (body?.applyBoost) body.applyBoost(BOOST.strength, BOOST.duration, BOOST.impulse);
     }
     emitResult(good, timedOut);

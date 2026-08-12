@@ -38,7 +38,8 @@ network. Verified legible in both scripts.
 
 ## D7 — Original world identity
 Title kept as **מרוץ הפרומפטים**. Player character **ניצוץ**; garage mechanic **בורג**, a
-friendly robot. Tracks: **נווה הנתונים** (desert oasis), **עיר המעגלים** (neon night city),
+friendly robot. Tracks: **נווה הנתונים** (desert oasis), **עיר הנוירונים** (neon night city;
+renamed from עיר המעגלים in Wave 4 — see D32),
 **פסגת הענן** (dawn sky islands). Chosen to be unmistakably distinct from both Mario Kart
 and the Kart Royale reference (which is a coastal-sunset theme — we deliberately avoid it),
 while giving three genuinely different lighting moods to show off range.
@@ -410,3 +411,41 @@ wire it, and that property is gated rather than merely intended.
 Master volume is a **separate** save key from `muted`, not a replacement for it. A
 child who mutes and later unmutes must land back on the volume they chose, and a
 volume of 0 must not be indistinguishable from mute in the UI.
+
+## D32 — The banners were lettered on their far side, and the comment above the bug said so
+Every trackside sponsor board in the game has read back-to-front since Wave 1. The cause
+was a single inverted swap in `gfx/props.js`: the quad was wound so its front normal
+pointed **away** from the centreline, U therefore ran along `+side·tangent` instead of the
+driver's screen-right `−side·tangent`, and the `DoubleSide` material dutifully showed the
+driver the reverse of the authored face. The comment directly above that line states the
+correct rule — screen-right is `−side·tangent` — and the code beneath it does the opposite,
+which is why five waves of readers skimmed past it.
+
+The finish gantry escaped, and its escape is the diagnostic: it is a `PlaneGeometry`
+rotated to face back down the track, so its local +X lands on the driver's screen-right by
+construction. "The finish-line text is fine" was the whole clue.
+
+The same inverted swap sat at the night-city holo billboards, with a louder symptom that
+nobody had connected to it: that material is `FrontSide`, so instead of reading mirrored
+those signs were back-face culled and **invisible from the racing line**. One bug, two
+presentations, neither reported as the other's twin.
+
+Fixed at source (both sites), and *also* guarded centrally: `enforceSignOrientation()` runs
+over the finished track group and re-winds or re-UVs any lettered face that violates the
+invariant. Both, deliberately — the source fix is the honest repair, and the central sweep
+is what makes the guarantee hold for the next module that draws Hebrew into the world
+without knowing this rule. It refuses (rather than silently "repairing") negative world
+scale or negative texture repeat, which UV rewriting cannot honestly fix.
+
+**The invariant, stated once so it can be gated:** for any lettered quad with front normal
+`N`, `U` must increase along `up × N` and `V` along `+Y`. That holds at any viewing angle,
+so a board seen edge-on down a straight obeys the same rule as one seen head-on.
+`tests/signage.test.mjs` re-derives normals and UV gradients from the real position/uv
+buffers and pins it — geometry, not a string match, because a regex on Hebrew text cannot
+see which way a triangle faces.
+
+Track 2 became **עיר הנוירונים** / Neuron City in the same pass. The `id` and `theme` stay
+`'circuit'`: the id is persisted in `results[]` and the theme keys palettes, gantry skins,
+sky and prop sets, so renaming either would have been a save migration in exchange for
+nothing. Display names flow from `trackdef` through `scenes.js:trackNameOf`, so every
+screen followed for free.

@@ -69,12 +69,26 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 const evalp = (fn, ...a) => page.evaluate(fn, ...a);
 
 const SAVE_KEY = 'promptracers.v1';
+// 30s is puppeteer's default and it is not enough here: the machine runs several
+// of these gates at once under swiftshader, and tools/selecttest.mjs has already
+// been recorded in GAPS.md crashing on exactly this reload. A gate that flakes
+// teaches people to re-run gates until they go green, which is the habit that
+// lets a real failure through — so: a long ceiling, and one retry.
+page.setDefaultNavigationTimeout(120000);
+page.setDefaultTimeout(120000);
+
 /** Boot the built game with a known save, then land on the home screen. */
-async function boot(state = {}, lang = 'he') {
-  await page.goto('file://' + dist, { waitUntil: 'load' });
-  await evalp((k, v) => localStorage.setItem(k, JSON.stringify(v)), SAVE_KEY, state);
-  await page.reload({ waitUntil: 'load' });
-  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+async function boot(state = {}, lang = 'he', attempt = 0) {
+  try {
+    await page.goto('file://' + dist, { waitUntil: 'load' });
+    await evalp((k, v) => localStorage.setItem(k, JSON.stringify(v)), SAVE_KEY, state);
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 120000 });
+  } catch (e) {
+    if (attempt >= 1) throw e;
+    console.log(`  \x1b[2m…boot timed out (${e.message.split('\n')[0]}), retrying once\x1b[0m`);
+    return boot(state, lang, attempt + 1);
+  }
   await evalp(l => window.__DEBUG.goto('menu', { lang: l }), lang);
   await wait(400);
 }
@@ -364,7 +378,7 @@ await boot({ lang: 'he', volume: 0.75 });
   ok('…and it is persisted immediately', Math.abs(raised.saved - 0.9) < 1e-6, String(raised.saved));
 
   await page.reload({ waitUntil: 'load' });
-  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 120000 });
   await evalp(() => window.__DEBUG.goto('menu', {}));
   await wait(400);
   await clickText('.mn-icon', /הגדרות/);

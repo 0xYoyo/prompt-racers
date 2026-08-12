@@ -218,7 +218,15 @@ ok('[click] the button skips it too (same code path)', !(await vis('.ic-card')))
 // nothing may open over the card, and nothing may be blocked after it closes.
 await openRace({ track: 0, lang: 'he', introCard: true });
 await evalp(() => window.__DEBUG.engine.active.quiz.openQuestion());
-ok('nothing stacks on the card (quiz defers behind it)', !(await vis('.quiz-root.show')));
+await new Promise(r => setTimeout(r, 400));
+// Assert on the quiz system's OWN state as well as on the DOM. A visibility-only
+// check here passed against a build with no `pushModal('intro')` at all — the
+// panel had opened and its fade-in simply had not reached opacity yet. That is
+// the decorative-assertion trap GAPS.md names, caught by mutation and not by
+// review.
+const quizPhase = await evalp(() => window.__DEBUG.engine.active.quiz.phase);
+ok('nothing stacks on the card (the quiz defers behind it)',
+  quizPhase === 'idle' && !(await vis('.quiz-root.show')) && !(await vis('.qzint-scrim')), quizPhase);
 ok('…the card is still the thing on screen', await vis('.ic-card'));
 await page.keyboard.press('Space');
 ok('the card is gone', !(await vis('.ic-card')));

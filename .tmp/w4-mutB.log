@@ -3,3 +3,99 @@
   ────────────────────────────────────────────────────────────────────────────
 
   1. the centre column
+  [32m✓[0m the home screen has a centre column at all                     4 buttons
+  [32m✓[0m it is exactly the four expected entries                        מתחילים אליפות | המוסך של בורג | איך משחקים | האוסף שלי
+  [32m✓[0m …championship start                                            מתחילים אליפות
+  [32m✓[0m …המוסך של בורג                                                 
+  [32m✓[0m …איך משחקים                                                    
+  [32m✓[0m …האוסף שלי                                                     
+  [32m✓[0m Settings is NOT in the centre column                           מתחילים אליפות | המוסך של בורג | איך משחקים | האוסף שלי
+  [32m✓[0m "how was this built" is NOT in the centre column               
+  [32m✓[0m mid-championship it gains ONLY "אליפות חדשה"                   ממשיכים באליפות | אליפות חדשה | המוסך של בורג | איך משחקים | האוסף שלי
+  [32m✓[0m …and still no settings / how-it-was-built                      
+  [32m✓[0m האוסף שלי navigates by scene name (no import of collection.js) column: 5
+
+  2. the gear and the info icon
+  [32m✓[0m two corner icons exist                                         הגדרות | איך נבנה המשחק הזה?
+  [32m✓[0m …both are drawn as inline SVG shapes (no asset, no emoji)      9 shapes, 3 shapes
+  [32m✓[0m …both are a real tap target (≥40px)                            46px, 46px
+  [32m✓[0m the gear is the settings icon, at the inline start             
+  [32m✓[0m the info icon is "how was this built", at the inline end       
+  [31m✗[0m …and each carries its label as its accessible name AND as text 
+  [32m✓[0m the labels are hidden until asked for                          
+  [32m✓[0m both icons are reachable by TAB                                הגדרות | איך נבנה המשחק הזה?
+  [31m✗[0m …and each shows its label on keyboard focus                    הגדרות:HIDDEN, איך נבנה המשחק הזה?:HIDDEN
+  [31m✗[0m the gear opens settings                                        
+  [31m✗[0m the info icon opens "how was this game built"                  
+  [32m✓[0m …and both close again                                          
+
+  3. the key legend points outward, in both languages
+  [32m✓[0m [he] the title legend is on screen                             4 groups
+  [32m✓[0m [he] title: the steering group exists                          ←→
+  [32m✓[0m [he] title: the arrows point OUTWARD (← is drawn left of →)    ← at 830, → at 866
+  [31m✗[0m [he] title: drift reads "Shift / Space"                        SpaceShift
+  [32m✓[0m [he] title: …and Shift is not glued to Space as one chord      2 caps
+  [32m✓[0m [he] the how-to-play legend is on screen                       4 groups
+  [32m✓[0m [he] how-to-play: the steering group exists                    ←→
+  [32m✓[0m [he] how-to-play: the arrows point OUTWARD (← is drawn left of →) ← at 820, → at 854
+  [31m✗[0m [he] how-to-play: drift reads "Shift / Space"                  SpaceShift
+  [32m✓[0m [he] how-to-play: …and Shift is not glued to Space as one chord 2 caps
+  [32m✓[0m [en] the title legend is on screen                             4 groups
+  [32m✓[0m [en] title: the steering group exists                          ←→
+  [32m✓[0m [en] title: the arrows point OUTWARD (← is drawn left of →)    ← at 410, → at 446
+  [31m✗[0m [en] title: drift reads "Shift / Space"                        SpaceShift
+  [32m✓[0m [en] title: …and Shift is not glued to Space as one chord      2 caps
+  [32m✓[0m [en] the how-to-play legend is on screen                       4 groups
+  [32m✓[0m [en] how-to-play: the steering group exists                    ←→
+  [32m✓[0m [en] how-to-play: the arrows point OUTWARD (← is drawn left of →) ← at 410, → at 446
+  [31m✗[0m [en] how-to-play: drift reads "Shift / Space"                  SpaceShift
+  [32m✓[0m [en] how-to-play: …and Shift is not glued to Space as one chord 2 caps
+
+  4. "אליפות חדשה" asks first, and keeps the collection
+  [32m✓[0m precondition: the seeded save really has a championship AND a collection race 1, 24 tokens, 2 badges
+  [32m✓[0m the button is on screen                                        
+  [32m✓[0m …and it opens a confirmation rather than resetting             
+  [32m✓[0m …whose scope chip says "האליפות בלבד"                          האליפות בלבדלהתחיל אליפות חדשה?מוחקים את
+  [32m✓[0m …which names what it erases                                    
+  [32m✓[0m …and says the badges and glossary STAY                         
+  [32m✓[0m …and does not carry the full-wipe wording                      
+  [32m✓[0m NOTHING is written while the question is on screen             race 1, 24 tokens
+  [32m✓[0m the safe answer is focused first                               לא, משאירים
+  [32m✓[0m cancelling changes nothing at all                              
+  [32m✓[0m confirming clears championshipRace / results / tokens / parts / bestPrompt race 0, 0 tokens, 0 results
+  [32m✓[0m …and the BADGES survive                                        ["first-race","clean-lap"]
+  [32m✓[0m …and the GLOSSARY survives                                     ["prompt","token"]
+  [32m✓[0m …and the lifetime STATS survive                                {"races":1,"quizRight":4}
+
+  5. the settings full wipe erases the collection too
+  [32m✓[0m precondition: a collection to lose                             
+  [31m✗[0m settings is open                                               
+  [31m✗[0m …the reset button opens a confirmation of its own              
+  [31m✗[0m …whose scope chip says "הכול"                                  
+  [31m✗[0m …which says the badges and glossary go too                     
+  [32m✓[0m …and is NOT the championship wording                           
+  [32m✓[0m nothing is written while THIS question is on screen            
+  [31m✗[0m confirming empties the badges                                  ["first-race","clean-lap"]
+  [31m✗[0m …and the glossary                                              ["prompt","token"]
+  [31m✗[0m …and the championship with it                                  
+
+  6. master volume: keyboard, persistence, and the on/off toggle
+  [31m✗[0m the slider exists in settings                                  MISSING
+  [31m✗[0m …alongside the on/off toggle, not instead of it                
+  [31m✗[0m …starts at the saved volume                                    null
+  [31m✗[0m …is big enough to grab                                         null
+  [31m✗[0m …and names itself for a screen reader                          null
+node:internal/modules/run_main:122
+    triggerUncaughtException(
+    ^
+
+Error [TypeError]: Cannot read properties of null (reading 'focus')
+    at evaluate (evaluate at evalp (file:///Users/yoyopc/repos/kart-project/tools/hometest.mjs:69:34), <anonymous>:0:58)
+    at #evaluate (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/cdp/ExecutionContext.js:388:19)
+    at async ExecutionContext.evaluate (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/cdp/ExecutionContext.js:275:16)
+    at async IsolatedWorld.evaluate (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/cdp/IsolatedWorld.js:97:16)
+    at async CdpFrame.evaluate (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/api/Frame.js:345:20)
+    at async CdpPage.evaluate (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/api/Page.js:808:20)
+    at async file:///Users/yoyopc/repos/kart-project/tools/hometest.mjs:369:3
+
+Node.js v22.14.0

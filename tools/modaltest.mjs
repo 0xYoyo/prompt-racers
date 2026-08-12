@@ -411,6 +411,10 @@ async function runQuiz(via) {
   await boot(true, { autopilot:true });
   await evalp(()=>window.__DEBUG.advance(6));
   await openQuiz(); await wait(80);
+  // One frame, so the values race.js recomputes per frame (the time scale it is
+  // handed, and input.enabled) are the ones the panel actually causes rather
+  // than the ones left over from the frame before it opened.
+  await evalp(()=>window.__DEBUG.advance(1/60));
   const opened = await vis('.quiz-root.show');
   const box = await boxOf('.quiz-root.show .quiz-opt', 2);   // the THIRD option
   if (via==='key') await tap('Digit3');
@@ -419,15 +423,21 @@ async function runQuiz(via) {
   await wait(100);
   const answered = await quizState();
   await evalp(()=>window.__DEBUG.advance(1));                // past the arming delay
+  const cont = await boxOf('.quiz-root.show .quiz-cont');
+  // What a finger would ACTUALLY hit at the continue button's centre. The
+  // celebration flash after a right answer is a full-screen sibling drawn over
+  // the card, and it used to carry style.js's `.on` class — which is the global
+  // pointer-events opt-in, not a decoration — so it became an invisible sheet
+  // that ate every click on the panel. Answering by keyboard hid this
+  // completely: only a pointer notices a transparent lid.
+  const topOnCont = cont ? await evalp(p=>{ const e=document.elementFromPoint(p.x,p.y);
+    return e ? (e.className||e.tagName) : 'nothing'; }, cont) : 'missing';
   if (via==='key') await tap('Space');
-  else {
-    const cont = await boxOf('.quiz-root.show .quiz-cont');
-    if (via==='click') await clickAt(cont); else await tapAt(cont);
-  }
+  else if (via==='click') await clickAt(cont); else await tapAt(cont);
   await wait(100);
   const resumed = { phase: await quizPhase(), gone: !(await has('.quiz-root.show')),
                     input: await evalp(()=>window.__DEBUG.engine.active.input.enabled) };
-  return { opened, box, answered, resumed };
+  return { opened, box, cont, topOnCont, answered, resumed };
 }
 const K = await runQuiz('key');
 const C = await runQuiz('click');
@@ -452,8 +462,11 @@ ok('the continue BUTTON resumes exactly as Space does',
    K.resumed.phase==='resume' && C.resumed.phase===K.resumed.phase && Tp.resumed.phase===K.resumed.phase
    && C.resumed.gone===K.resumed.gone && C.resumed.input===K.resumed.input,
    `${K.resumed.phase} / ${C.resumed.phase} / ${Tp.resumed.phase}`);
-ok('answer targets are big enough for a child\'s finger', K.box.h>=44 && K.box.w>=240,
+ok('answer targets are big enough for a child\'s finger', Math.round(K.box.h)>=44 && K.box.w>=240,
    `${Math.round(K.box.w)}×${Math.round(K.box.h)}px`);
+ok('nothing invisible is sitting on top of the continue button',
+   /quiz-cont/.test(K.topOnCont) && /quiz-cont/.test(C.topOnCont) && /quiz-cont/.test(Tp.topOnCont),
+   `hit test: ${C.topOnCont}`);
 await page.setViewport({ width:1366, height:768 });
 
 // The registry guard belongs to the STATE MACHINE, not to whatever geometry
@@ -469,14 +482,19 @@ ok('the pause menu is over the quiz', await vis('.mn-dialog.pause') && await has
 await clickAt(optBox); await wait(140);
 ok('a real click where the option IS cannot answer a quiz behind the pause menu',
    !(await has('.quiz-root.show .quiz-card.quiz-answered')));
-await tap('Escape'); await wait(220);
+// That click landed on the pause menu — which is the honest outcome, and also
+// means it may have changed the pause menu's view (its buttons are in that half
+// of the screen). Close the whole stack deterministically before the paired
+// positive, rather than assuming one Escape was enough.
+for (let i=0;i<4 && await has('.mn-ov'); i++) { await tap('Escape'); await wait(220); }
+ok('the pause stack really is gone before the paired check', !(await has('.mn-ov')));
 await clickAt(optBox); await wait(140);
 ok('…and the very same click answers once the pause menu is gone',
    await has('.quiz-root.show .quiz-card.quiz-answered'));
 // Same story for the continue button, and for the arming delay that stops the
 // press which ANSWERED from also dismissing.
 const contBox = await boxOf('.quiz-root.show .quiz-cont');
-ok('the continue button is a finger-sized target too', contBox && contBox.h>=44,
+ok('the continue button is a finger-sized target too', contBox && Math.round(contBox.h)>=44,
    contBox ? `${Math.round(contBox.w)}×${Math.round(contBox.h)}px` : 'missing');
 await clickAt(contBox); await wait(120);
 ok('a click on continue in the first fraction of a second does NOT dismiss',
@@ -518,8 +536,10 @@ await openQuiz(); await wait(150);
 ok('the first question box shows the explainer', await vis('.qzint-scrim'));
 ok('…instead of the question itself', !(await vis('.quiz-root.show')));
 ok('…and only now is the flag written', (await introFlag())===true);
+await evalp(()=>window.__DEBUG.advance(1/60));    // one frame, so race.js has reacted
 ok('…and the world is frozen behind it, input gated off, like any quiz panel',
    await evalp(()=>window.__DEBUG.engine.active.quiz.frozen===true
+     && window.__DEBUG.engine.active.quiz.timeScale===0
      && window.__DEBUG.engine.active.input.enabled===false));
 {
   const a = await simSnap();
@@ -539,6 +559,7 @@ ok('its button is a finger-sized target', goBox && goBox.h>=44,
 await clickAt(goBox); await wait(200);
 ok('clicking it leads straight into the question', await vis('.quiz-root.show'));
 ok('…and the explainer is gone', !(await vis('.qzint-scrim')));
+await evalp(()=>window.__DEBUG.advance(1/60));
 ok('…with the world still frozen for the question', await evalp(()=>
   window.__DEBUG.engine.active.quiz.timeScale===0));
 // (b) exactly once — this race, and every race after a reload

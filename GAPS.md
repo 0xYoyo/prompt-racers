@@ -152,7 +152,7 @@ the people the generous timer exists for. Watch whether 40% still feels draggy.
   save and flipped direction but never called `setLang`, so strings stayed Hebrew.
 
 ## Deferred to Wave 2 by design
-- Tracks 2 (עיר המעגלים) and 3 (פסגת הענן) meshing and dressing. Their spline layouts,
+- Tracks 2 (עיר הנוירונים, then named עיר המעגלים) and 3 (פסגת הענן) meshing and dressing. Their spline layouts,
   themes and lighting rigs already exist and are validated; only geometry + scenery remain.
 - Item/pickup variety beyond tokens.
 - Expert-mode free-text scoring refinement and its larger token rewards.

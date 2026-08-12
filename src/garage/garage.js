@@ -28,6 +28,7 @@ import * as THREE from 'three';
 import { h, pushModal, popModal, modalOpen } from '../ui/style.js';
 import { registerStrings, t, num, getLang, isRTL, setLang } from '../ui/i18n.js';
 import { save } from '../core/save.js';
+import { bus } from '../core/bus.js';
 import {
   SLOTS, KART_SLOTS, optionById, optionsFor, costOf, sentenceParts, partName, DEFAULT_BUDGET, MAX_COST,
   vaguestSelection, bestAffordable, pruneSelection,
@@ -1348,6 +1349,23 @@ export function garageScene(engine, opts = {}) {
     const r = st.result;
     if (r.tips.length) { st.activeTip = r.tips[0]; if (!st.seenTips.includes(r.tips[0])) st.seenTips.push(r.tips[0]); }
     applyKartPreview(r);
+    // ONE build, ONE event, at the moment the reveal opens — over the bus, so
+    // whoever is listening (badges, glossary) never imports the garage.
+    //
+    // It lives here and not in scenes.js's onDone for two reasons: free play
+    // never calls onDone, and a child can read the debrief and then choose "a
+    // different prompt" instead of installing. Both are builds; both count. It
+    // is exactly once per build because this is the single select→reveal
+    // transition: render() runs many times inside one reveal, and rebuilding
+    // from the progress rail goes back through startBuild() → finishBuild().
+    bus.emit('garage:built', {
+      score: r.score,
+      tier: r.tier,
+      expert: !!st.expert,
+      slotKey: r.slotKey,
+      coherent: !!r.coherent,
+      freePlay: !!freePlay,
+    });
     render();
   }
 
@@ -1974,15 +1992,21 @@ export function garageScene(engine, opts = {}) {
     // reaches the end.
     const syncCue = () => {
       const hidden = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
-      body.classList.toggle('has-more', hidden > 6);
+      body.classList.toggle('has-more', hidden > 8);
     };
     scroller.addEventListener('scroll', syncCue, { passive: true });
     if (typeof ResizeObserver === 'function') {
       const ro = new ResizeObserver(syncCue);
       ro.observe(scroller);
       for (const c of scroller.children) ro.observe(c);
+      // Parked on the node so the observer lives exactly as long as the element
+      // it watches; a bare local would be the only reference to it.
+      scroller.__cueObserver = ro;
     }
-    requestAnimationFrame(syncCue);
+    // Two frames: the first lands after layout, the second after the kart
+    // canvases have taken their final size. Answering one frame early is how a
+    // "there is more below" cue ends up describing the wrong height.
+    requestAnimationFrame(() => { syncCue(); requestAnimationFrame(syncCue); });
     return h('div.grg-scrim',
       null,
       h('div.panel-lift.grg-reveal.pop-in',

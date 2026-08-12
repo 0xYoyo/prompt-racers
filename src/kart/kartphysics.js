@@ -191,6 +191,16 @@ export class KartBody {
     this.driftLean = 0;     // rendered slip offset while drifting (radians)
     this.boosting = false;
     this.boostStrength = 1;
+    // --- boost provenance (see applyBoost) ---------------------------------
+    // `boosting` alone cannot answer "what caused this boost?" — a quiz turbo and
+    // a released purple drift both just flip it true — nor "did a SECOND boost
+    // land while the first was still running?", because there is no rising edge
+    // to watch. These three fields answer both, and are the only honest source
+    // for anything that counts drifts.
+    this.boostSeq = 0;          // +1 on EVERY applyBoost(); watch for a change
+    this.lastBoostSource = 'none';   // 'drift' | 'external' | 'none' (no boost yet)
+    this.lastBoostTier = 0;     // 1..3 for a drift release, 0 for anything else
+    this.lastBoostStrength = 1; // the post-boostPower strength that was applied
     this.airborne = false;
     this.landingSquash = 0; // 0..1, decays; the model squashes on landing
     this.hopOffset = 0;     // metres of RENDERED hop; add to the mesh, not the body
@@ -250,6 +260,11 @@ export class KartBody {
     this.drifting = false; this.driftDir = 0; this.driftTier = 0;
     this.driftCharge = 0; this.driftCharge01 = 0; this.driftLean = 0;
     this.boosting = false; this.boostStrength = 1; this._boostTime = 0;
+    // NOTE: boostSeq is deliberately NOT reset here. It is monotonic for the
+    // lifetime of the body, so a consumer holding a previous value can always
+    // compare with !== and never sees the counter walk backwards over a
+    // respawn or a placeAt (which would read as "no boost" or as a fake one).
+    this.lastBoostSource = 'none'; this.lastBoostTier = 0; this.lastBoostStrength = 1;
     this._hopTime = 0; this._driftPending = false; this._stuck = 0;
     this._recover = 0; this._wallContact = 0; this.wallHit = 0; this.kartHit = 0;
     this.airborne = false; this.landingSquash = 0; this.steerAngle = 0; this.slipAngle = 0;
@@ -291,7 +306,12 @@ export class KartBody {
   // Boost sources: mini-boosts, pads, pickups. Stacking takes the stronger one
   // and adds a little duration, so a pad during a mini-boost still feels good.
   // -------------------------------------------------------------------------
-  applyBoost(strength = 1.2, duration = 1.0, impulse = 0) {
+  //
+  // `source` / `tier` record the PROVENANCE of the boost. They default to
+  // 'external' / 0 so every existing caller (quiz turbo, boost pads, pickups,
+  // tests) keeps working untouched and is correctly reported as not-a-drift.
+  // Only _releaseDrift() passes source='drift' with the tier it just spent.
+  applyBoost(strength = 1.2, duration = 1.0, impulse = 0, source = 'external', tier = 0) {
     const s = 1 + (strength - 1) * this.p.boostPower;
     if (s >= this.boostStrength) {
       this.boostStrength = s;
@@ -301,6 +321,14 @@ export class KartBody {
     }
     this._boostTime = Math.min(this._boostTime, 4.5);
     this.boosting = true;
+    // Provenance is stamped on EVERY application, including one that lands while
+    // a previous boost is still running — that re-boost has no rising edge on
+    // `boosting`, and chained corners are exactly the skill drift rewards exist
+    // to celebrate, so the sequence counter is the only thing that sees it.
+    this.boostSeq++;
+    this.lastBoostSource = source === 'drift' ? 'drift' : 'external';
+    this.lastBoostTier = source === 'drift' ? (tier | 0) : 0;
+    this.lastBoostStrength = s;
     if (impulse) this._vLong = Math.min(this._vLong + impulse, this.p.topSpeed * s);
     return this;
   }
@@ -596,9 +624,14 @@ export class KartBody {
   }
 
   _releaseDrift() {
-    if (this.drifting && this.driftTier > 0) {
-      const t = DRIFT_TIERS[this.driftTier - 1];
-      this.applyBoost(t.strength, t.duration, t.impulse);
+    // Capture the tier BEFORE the reset below zeroes it. applyBoost() used to be
+    // called and `driftTier` cleared in the same call, so anything observing the
+    // boost afterwards read tier 0 — every drift:boost in the game's history
+    // carried tier 0, and a "release a tier-3 drift" reward was unearnable.
+    const released = this.drifting ? this.driftTier : 0;
+    if (released > 0) {
+      const t = DRIFT_TIERS[released - 1];
+      this.applyBoost(t.strength, t.duration, t.impulse, 'drift', released);
     }
     this.drifting = false;
     this.driftDir = 0;
@@ -758,6 +791,8 @@ export class KartBody {
       slipAngle: this.slipAngle, drifting: this.drifting, driftTier: this.driftTier,
       driftCharge01: this.driftCharge01, driftColor: this.driftTier ? DRIFT_TIERS[this.driftTier - 1].color : 0,
       boosting: this.boosting, boostStrength: this.boostStrength,
+      boostSeq: this.boostSeq, lastBoostSource: this.lastBoostSource,
+      lastBoostTier: this.lastBoostTier, lastBoostStrength: this.lastBoostStrength,
       airborne: this.airborne, landingSquash: this.landingSquash,
       offTrack: this.offTrack, surfaceKind: this.surfaceKind, rumble: this.rumble,
       lapT: this.lapT, lastValidT: this.lastValidT, lateral: this.lateral,

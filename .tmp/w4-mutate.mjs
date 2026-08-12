@@ -26,6 +26,13 @@ const MUT = {
     // 6. the slider stops persisting
     [`    save.set({ volume: v });\n    applyVolume(v);`, `    applyVolume(v);`],
   ],
+  D: [
+    // 3b. the championship reset takes the collection with it (isolated, so the
+    //     run reaches sections 4-6 instead of stopping at the icon labels)
+    [`    championshipAsked: [],`, `    championshipAsked: [],\n    badges: [], glossary: [], stats: {},`],
+    // 6b. the slider stops persisting
+    [`    save.set({ volume: v });\n    applyVolume(v);`, `    applyVolume(v);`],
+  ],
   C: [
     // 7. "new championship" erases without asking
     [`      const startNew = () => confirmNewChampionship(() => api.go('select', { fresh: true }));`,
