@@ -2589,7 +2589,7 @@ function applyVolume(v) {
   const val = Number.isFinite(clamped) ? clamped : 0.75;
   try {
     if (typeof audio?.setMasterVolume === 'function') audio.setMasterVolume(val);
-    else bus.emit('audio:volume', { master: val });
+    else bus.emit('audio:masterVolume:set', val);
   } catch (e) { console.error('setMasterVolume failed', e); }
   return val;
 }

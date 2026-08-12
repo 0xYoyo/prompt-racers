@@ -7,20 +7,27 @@
 // translation and a calibration that puts "40 correct answers" out of a child's
 // reach all look identical from the outside — the screen just renders.
 //
-// Four things are pinned:
-//   1. every badge and term is complete in BOTH languages, with an icon;
-//   2. a synthetic bus stream unlocks exactly the expected set, and replaying it
-//      unlocks nothing more (idempotence);
-//   3. badges/glossary survive a resetChampionship()-shaped write and are wiped
-//      by save.reset();
-//   4. the CALIBRATION CLAIM: ~2.5 championships of real measured play earns
-//      most badges, and the two designated hard ones stay locked.
+// What is pinned:
+//   1.  every badge and term is complete in BOTH languages, with an icon;
+//   2.  a synthetic bus stream unlocks exactly the expected set, and replaying it
+//       unlocks nothing more (idempotence);
+//   3.  badges/glossary survive a resetChampionship()-shaped write and are wiped
+//       by save.reset();
+//   4.  the CALIBRATION CLAIM: ~2.5 championships of measured play earns most
+//       badges, the two designated hard ones stay locked — measured against
+//       economy constants READ FROM their owning modules, never copied;
+//   4b. ui/collection.js actually evaluates (a bundle check is a syntax check);
+//   5.  the unlock toast is not a modal, takes no key, steals no focus;
+//   6.  the drift badges, driven through the REAL KartBody — see the note in §6;
+//   7.  every event the tracker listens for is emitted by somebody in src/.
 //
 // Runs in plain Node: core/ has no DOM at import time and save.js falls back to
-// in-memory when localStorage is missing. ui/ is deliberately NOT imported here
-// (it pulls in three).
+// in-memory when localStorage is missing. §4b imports ui/collection.js — which
+// pulls in three — behind a try/catch, so a resolution failure is reported
+// rather than taking the whole gate down.
 // ═══════════════════════════════════════════════════════════════════════════
 import { readFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import * as THREE from 'three';
@@ -31,7 +38,7 @@ import { KartBody, autopilotInput } from '../src/kart/kartphysics.js';
 import {
   BADGES, BADGE_IDS, GLOSSARY, GLOSSARY_IDS, ICONS, HARD_BADGE_IDS,
   BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS,
-  startBadgeTracker, getStats, evaluate, NEEDED_EVENTS,
+  startBadgeTracker, getStats, evaluate, NEEDED_EVENTS, CONSUMED_EVENTS,
 } from '../src/core/badges.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -479,6 +486,23 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
   ok('…and the 40-answer badge is nowhere near', !oneRace.includes('quiz-40'));
 }
 
+/* ═══════════ 4b. the screen module actually loads ════════════════════════ */
+// Added after a stray pair of backticks inside a CSS comment turned COL_CSS into
+// a tagged template call. `node tools/checkall.mjs` bundled it happily — a
+// bundle check is a SYNTAX check — and the failure only appeared when a browser
+// ran it. One import is enough to catch that whole class.
+
+console.log('\n  4b. ui/collection.js loads and exports its scene');
+
+{
+  let mod = null, err = null;
+  try { mod = await import('../src/ui/collection.js'); } catch (e) { err = e; }
+  ok('src/ui/collection.js evaluates without throwing', !!mod, err?.message || '');
+  ok('…and exports collectionScene + preview + previewGlossary',
+    !!mod && ['collectionScene', 'preview', 'previewGlossary', 'previewBadges']
+      .every(k => typeof mod[k] === 'function'));
+}
+
 /* ═══════════════════════════ 5. the toast is not a modal ═════════════════ */
 // The three properties the brief cares most about were correct by inspection and
 // pinned by nothing, so a refactor that quietly moved the toast into the modal
@@ -659,17 +683,51 @@ console.log('\n  6. drift badges, driven through the real KartBody');
 
 /* ═══════════════════════════════ 7. the seam the lead must close ══════════ */
 
-console.log('\n  7. events this tracker needs that the game does not emit yet');
+console.log('\n  7. the tracker only listens for events that somebody emits');
 
+// A listener-only module cannot notice that the event it waits for was renamed,
+// moved, or never written — the screen just renders and the badge never comes.
+// So every event the tracker consumes is checked against the emitters in src/.
+// This is what turns "I asked the lead for garage:built" into something the
+// build can verify, and it fails in BOTH directions: an event that quietly
+// arrives must be struck off NEEDED_EVENTS, or the next reader is told a live
+// badge is dead.
 {
-  ok('NEEDED_EVENTS is declared for the lead', NEEDED_EVENTS.length >= 1);
-  for (const e of NEEDED_EVENTS) {
-    ok(`  needs "${e.event}"`, !!(e.payload && e.file && e.why), e.file);
+  const srcFiles = execSync('grep -rl "bus.emit(" src/', { cwd: root, encoding: 'utf8' })
+    .trim().split('\n').filter(f => f && !f.includes('core/badges.js'));
+  const emitted = new Map();
+  for (const f of srcFiles) {
+    const text = read(f);
+    // NOT `bus.emit('name'` — quiz.js picks its result event with a ternary
+    // (`bus.emit(good ? 'quiz:correct' : timedOut ? 'quiz:timeout' : 'quiz:wrong', …)`)
+    // and race.js does the same for drift:start/end. A scan that only reads the
+    // first literal reports five live events as dead, which is how a seam gate
+    // earns itself a permanent "known failure" comment and stops being read.
+    for (const [, args] of text.matchAll(/bus\.emit\(([\s\S]{0,240}?)\)/g)) {
+      for (const [, evt] of args.matchAll(/'([\w-]+:[\w-]+)'/g)) {
+        if (!emitted.has(evt)) emitted.set(evt, f);
+      }
+    }
   }
-  // If someone wires these up and this list is stale, that is fine — but the
-  // badges that depend on them must not be quietly unreachable in the meantime.
-  ok('only the two documented badges depend on a missing event',
-    NEEDED_EVENTS.length === 2);
+  ok('the emitter scan found the game\'s events', emitted.size > 15, `${emitted.size} distinct events`);
+  ok('…including the ones chosen by a ternary (quiz results, drift start/end)',
+    ['quiz:correct', 'quiz:timeout', 'quiz:wrong', 'drift:start', 'drift:end'].every(e => emitted.has(e)));
+
+  const missing = CONSUMED_EVENTS.filter(e => !emitted.has(e));
+  for (const e of CONSUMED_EVENTS.filter(x => emitted.has(x))) {
+    ok(`  "${e}" is emitted`, true, emitted.get(e));
+  }
+  for (const e of missing) {
+    const declared = NEEDED_EVENTS.some(n => n.event === e);
+    ok(`  "${e}" is NOT emitted — declared in NEEDED_EVENTS?`, declared,
+      declared ? 'declared' : 'UNDECLARED: this event is dead and nothing says so');
+  }
+  ok('NEEDED_EVENTS lists exactly the events nobody emits',
+    NEEDED_EVENTS.length === missing.length,
+    `${NEEDED_EVENTS.length} declared vs ${missing.length} actually missing`
+    + (NEEDED_EVENTS.length > missing.length ? ' — a declared event has LANDED, strike it off' : ''));
+  ok('every badge on the board is reachable', missing.length === 0,
+    missing.length ? `blocked by: ${missing.join(', ')}` : 'garage:built and championship:complete both landed');
 }
 
 tracker?.dispose();

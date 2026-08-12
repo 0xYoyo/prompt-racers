@@ -110,6 +110,16 @@ export const ICONS = {
       fill="url(#bgGold)"/>
     <path d="M22.5 29.5l3.6 3.6 7.4-7.6" fill="none" stroke="#2a1c00" stroke-width="3.4"
       stroke-linecap="round" stroke-linejoin="round"/>`,
+  // a laurel medal — a long run of right answers
+  quizmedal: `${defs}<path d="M17 4l7 13 7-13" fill="none" stroke="url(#bgGold)" stroke-width="3.4"
+      stroke-linecap="round"/>
+    <circle cx="24" cy="30" r="13.5" fill="url(#bgGold)"/>
+    <circle cx="24" cy="30" r="9.5" fill="none" stroke="#a4620a" stroke-width="1.4" opacity=".65"/>
+    <path d="M24 23.5l1.9 3.9 4.3.6-3.1 3 .7 4.3-3.8-2-3.8 2 .7-4.3-3.1-3 4.3-.6z" fill="#2a1c00" opacity=".55"/>`,
+  // a crown — the top of a ladder
+  crown: `${defs}<path d="M6 34l-2-19 10 7 10-14 10 14 10-7-2 19z" fill="url(#bgGold)"/>
+    <path d="M6 34h36v6H6z" fill="url(#bgGold)" opacity=".8"/>
+    <circle cx="24" cy="24" r="2.6" fill="#2a1c00" opacity=".45"/>`,
   // a brain-ish wreath of answers
   quizmaster: `${defs}<circle cx="24" cy="24" r="15" fill="url(#bgGold)" opacity=".18"/>
     <circle cx="24" cy="24" r="15" fill="none" stroke="url(#bgGold)" stroke-width="2.4"/>
@@ -190,7 +200,7 @@ export const BADGES = [
   { id: 'quiz-first', group: 'quiz', icon: 'quiz', test: s => s.quizCorrect >= 1 },
   { id: 'quiz-5', group: 'quiz', icon: 'quizrun', test: s => s.quizCorrect >= 5,
     progress: s => [s.quizCorrect, 5] },
-  { id: 'quiz-15', group: 'quiz', icon: 'quizrun', test: s => s.quizCorrect >= 15,
+  { id: 'quiz-15', group: 'quiz', icon: 'quizmedal', test: s => s.quizCorrect >= 15,
     progress: s => [s.quizCorrect, 15] },
   { id: 'quiz-40', group: 'quiz', icon: 'quizmaster', test: s => s.quizCorrect >= 40,
     progress: s => [s.quizCorrect, 40] },
@@ -212,7 +222,7 @@ export const BADGES = [
     progress: s => [s.bestPromptScore, 55] },
   { id: 'prompt-80', group: 'prompt', icon: 'promptmax', test: s => s.bestPromptScore >= 80,
     progress: s => [s.bestPromptScore, 80] },
-  { id: 'prompt-max', group: 'prompt', icon: 'promptmax', hard: true,
+  { id: 'prompt-max', group: 'prompt', icon: 'crown', hard: true,
     test: s => s.bestPromptScore >= 90, progress: s => [s.bestPromptScore, 90] },
   { id: 'prompt-expert', group: 'prompt', icon: 'expert', test: s => s.expertPrompts >= 1 },
 
@@ -273,13 +283,13 @@ export const BADGE_STRINGS = {
     'badge.quiz-15.cond': 'עונים נכון על ‎15 שאלות',
     'badge.quiz-40.name': 'מוח על',
     'badge.quiz-40.cond': 'עונים נכון על ‎40 שאלות',
-    'badge.tokens-50.name': 'אספן טוקנים',
+    'badge.tokens-50.name': 'אוצר טוקנים',
     'badge.tokens-50.cond': 'אוספים ‎50 טוקנים בסך הכול',
     'badge.tokens-200.name': 'ארנק כבד',
     'badge.tokens-200.cond': 'אוספים ‎200 טוקנים בסך הכול',
     'badge.drift-first.name': 'החלקה ראשונה',
     'badge.drift-first.cond': 'מסיימים החלקה אחת ומקבלים טורבו',
-    'badge.drift-25.name': 'מלך ההחלקות',
+    'badge.drift-25.name': 'אלוף/ת ההחלקות',
     'badge.drift-25.cond': 'מסיימים ‎25 החלקות עם טורבו',
     'badge.drift-top.name': 'טורבו סגול',
     'badge.drift-top.cond': 'מחזיקים החלקה עד הדרגה הגבוהה ביותר',
@@ -287,7 +297,7 @@ export const BADGE_STRINGS = {
     'badge.prompt-good.cond': 'כותבים לבורג פרומפט באיכות ‎55 ומעלה',
     'badge.prompt-80.name': 'פרומפט מדויק',
     'badge.prompt-80.cond': 'כותבים לבורג פרומפט באיכות ‎80 ומעלה',
-    'badge.prompt-max.name': 'אלוף הפרומפטים',
+    'badge.prompt-max.name': 'אלוף/ת הפרומפטים',
     'badge.prompt-max.cond': 'מגיעים לאיכות ‎90 ומעלה — רק במצב מומחה',
     'badge.prompt-expert.name': 'מצב מומחה',
     'badge.prompt-expert.cond': 'כותבים פרומפט במילים שלכם במצב מומחה',
@@ -307,13 +317,13 @@ export const BADGE_STRINGS = {
     'badge.quiz-15.cond': 'Answer 15 questions correctly',
     'badge.quiz-40.name': 'Super Brain',
     'badge.quiz-40.cond': 'Answer 40 questions correctly',
-    'badge.tokens-50.name': 'Token Collector',
+    'badge.tokens-50.name': 'Token Treasure',
     'badge.tokens-50.cond': 'Collect 50 tokens in total',
     'badge.tokens-200.name': 'Heavy Wallet',
     'badge.tokens-200.cond': 'Collect 200 tokens in total',
     'badge.drift-first.name': 'First Drift',
     'badge.drift-first.cond': 'Finish one drift and get a boost',
-    'badge.drift-25.name': 'Drift King',
+    'badge.drift-25.name': 'Drift Champion',
     'badge.drift-25.cond': 'Finish 25 drifts with a boost',
     'badge.drift-top.name': 'Purple Boost',
     'badge.drift-top.cond': 'Hold a drift all the way to the top tier',
@@ -531,15 +541,54 @@ export function startBadgeTracker(opts = {}) {
   // resets every race.
   on('token:pickup', () => { s.tokensPickups++; s.tokensLifetime++; bump(); });
 
-  /* ── drift ────────────────────────────────────────────────────────────── */
+  /* ── drift ────────────────────────────────────────────────────────────────
+   * `drift:boost` is NOT the same thing as "the player drifted", and reading it
+   * as if it were is the bug this section exists to survive. Two facts, both
+   * verified in the tree:
+   *
+   *   1. race.js emits it on the `boosting` false→true edge with
+   *      `{ tier: player.driftTier }` — but kartphysics `_releaseDrift()` calls
+   *      applyBoost() and zeroes `driftTier` in the same call, so by the time
+   *      race.js reads the body the tier is ALWAYS 0. A first version of this
+   *      file believed the payload; `drift-top` was therefore unearnable, and
+   *      the unit test hid it by hand-emitting `{tier:3}` — a payload no code
+   *      path in the game produces.
+   *   2. quiz.js calls `body.applyBoost()` on every correct answer, which
+   *      raises the same edge. Roughly 17 of the ~25 "drifts" a child would
+   *      have been credited with per championship were quiz answers.
+   *
+   * So the tier is taken from `drift:tier` — which fires WHILE drifting, from a
+   * live value, and is correct today — and a boost only counts as a drift when
+   * a drift was actually charged and has just ended. The incoming Wave-4
+   * contract (`{ tier: 1-3 | 0, source: 'drift' | 'external' }`) is honoured
+   * first when it is present, so this reads correctly before and after that
+   * lands, and neither reading invents a payload.
+   */
+  let driftPeak = 0;        // top tier reached by the drift in progress / just ended
+  let driftingNow = false;
+
+  on('drift:start', () => { driftingNow = true; driftPeak = 0; });
+  on('drift:end', () => { driftingNow = false; });
   on('drift:tier', p => {
     const tier = Number(p.tier) || 0;
+    if (tier > driftPeak) driftPeak = tier;
     if (tier > s.bestDriftTier) { s.bestDriftTier = tier; dirty = true; }
   });
   on('drift:boost', p => {
+    const tier = Number(p.tier) || 0;
+    const source = p.source;
+    // New contract wins outright where it exists.
+    const isDrift = source === 'drift' ? true
+      : source != null ? false
+      // Legacy: a real release emits drift:end in the SAME frame, before the
+      // boost, so `driftingNow` is already false and `driftPeak` still holds the
+      // charge. A quiz turbo has neither. That is the whole discriminator.
+        : (tier >= 1 || (driftPeak >= 1 && !driftingNow));
+    if (!isDrift) return;
+    const released = Math.max(tier, driftPeak);
+    driftPeak = 0;                                  // consumed; never paid twice
     s.driftBoosts++;
-    // race.js emits drift:boost with the tier that was released.
-    if ((Number(p.tier) || 0) >= 3) s.driftBoostsTop++;
+    if (released >= 3) s.driftBoostsTop++;
     bump();
   });
 
@@ -613,6 +662,10 @@ const TOAST_CSS = `
   box-shadow:0 12px 34px rgba(0,0,0,.55),0 0 26px -12px rgba(255,194,71,.9);
   color:#f4f1ea;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
   animation:prToastIn .38s cubic-bezier(.22,.9,.3,1) both, prToastOut .5s ease-in 3.9s both}
+/* Screenshots and layout gates cannot outrun a 4-second fade: a swiftshader boot
+   takes longer than that, so every shot came back empty. .sticky keeps the same
+   toast on screen for the camera, and nothing in the game sets it. */
+.pr-toast.sticky{animation:prToastIn .38s cubic-bezier(.22,.9,.3,1) both}
 .pr-toast svg{inline-size:34px;block-size:34px;flex:none;
   filter:drop-shadow(0 2px 6px rgba(0,0,0,.6))}
 .pr-toast .k{font-size:11px;font-weight:900;letter-spacing:.12em;color:#ffc247}
@@ -648,7 +701,7 @@ function toastHost() {
  * Announce a freshly earned badge. Non-blocking, self-dismissing, stacks.
  * Exported so the lead (or a gate) can fire one without faking an unlock.
  */
-export function showBadgeToast(id) {
+export function showBadgeToast(id, opts = {}) {
   const b = badgeById(id);
   const host = toastHost();
   if (!b || !host) return null;
@@ -656,7 +709,7 @@ export function showBadgeToast(id) {
   const name = (BADGE_STRINGS[lang] || BADGE_STRINGS.he)[`badge.${id}.name`] || id;
 
   const el = document.createElement('div');
-  el.className = 'pr-toast';
+  el.className = 'pr-toast' + (opts.sticky ? ' sticky' : '');
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.setAttribute('viewBox', '0 0 48 48');
   icon.setAttribute('aria-hidden', 'true');
@@ -673,35 +726,42 @@ export function showBadgeToast(id) {
   host.appendChild(el);
 
   const kill = () => { el.remove(); if (!host.children.length) host.remove(); };
-  el.addEventListener('animationend', e => { if (e.animationName === 'prToastOut') kill(); });
-  setTimeout(kill, 6000);   // belt and braces: animations can be disabled
+  if (!opts.sticky) {
+    el.addEventListener('animationend', e => { if (e.animationName === 'prToastOut') kill(); });
+    setTimeout(kill, 6000);   // belt and braces: animations can be disabled
+  }
   return el;
 }
 
-/* ══════════════════════════════════════════════ events the lead must add ══ */
+/* ═════════════════════════════════════════════════ the tracker's seam ═════ */
 /**
- * Events this tracker listens for that DO NOT EXIST YET. Listed as data so the
- * lead can grep it, and so a future gate can assert they arrived.
- *
- * Nothing here is emitted by this module: adding an emit to a file this agent
- * does not own is exactly the silent seam the project keeps getting burned by.
+ * EVERY bus event this tracker consumes. This list is not documentation — the
+ * gate reads it and fails if any entry is not emitted anywhere in src/, which is
+ * the only way a listener-only module can find out that the event it waits for
+ * was renamed, moved or never written. Nothing here is emitted by this module:
+ * adding an emit to a file this agent does not own is exactly the silent seam
+ * the project keeps getting burned by.
  */
-export const NEEDED_EVENTS = [
-  {
-    event: 'garage:built',
-    payload: '{ score:number 0-100, tier:0-3, expert:boolean, slotKey:string, coherent:boolean }',
-    file: 'src/garage/garage.js — at the reveal, where the part is handed to onDone()',
-    alternative: 'src/scenes.js — inside SCENES.garage onDone(part, gain), which already reads part.score',
-    why: 'The three prompt-quality badges (prompt-good / prompt-80 / prompt-max), the '
-       + 'expert-mode badge, and the אימון glossary term have no other source. '
-       + 'garage.js is preferred over scenes.js so free-play prompts count too.',
-  },
-  {
-    event: 'championship:complete',
-    payload: '{ place:number 1-8, points:number, races:number, championship:number }',
-    file: 'src/scenes.js — SCENES.podium, in the block that increments championshipsDone',
-    why: 'champ-win cannot be derived from race results: final standings are computed '
-       + 'in scenes.js from totalPoints() and include the seven AI racers. '
-       + 'champ-finish and the ענן term already fall back to "three races finished".',
-  },
+export const CONSUMED_EVENTS = [
+  'quiz:correct', 'quiz:wrong', 'quiz:timeout',
+  'token:pickup',
+  'drift:start', 'drift:end', 'drift:tier', 'drift:boost',
+  'garage:built',
+  'race:complete', 'race:finish',
+  'championship:complete', 'championship:reset',
+  'scene:entered', 'save:reset',
 ];
+
+/**
+ * Consumed events that are NOT emitted anywhere yet, with the payload and the
+ * owning file, so the lead can wire them. MUST stay in sync with reality: the
+ * gate fails both ways — an entry here that someone has since emitted is just as
+ * wrong as a missing entry, because it tells the next reader a badge is dead
+ * when it is live.
+ *
+ * Wave 4 round 2: both original entries have landed —
+ *   garage:built           → src/garage/garage.js (at finishBuild, so free play counts)
+ *   championship:complete  → src/scenes.js (inside the once-per-ledger podium guard)
+ * so every badge on the board is now reachable.
+ */
+export const NEEDED_EVENTS = [];

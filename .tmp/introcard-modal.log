@@ -81,3 +81,23 @@
   [31m✗[0m …including the freeze and the reward                       scale 0, tokens 3
   [32m✓[0m the continue BUTTON resumes exactly as Space does          resume / resume / resume
   [32m✓[0m answer targets are big enough for a child's finger         643×47px
+  [32m✓[0m the pause menu is over the quiz                            
+  [32m✓[0m a real click where the option IS cannot answer a quiz behind the pause menu 
+  [31m✗[0m …and the very same click answers once the pause menu is gone 
+  [31m✗[0m the continue button is a finger-sized target too           missing
+  [31m✗[0m a click on continue in the first fraction of a second does NOT dismiss 
+  [31m✗[0m …and dismisses once the explanation has been up long enough 
+file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/common/WaitTask.js:45
+            this.#timeoutError = new TimeoutError(`Waiting failed: ${options.timeout}ms exceeded`);
+                                 ^
+
+TimeoutError: Waiting failed: 60000ms exceeded
+    at new WaitTask (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/common/WaitTask.js:45:34)
+    at IsolatedWorld.waitForFunction (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/api/Realm.js:22:26)
+    at CdpFrame.waitForFunction (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/api/Frame.js:568:43)
+    at CdpFrame.<anonymous> (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/util/decorators.js:101:27)
+    at CdpPage.waitForFunction (file:///Users/yoyopc/repos/kart-project/node_modules/puppeteer-core/lib/esm/puppeteer/api/Page.js:1430:37)
+    at boot (file:///Users/yoyopc/repos/kart-project/tools/modaltest.mjs:108:14)
+    at async file:///Users/yoyopc/repos/kart-project/tools/modaltest.mjs:491:1
+
+Node.js v22.14.0

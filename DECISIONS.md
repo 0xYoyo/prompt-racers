@@ -492,12 +492,26 @@ Garage axis at 100% pace (mean place): stock 2.2 / 3.8 / 3.8 → tier 2 **1.0 / 
 So an upgrade is worth +1.2 places on race 1 and +2.2–2.8 on races 2–3 — which is the
 brief's "winning races 2–3 requires a decent prompt", now true rather than asserted.
 
-**One target-feel claim was measured false and is recorded as such:** a correct quiz
-answer's turbo was worth ~0.15s, about **0.1 of a place**, so "a couple of quiz boosts wins
-race 1" was not true at any engagement level (0/2/4/6 correct → 2.2/2.2/2.0/1.8). The quiz's
-real contribution was always its tokens feeding the garage. The boost itself was retuned in
-`quiz.js` rather than left to be contradicted by item 11's explainer, which tells the child
-in as many words that grabbing boxes is worth it.
+**The quiz axis fixed itself, and the reason matters more than the outcome.** Measured
+against the OLD field, a correct answer's turbo was worth ~0.15s — about **0.1 of a place**
+(0/2/4/6 correct → 2.2/2.2/2.0/1.8), so the brief's "a couple of quiz boosts wins race 1"
+was simply false. The obvious response was to strengthen `BOOST` in `quiz.js`, and that was
+ordered and then **withdrawn unapplied**, because re-measuring against the NEW field showed
+the target had already come true on its own: 0/2/4/6 correct → **2.67 / 2.00 / 1.33 / 1.00**,
+winning 0/6, 1/6, 4/6, 6/6 of seeds.
+
+Nothing about the boost changed. Compressing the field into ~6 seconds over a ~150s race
+makes finishing position roughly a **0.7s-per-place** function of the player, so the same
+1.3/2.4/6 turbo that used to buy 0.1 of a place now buys one or more. Applying the
+strengthened constant on top of that compression would have overshot and made race 1
+unloseable for anyone who answers.
+
+The general lesson, which is why this paragraph exists: **a balance measurement is only
+valid against the field it was taken on.** Two agents measuring the same lever a few hours
+apart got answers differing by a factor of ten, and neither was wrong. `BOOST` stays at
+`{1.3, 2.4, 6}`. On races 2–3 the turbo is still worth ~nothing (3.50→3.17, 3.83→3.50, zero
+wins at any engagement level), which is correct per the brief: there, the quiz contributes
+through the **tokens** it feeds the garage, not through the turbo.
 
 The gate's old budget was slack enough that the **broken** code passed it (0.72 laps), so it
 was tightened to 0.35 and made two-sided: clean no-engagement driving must not win race 1

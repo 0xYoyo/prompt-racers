@@ -33,6 +33,15 @@ const MUT = {
     // 6b. the slider stops persisting
     [`    save.set({ volume: v });\n    applyVolume(v);`, `    applyVolume(v);`],
   ],
+  E: [
+    // 6c. the slider changes the sound but persists NOTHING — the audio side
+    //     persists on its own, so the redundant save.set() alone cannot be
+    //     mutated to prove this assertion; both writers have to go.
+    [`    save.set({ volume: v });\n    applyVolume(v);`, `    applyVolume(v, false);`],
+    [`    if (typeof audio?.setMasterVolume === 'function') audio.setMasterVolume(val);`,
+     `    if (typeof audio?.setMasterVolume === 'function') audio.setMasterVolume(val, false);`],
+    [`function applyVolume(v) {`, `function applyVolume(v, _p) {`],
+  ],
   C: [
     // 7. "new championship" erases without asking
     [`      const startNew = () => confirmNewChampionship(() => api.go('select', { fresh: true }));`,

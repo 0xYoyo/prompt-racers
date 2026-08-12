@@ -388,10 +388,10 @@ ok('canvas has the certificate\'s dimensions', analyse.w === 2000 && analyse.h =
   `${analyse.w}x${analyse.h}`);
 ok('every pixel is opaque (no transparent PNG)', analyse.opaque === analyse.sampled,
   `${analyse.opaque}/${analyse.sampled}`);
-ok('the image is not blank', analyse.ratio > 0.015 && analyse.ratio < 0.5,
+ok('the image is not blank', analyse.ratio > 0.04 && analyse.ratio < 0.5,
   `${(analyse.ratio * 100).toFixed(1)}% of sampled pixels carry ink`);
 ok('it is not a flat colour field', analyse.colours > 60, `${analyse.colours} distinct colours`);
-ok('ink lands in every horizontal band of the page', analyse.bands.every(n => n > 120),
+ok('ink lands in every horizontal band of the page', analyse.bands.every(n => n > 1100),
   analyse.bands.join('/'));
 ok('a different racer renders a different image', analyse.diff > 500, `${analyse.diff} differing samples`);
 ok('toDataURL yields a substantial PNG', analyse.dataUrlLen > 50000, `${analyse.dataUrlLen} chars`);

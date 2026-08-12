@@ -95,3 +95,26 @@
   [32m✓[0m a click answers in LTR (English) too                       640×46px
 
   10. the one-time first-question-box explainer
+  [32m✓[0m a fresh save has not seen the question-box explainer       
+  [32m✓[0m another panel owns the screen                              
+  [32m✓[0m a question box behind another panel opens NOTHING          
+  [32m✓[0m …and the one-time flag is left untouched, so the next box explains 
+  [32m✓[0m the first question box shows the explainer                 
+  [32m✓[0m …instead of the question itself                            
+  [32m✓[0m …and only now is the flag written                          
+  [31m✗[0m …and the world is frozen behind it, input gated off, like any quiz panel 
+  [32m✓[0m …measured: ZERO sim steps while it is up                   race +0.000s, moved 0.000m
+  [32m✓[0m it names both halves of what a box does                    
+  [32m✓[0m its button is a finger-sized target                        216×48px
+  [32m✓[0m clicking it leads straight into the question               
+  [32m✓[0m …and the explainer is gone                                 
+  [32m✓[0m …with the world still frozen for the question              
+  [32m✓[0m the SECOND question box does not explain again             
+  [32m✓[0m both outcomes were sampled                                 4 right, 5 wrong
+  [32m✓[0m a right answer really does pay tokens AND a turbo          +3 +3 +3 +3
+  [32m✓[0m a wrong answer really does cost nothing                    +0 +0 +0 +0 +0
+  [32m✓[0m …nor does the next RACE, on the same save                  
+  [32m✓[0m no page errors                                             
+  ──────────────────────────────────────────────────────────────────────────
+
+  6 FAILED

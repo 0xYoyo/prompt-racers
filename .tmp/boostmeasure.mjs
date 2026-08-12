@@ -35,7 +35,7 @@ const wait = ms => new Promise(r=>setTimeout(r,ms));
 await page.goto('file://' + dist, { waitUntil: 'load' });
 await page.evaluate(()=>localStorage.setItem('promptracers.v1', JSON.stringify({garageTokenIntroSeen:true, quizBoxIntroSeen:true})));
 await page.reload({ waitUntil: 'load' });
-await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 120000 });
 
 async function race(trackIdx, difficulty, seed, cfg, n) {
   await page.evaluate(o=>window.__DEBUG.goto('race', o),

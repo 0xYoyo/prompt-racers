@@ -1,0 +1,14 @@
+import puppeteer from 'puppeteer-core';
+const CH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const b=await puppeteer.launch({executablePath:CH,headless:'new',args:['--allow-file-access-from-files','--no-sandbox']});
+const p=await b.newPage();
+const errs=[];
+p.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));
+p.on('console',m=>{if(m.type()==='error')errs.push('CONSOLE: '+m.text());});
+await p.goto('file://'+process.cwd()+'/dist/index.html',{waitUntil:'networkidle0',timeout:60000});
+await new Promise(r=>setTimeout(r,4000));
+const info=await p.evaluate(()=>({ui:!!document.querySelector('#ui'),kids:document.querySelector('#ui')?.children.length||0,txt:(document.body.innerText||'').slice(0,200)}));
+console.log('errors:',errs.length?errs.slice(0,5):'none');
+console.log('ui mounted:',info.ui,'children:',info.kids);
+console.log('text:',JSON.stringify(info.txt));
+await b.close();

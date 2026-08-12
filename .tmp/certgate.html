@@ -22602,7 +22602,7 @@ void main() {
     const me = standings ? standings.find((s) => s && s.isPlayer) || null : null;
     const racerId = opts.racerId || me?.racerId || save.read("racerId") || ROSTER[0].id;
     const racer = byId(racerId);
-    const name = opts.racerName || (me && me.racerId === racerId ? me.name : null) || (he2 ? racer.nameHe : racer.nameEn);
+    const name = opts.racerName || (he2 ? racer.nameHe : racer.nameEn) || (me && me.racerId === racerId ? me.name : "");
     const champN = Number(opts.championship) || (Number(save.read("championshipsDone")) || 0) + 1;
     const races = Number.isFinite(opts.races) ? opts.races : (save.read("results") || []).filter(Boolean).length || 3;
     const points = Number.isFinite(opts.points) ? opts.points : Number.isFinite(me?.points) ? me.points : null;
@@ -22621,7 +22621,9 @@ void main() {
       badges: earnedBadgeIds()
     };
   }
-  var CANVAS_FONT = '"Arial Hebrew","Noto Sans Hebrew",-apple-system,"Segoe UI",system-ui,sans-serif';
+  var CANVAS_FONT_HE = '"Arial Hebrew","Noto Sans Hebrew",-apple-system,"Segoe UI",system-ui,sans-serif';
+  var CANVAS_FONT_EN = '-apple-system,"Segoe UI",system-ui,"Helvetica Neue","Arial Hebrew",sans-serif';
+  var CANVAS_FONT = CANVAS_FONT_EN;
   var hexCss = (n) => "#" + (n >>> 0).toString(16).padStart(6, "0");
   function rr(ctx, x, y, w, h2, r) {
     const k = Math.max(0, Math.min(r, w / 2, h2 / 2));
@@ -22787,7 +22789,7 @@ void main() {
   var INK = "#f7f2e6";
   var DIM = "rgba(247,242,230,.72)";
   function setFont(ctx, weight, size, rtl) {
-    ctx.font = `${weight} ${size}px ${CANVAS_FONT}`;
+    ctx.font = `${weight} ${size}px ${rtl ? CANVAS_FONT_HE : CANVAS_FONT_EN}`;
     ctx.direction = rtl ? "rtl" : "ltr";
   }
   function wrapLines(ctx, text, maxW) {
@@ -23423,8 +23425,13 @@ void main() {
   };
   var previewCertificateBare = (engine2, opts = {}) => {
     save.set({ badges: [], funTitle: null });
+    const standings = SAMPLE_STANDINGS.map((s, i) => ({
+      ...s,
+      racerId: i === 0 ? "plada" : s.racerId,
+      name: i === 0 ? "\u05E4\u05DC\u05D3\u05D4" : s.name
+    }));
     return overBackdrop(engine2, opts, () => certificateOverlay({
-      standings: SAMPLE_STANDINGS,
+      standings,
       racerId: "plada",
       championship: 1,
       races: 3,

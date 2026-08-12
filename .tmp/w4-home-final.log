@@ -1,0 +1,18 @@
+
+  HOME SCREEN: CHROME, LEGEND, RESETS, VOLUME
+  ────────────────────────────────────────────────────────────────────────────
+
+  1. the centre column
+  [32m✓[0m the home screen has a centre column at all                     4 buttons
+  [32m✓[0m it is exactly the four expected entries                        מתחילים אליפות | המוסך של בורג | איך משחקים | האוסף שלי
+  [32m✓[0m …championship start                                            מתחילים אליפות
+  [32m✓[0m …המוסך של בורג                                                 
+  [32m✓[0m …איך משחקים                                                    
+  [32m✓[0m …האוסף שלי                                                     
+  [32m✓[0m Settings is NOT in the centre column                           מתחילים אליפות | המוסך של בורג | איך משחקים | האוסף שלי
+  [32m✓[0m "how was this built" is NOT in the centre column               
+  [32m✓[0m mid-championship it gains ONLY "אליפות חדשה"                   ממשיכים באליפות | אליפות חדשה | המוסך של בורג | איך משחקים | האוסף שלי
+  [32m✓[0m …and still no settings / how-it-was-built                      
+  [32m✓[0m האוסף שלי navigates by scene name (no import of collection.js) column: 5
+
+  2. the gear and the info icon

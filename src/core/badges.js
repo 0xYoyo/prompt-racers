@@ -2,7 +2,7 @@
 // האוסף שלי — the ledger behind the collection screen (Wave 4, item 12).
 //
 // Two collections, one tracker:
-//   • BADGES    ~15 achievements, measured against lifetime counters.
+//   • BADGES    16 achievements, measured against lifetime counters.
 //   • GLOSSARY  12 AI words, unlocked by ENCOUNTERING the idea in play.
 //
 // This module is the DATA and the TRACKING. It draws nothing (ui/collection.js
@@ -733,30 +733,35 @@ export function showBadgeToast(id, opts = {}) {
   return el;
 }
 
-/* ══════════════════════════════════════════════ events the lead must add ══ */
+/* ═════════════════════════════════════════════════ the tracker's seam ═════ */
 /**
- * Events this tracker listens for that DO NOT EXIST YET. Listed as data so the
- * lead can grep it, and so a future gate can assert they arrived.
- *
- * Nothing here is emitted by this module: adding an emit to a file this agent
- * does not own is exactly the silent seam the project keeps getting burned by.
+ * EVERY bus event this tracker consumes. This list is not documentation — the
+ * gate reads it and fails if any entry is not emitted anywhere in src/, which is
+ * the only way a listener-only module can find out that the event it waits for
+ * was renamed, moved or never written. Nothing here is emitted by this module:
+ * adding an emit to a file this agent does not own is exactly the silent seam
+ * the project keeps getting burned by.
  */
-export const NEEDED_EVENTS = [
-  {
-    event: 'garage:built',
-    payload: '{ score:number 0-100, tier:0-3, expert:boolean, slotKey:string, coherent:boolean }',
-    file: 'src/garage/garage.js — at the reveal, where the part is handed to onDone()',
-    alternative: 'src/scenes.js — inside SCENES.garage onDone(part, gain), which already reads part.score',
-    why: 'The three prompt-quality badges (prompt-good / prompt-80 / prompt-max), the '
-       + 'expert-mode badge, and the אימון glossary term have no other source. '
-       + 'garage.js is preferred over scenes.js so free-play prompts count too.',
-  },
-  {
-    event: 'championship:complete',
-    payload: '{ place:number 1-8, points:number, races:number, championship:number }',
-    file: 'src/scenes.js — SCENES.podium, in the block that increments championshipsDone',
-    why: 'champ-win cannot be derived from race results: final standings are computed '
-       + 'in scenes.js from totalPoints() and include the seven AI racers. '
-       + 'champ-finish and the ענן term already fall back to "three races finished".',
-  },
+export const CONSUMED_EVENTS = [
+  'quiz:correct', 'quiz:wrong', 'quiz:timeout',
+  'token:pickup',
+  'drift:start', 'drift:end', 'drift:tier', 'drift:boost',
+  'garage:built',
+  'race:complete', 'race:finish',
+  'championship:complete', 'championship:reset',
+  'scene:entered', 'save:reset',
 ];
+
+/**
+ * Consumed events that are NOT emitted anywhere yet, with the payload and the
+ * owning file, so the lead can wire them. MUST stay in sync with reality: the
+ * gate fails both ways — an entry here that someone has since emitted is just as
+ * wrong as a missing entry, because it tells the next reader a badge is dead
+ * when it is live.
+ *
+ * Wave 4 round 2: both original entries have landed —
+ *   garage:built           → src/garage/garage.js (at finishBuild, so free play counts)
+ *   championship:complete  → src/scenes.js (inside the once-per-ledger podium guard)
+ * so every badge on the board is now reachable.
+ */
+export const NEEDED_EVENTS = [];

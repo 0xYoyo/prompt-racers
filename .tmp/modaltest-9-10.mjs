@@ -105,7 +105,7 @@ async function boot(seen, opts={}) {
   await page.evaluate(v => { localStorage.setItem('promptracers.v1', JSON.stringify(
     v ? {garageTokenIntroSeen:true, quizBoxIntroSeen:true} : {})); }, seen);
   await page.reload({ waitUntil: 'load' });
-  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 120000 });
   await page.evaluate(o=>window.__DEBUG.goto('race',{track:0,difficulty:1,...o}), opts);
   await wait(300);
 }
@@ -330,7 +330,7 @@ ok('the SECOND question box does not explain again',
      bad.map(p=>`${p.banked>=0?'+':''}${p.banked}`).join(' '));
 }
 await page.reload({ waitUntil: 'load' });
-await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 120000 });
 await page.evaluate(()=>window.__DEBUG.goto('race',{track:0,difficulty:1,autopilot:true}));
 await wait(300);
 await evalp(()=>window.__DEBUG.advance(4));

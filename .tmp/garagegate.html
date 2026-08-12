@@ -26809,7 +26809,6 @@ void main() {
 
 /* \u2500\u2500 The debrief: one row per filled slot, one prompting idea each \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .grg-debrief{display:flex;flex-direction:column;gap:7px}
-.grg-dbrow{padding-block:46px!important}
 .grg-dbrow{display:flex;gap:11px;align-items:flex-start;padding:9px 13px;border-radius:var(--r-s);
   background:rgba(255,255,255,.05);border:1px solid var(--stroke);
   border-inline-start:4px solid var(--rc1)}
@@ -29620,6 +29619,8 @@ void main() {
   });
   window.__DONE = null;
   window.__EXIT = false;
+  window.__BUILT = [];
+  bus.on("garage:built", (p) => window.__BUILT.push(p));
   bootPreview((engine2, o = {}) => {
     if (window.__FREEPLAY) return freePlayScene(engine2, { meet: false, ...o, onExit: () => {
       window.__EXIT = true;
