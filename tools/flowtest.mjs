@@ -7,11 +7,22 @@ import puppeteer from 'puppeteer-core';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, mkdirSync } from 'fs';
+// The economy gate compares against the garage's OWN prices rather than a copy of
+// them, so a price change shows up here as a failing band instead of a stale
+// comment. prompts.js is pure data + i18n registration, so it imports in node.
+import { MAX_COST, MIN_COMPLETE_COST } from '../src/garage/prompts.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const dist = resolve(root, 'dist/index.html');
-if (!existsSync(dist)) { console.error('dist missing — npm run build'); process.exit(2); }
+// `--dist=<path>` drives a build OTHER than dist/index.html. It exists for the
+// project's own rule that a gate only counts if it fails against the broken
+// code: you can keep a build of the pre-fix source in .tmp/ and point this at
+// it, instead of rewinding a working tree that several agents share (D25). It
+// defaults to the real build, so nothing about `npm run flow` changes.
+const distArg = (process.argv.find(a => a.startsWith('--dist=')) || '').slice(7);
+const dist = distArg ? resolve(root, distArg) : resolve(root, 'dist/index.html');
+if (!existsSync(dist)) { console.error(`build missing (${dist}) — npm run build`); process.exit(2); }
+if (distArg) console.log(`\n  \x1b[2m(driving ${distArg} instead of dist/index.html)\x1b[0m`);
 mkdirSync(resolve(root, 'shots'), { recursive: true });
 
 const steps = [];
@@ -47,13 +58,26 @@ try {
   const playerBeat = async () => page.evaluate(() => {
     const visible = el => el && el.offsetParent !== null &&
       getComputedStyle(el).visibility !== 'hidden' && +getComputedStyle(el).opacity > 0.05;
+    // For the blocking scrims, laid out and not hidden is the bar — NOT opacity.
+    // Their fade-in is a CSS transition, and under a harness that steps the sim
+    // without presenting frames a transition never settles, so a card that is
+    // genuinely on screen and genuinely holding the modal registry reads as
+    // opacity 0 and is skipped. That is why the pre-race welcome card stalled
+    // this gate at "phase=intro" while the game itself was behaving.
+    const present = el => el && el.offsetParent !== null &&
+      getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
 
     // Blocking one-time modals FIRST — they pause the sim, and the quiz container
     // (.quiz-root) is always in the DOM, so checking quizzes first short-circuits
     // forever and the run silently stalls.
-    for (const sel of ['.grgtok-scrim', '.grg-meet-scrim', '[data-onetime]']) {
+    // '.qzint-scrim' is the Wave-4 first-quiz-box explainer and '.intro-scrim'
+    // the pre-race welcome card. Both freeze the sim exactly as the first-token
+    // explainer does, so both stall the whole run if the gate does not dismiss
+    // them the way a child would. This list is the single reason a new blocking
+    // modal must be added here the day it ships.
+    for (const sel of ['.grgtok-scrim', '.grg-meet-scrim', '.qzint-scrim', '.ic-scrim', '[data-onetime]']) {
       const scrim = document.querySelector(sel);
-      if (visible(scrim)) {
+      if (present(scrim)) {
         const b = scrim.querySelector('button');
         if (b) { b.click(); return 'popup:' + sel; }
         if (typeof scrim.close === 'function') { scrim.close(); return 'popup:' + sel; }
@@ -63,18 +87,27 @@ try {
     // full freeze whose feedback waits for Space with NO time limit, so a beat
     // that only ever presses a digit answers the question and then leaves the
     // explanation up forever with the sim stopped — the race can never finish.
-    // This gate passed anyway only because its straight-ahead driver happens to
-    // miss every beacon (which is also why tokensFromQuiz has always read 0);
-    // the day the driver improves, the run would deadlock instead of failing.
     if (visible(document.querySelector('.quiz-card.quiz-answered'))) {
       dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }));
       return 'quiz:dismiss';
     }
     // Then an ACTUALLY OPEN quiz question (not merely the container).
+    //
+    // ANSWER IT CORRECTLY. This beat used to press `1` blind, which is the whole
+    // reason the economy went unmeasured for three waves: a third of the answers
+    // landed by luck and the driver met few beacons anyway, so `tokensFromQuiz`
+    // printed 0 on every run in the project's history and the only assertion
+    // that looked at the wallet was blind to its largest term (D29). The correct
+    // slot is read from the race's own quiz (`scene.quiz.correctSlot`) because
+    // the three options are SHUFFLED per showing — nothing outside the panel can
+    // work it out — and it is pressed as the real digit key, so the answer goes
+    // through the same keyboard path a child's finger does.
     const q = document.querySelector('.quiz-q');
     if (visible(q)) {
-      dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit1', key: '1', bubbles: true }));
-      return 'quiz';
+      const slot = window.__DEBUG?.engine?.active?.quiz?.correctSlot;
+      const n = (typeof slot === 'number' && slot >= 0 && slot <= 2) ? slot + 1 : 1;
+      dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit' + n, key: String(n), bubbles: true }));
+      return 'quiz:answer' + n;
     }
     return null;
   });
@@ -119,6 +152,15 @@ try {
   step('start-race button works', started === 'ok', started);
   step('reaches race scene', (await scene()) === 'race', await scene());
 
+  // Count the question boxes this race actually opens and how many were answered
+  // right, so the economy block below can prove its quiz term came from real
+  // questions rather than from a lucky non-zero number.
+  await page.evaluate(() => {
+    window.__ECON_Q__ = { opens: 0, correct: 0 };
+    window.__DEBUG.bus.on('quiz:open', () => { window.__ECON_Q__.opens++; });
+    window.__DEBUG.bus.on('quiz:correct', () => { window.__ECON_Q__.correct++; });
+  });
+
   // ---- drive ------------------------------------------------------------
   // Hold throttle + drift via real key events so Input is genuinely exercised,
   // then fast-forward the sim deterministically.
@@ -126,6 +168,15 @@ try {
     const k = (type, code) => dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
     k('keydown', 'ArrowUp');
   });
+  await page.evaluate(() => window.__DEBUG.advance(6));
+  // The pre-race welcome card (D35) owns the screen and holds the scene in phase
+  // 'intro', which emits zero fixed steps — so the kart is provably NOT moving
+  // until a child dismisses it. Dismiss it exactly the way playerBeat does for
+  // every other blocking modal, then let the countdown actually run; otherwise
+  // the next assertion fails at 'phase=intro' and takes thirteen downstream
+  // checks with it, which is a gate reporting the card as a bug.
+  await playerBeat();
+  await settle(150);
   await page.evaluate(() => window.__DEBUG.advance(6));
   await page.evaluate(() => window.__DEBUG.renderOnce());
   await settle(200);
@@ -162,10 +213,14 @@ try {
   step('position is tracked', mid.pos >= 1 && mid.pos <= 8, `P${mid.pos}`);
   step('best lap recorded', mid.best != null, mid.best ? (mid.best / 1000).toFixed(2) + 's' : 'none');
 
-  // Run long enough to finish 3 laps, still answering quizzes as they appear.
+  // Run long enough to finish 3 laps, still answering quizzes as they appear —
+  // and STOP as soon as the flag falls. Driving on past it kept advancing the
+  // world underneath the results screen, which the economy read below then
+  // measured: whatever race happened to finish LAST won the global result slot.
   for (let i = 0; i < 60; i++) {
     await page.evaluate(() => window.__DEBUG.advance(6));
     await playerBeat();
+    if (await page.evaluate(() => !!window.__LAST_RESULT__)) break;
   }
   await settle(3000);   // the 2.2s results delay plus transition
   await page.evaluate(() => window.__DEBUG.renderOnce());
@@ -175,26 +230,33 @@ try {
   step('race completes → results', sc === 'results', sc);
   await shot('flow-5-results.png');
 
-  // ECONOMY GATE. The garage's whole lesson is "precision costs — choose where it
-  // is worth spending", against a budget of ~17 and a max spend of ~21. If one race
-  // banks far more than that, the budget never binds and the lesson evaporates.
+  // ECONOMY, part 1 of 2 — WHAT THIS SLICE'S OWN DRIVER BANKED.
+  // The driver above holds a throttle key and never steers, so it drives like a
+  // child who has just picked up the keyboard: it bounces off walls, finishes
+  // last and meets two or three question boxes. That is a useful thing to
+  // measure (nobody should be able to get RICH by driving badly) but it cannot
+  // speak for "a winning, fully engaged player" — the economy measurement that
+  // does is part 2, below. What is asserted here is the INVARIANT, which holds
+  // for every player, plus the floor.
   const econ = await page.evaluate(() => window.__LAST_RESULT__ || null);
+  const qcount = await page.evaluate(() => window.__ECON_Q__ || { opens: 0, correct: 0 });
   if (econ) {
-    console.log(`        \x1b[2mtokens: ${econ.tokensFromPickups} pickups + ${econ.tokensFromQuiz} quiz + ${econ.tokensFinishBonus} finish = ${econ.tokens}\x1b[0m`);
-    // NAME WHAT THIS COVERS. This driver holds a throttle key and takes the
-    // straight-ahead line, so it collects pickups and finishes but has never in
-    // its life triggered a quiz beacon — `tokensFromQuiz` has printed 0 on every
-    // run since the assertion was written. The band below is therefore a claim
-    // about pickups and the finish bonus ONLY, and it passes because the term
-    // that breaks it is absent: a real child who answers well banks roughly
-    // twice this. Renamed rather than widened, so nobody reads a green tick here
-    // as "the economy is fine" — the measurement and the fix are in GAPS.md.
-    step('pickup + finish token yield stays near the garage budget (QUIZ NOT COVERED)',
-      econ.tokens >= 6 && econ.tokens <= 28,
-      `${econ.tokens} banked vs ~21 max garage spend · quiz term unmeasured (${econ.tokensFromQuiz})`);
-    step('the quiz term really is missing from the line above, not merely zero',
-      econ.tokensFromQuiz === 0,
-      'if this fails the driver now hits beacons — widen the band above to include them');
+    console.log(`        \x1b[2mtokens: ${econ.tokensFromPickups} pickups + ${econ.tokensFromQuiz} quiz + ${econ.tokensFinishBonus} finish`
+      + ` = ${econ.tokens}  ·  P${econ.place}, ${qcount.correct}/${qcount.opens} questions answered right`
+      + `  ·  max ask ${MAX_COST}, cheapest complete ask ${MIN_COMPLETE_COST}\x1b[0m`);
+
+    step('a scrappy driver still cannot buy the most expensive ask',
+      econ.tokens < MAX_COST,
+      `${econ.tokens} banked vs ${MAX_COST} max ask (margin ${MAX_COST - econ.tokens})`);
+    // The floor: the garage must never open with every card greyed out. A race
+    // pays its finishing bonus to everyone, so even this run funds a complete ask.
+    step('…and still funds a complete ask after a bad race',
+      econ.tokens >= MIN_COMPLETE_COST,
+      `${econ.tokens} banked, cheapest complete ask ${MIN_COMPLETE_COST}, finish bonus ${econ.tokensFinishBonus}`);
+    step('a bad race does not pay like a good one',
+      econ.tokens <= 14, `${econ.tokens} banked = ${econ.tokensFromPickups}+${econ.tokensFromQuiz}+${econ.tokensFinishBonus}`);
+  } else {
+    step('economy: the race produced a result to measure', false, 'no __LAST_RESULT__');
   }
 
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('promptracers.v1') || '{}'));
@@ -415,6 +477,10 @@ try {
     // i18n.js ordinal(), Hebrew branch. The header quotes one of these words; the
     // gate's whole point is that it must be the word for the player's TABLE place.
     const HE_ORDINAL = ['', 'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שביעי', 'שמיני'];
+    // The NON-champion podium headline (menu.podium.done). Named once so the
+    // tie-break check below can say "crowned" without pinning the CHAMPION
+    // wording, which is copy and moves.
+    const LOSE_TITLE_HE = 'סוף האליפות';
     const REST = ['zamzum', 'tipa', 'kaftor', 'raash'];
     const BEST_PROMPT = { text: 'מנוע קליל שמאיץ מהר ביציאה מפנייה, בלי לאבד אחיזה', score: 84 };
 
@@ -570,9 +636,20 @@ try {
       const myPlace = Number(mine?.place || 0);
       // Winning replaces the ordinal sentence with the champion headline, so the
       // header agrees with the table when it names first place OR crowns them.
+      //
+      // Deliberately does NOT pin the champion headline's WORDING. It used to
+      // match /אלוף/, and Wave 4's smoothing pass rewrote that headline to
+      // `זכיתם באליפות!` — masculine singular on the game's proudest screen was
+      // exactly the D27 defect that pass existed to find — which turned this
+      // gate red for a copy IMPROVEMENT rather than for a bug. A gate that pins
+      // a string it does not own makes correct copy edits look like
+      // regressions, and that argument usually ends with the copy being
+      // reverted. What this check is for is that the header and the table agree
+      // about the player's place, so it tests exactly that.
+      const crowned = got.title !== LOSE_TITLE_HE && !/מקום ה/.test(got.congrats);
       const headerOK = myPlace === 1
-        ? /אלוף/.test(got.title) && !/מקום ה/.test(got.congrats)
-        : got.congrats.includes(HE_ORDINAL[myPlace]) && !/אלוף/.test(got.title);
+        ? crowned
+        : got.congrats.includes(HE_ORDINAL[myPlace]) && got.title === LOSE_TITLE_HE;
       step(`C#3 tie 24–24 (${label}): table follows the tie-break`, tableOK,
         got.rows.slice(0, 2).map(r => `${r.place}.${r.name} ${r.points}${r.isMe ? '*' : ''}`).join('  '));
       step(`C#3 tie 24–24 (${label}): header place === table place`, headerOK,
@@ -1153,6 +1230,13 @@ try {
     await page.evaluate(() => window.__DEBUG.advance(8));
     await page.evaluate(() => window.__DEBUG.engine.active.quiz.openQuestion());
     await settle(400);
+    // A child's FIRST question box is preceded by the one-time explainer (D37),
+    // which stands in front of the question and opens it when dismissed. This
+    // save has never seen one, so dismiss it the way playerBeat does everywhere
+    // else — otherwise the assertion below measures the explainer and reports
+    // "the quiz is not open" about a quiz that is queued behind it.
+    await playerBeat();
+    await settle(400);
     const quizUp = await page.evaluate(() => !!document.querySelector('.quiz-root.show'));
     p = await probe('button.mn-home', 'הפסקה');
     step('N: race with a quiz on screen — the quiz is really open', quizUp, `quiz=${quizUp}`);
@@ -1261,7 +1345,98 @@ try {
     await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ECONOMY, part 2 of 2 — THE PLAYER THE TARGET IS ABOUT (Wave 4, item 6).
+  //
+  // The garage's whole lesson is "precision costs, so choose where it is worth
+  // spending", against a maximum ask of MAX_COST (21) — and the target is that a
+  // player who is BOTH winning AND answering every question still cannot buy it.
+  // Nothing in this file could measure that player until now: the play slice's
+  // driver holds a throttle key, and for three waves the assertion that looked at
+  // the wallet reported `tokensFromQuiz = 0` on every run in the project's
+  // history and passed because the term that breaks it was missing (D29).
+  //
+  // So this drives a real race on the game's own autopilot — a clean racing line
+  // that wins — and answers every question box it meets, correctly, through the
+  // real answer buttons. The result is the whole wallet, by source, for exactly
+  // the child the economy is aimed at.
+  async function economyGate() {
+    const SAVE_KEY = 'promptracers.v1';
+    console.log('\n  TOKEN ECONOMY — a winning, fully engaged race\n  ' + '─'.repeat(70));
+    await page.evaluate(k => localStorage.setItem(k, JSON.stringify({
+      racerId: 'nitzotz', results: [], championshipRace: 0,
+      // The one-time explainers own their own dismissal and are gated elsewhere;
+      // what is being measured here is tokens, not popups.
+      garageTokenIntroSeen: true, quizBoxIntroSeen: true, garageMetBoreg: true,
+    })), SAVE_KEY);
+    await page.reload({ waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+    await page.evaluate(() => window.__DEBUG.goto('race', {
+      track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: false,
+    }));
+
+    const run = await page.evaluate(async () => {
+      const D = window.__DEBUG;
+      const sc = D.engine.active;
+      const q = sc.quiz;
+      const STEP = 1 / 60;
+      let answered = 0, correct = 0, opened = 0;
+      const off = D.bus.on('quiz:open', () => { opened++; });
+      for (let i = 0; i < 60 * 600 && !window.__LAST_RESULT__; i++) {
+        D.engine.time += STEP;
+        sc.update(STEP);
+        // A child dismisses things; so does this.
+        const scrim = document.querySelector('.grgtok-scrim, .qzint-scrim, .ic-scrim');
+        if (scrim && scrim.offsetParent !== null) { scrim.querySelector('button')?.click(); continue; }
+        if (q && q.phase === 'question') {
+          // `correctSlot` is the panel's own answer: the three options are
+          // shuffled per showing, so nothing outside it can know which is right,
+          // which is why no automated driver had ever answered one.
+          const btns = document.querySelectorAll('.quiz-root.show .quiz-opt');
+          const slot = q.correctSlot;
+          if (btns[slot]) { const was = q.correctSlot; btns[slot].click(); answered++; if (slot === was) correct++; }
+        } else if (q && q.phase === 'feedback') {
+          q.dismiss('key');            // the child has read the explanation
+        }
+      }
+      off();
+      const r = window.__LAST_RESULT__;
+      return { r, opened, answered, correct, beacons: q?.beaconCount ?? 0 };
+    });
+
+    const r = run.r;
+    if (!r) { step('E: the engaged race reached the flag', false, `${run.opened} questions opened`); return; }
+    console.log(`        \x1b[2m${r.tokensFromPickups} pickups + ${r.tokensFromQuiz} quiz + ${r.tokensFinishBonus} finish`
+      + ` = ${r.tokens} banked · P${r.place} · ${run.correct}/${run.opened} boxes answered right`
+      + ` · ask costs ${MIN_COMPLETE_COST}–${MAX_COST}\x1b[0m`);
+
+    // The term that was missing. Assert it is PRESENT, not merely that the total
+    // looks sane: a band over a sum passes happily while a summand is absent,
+    // which is exactly how the old assertion stayed green for three waves.
+    step('E: the driver really meets question boxes and answers them',
+      run.opened >= 4 && run.correct === run.opened && r.tokensFromQuiz > 0,
+      `${run.correct}/${run.opened} right → ${r.tokensFromQuiz} tokens from the quiz`);
+    step('E: it really is a winning race', r.place <= 2, `P${r.place}`);
+    // THE TARGET (Wave-4 item 6, D17 restated with the quiz counted).
+    step('E: a winning, fully engaged race still cannot buy the top ask',
+      r.tokens < MAX_COST,
+      `${r.tokens} banked vs ${MAX_COST} — margin ${MAX_COST - r.tokens}`);
+    // The band. Measured 14–18 across three tracks × three seeds; it must FAIL
+    // rather than be widened, because it is the thing that notices a constant
+    // drifting back up underneath an invariant that still happens to hold.
+    step('E: …and the yield stays in the intended 11–19 band',
+      r.tokens >= 11 && r.tokens <= 19,
+      `${r.tokens} = ${r.tokensFromPickups}+${r.tokensFromQuiz}+${r.tokensFinishBonus}`);
+    // Each source still contributes: a "balanced" total that is really one term
+    // is how the economy got here in the first place.
+    step('E: every source still pays something (pickups / quiz / finish)',
+      r.tokensFromPickups > 0 && r.tokensFromQuiz > 0 && r.tokensFinishBonus > 0,
+      `${r.tokensFromPickups} / ${r.tokensFromQuiz} / ${r.tokensFinishBonus}`);
+    await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);
+  }
+
   if (runs('play')) await mainFlowGates();
+  if (runs('play') || runs('econ')) await economyGate();
   if (runs('champ')) await championshipEndGates();
   if (runs('seam')) await seamGates();
   if (runs('nav')) await navigationWalkGates();

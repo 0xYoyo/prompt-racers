@@ -38,7 +38,8 @@ network. Verified legible in both scripts.
 
 ## D7 — Original world identity
 Title kept as **מרוץ הפרומפטים**. Player character **ניצוץ**; garage mechanic **בורג**, a
-friendly robot. Tracks: **נווה הנתונים** (desert oasis), **עיר המעגלים** (neon night city),
+friendly robot. Tracks: **נווה הנתונים** (desert oasis), **עיר הנוירונים** (neon night city;
+renamed from עיר המעגלים in Wave 4 — see D32),
 **פסגת הענן** (dawn sky islands). Chosen to be unmistakably distinct from both Mario Kart
 and the Kart Royale reference (which is a coastal-sunset theme — we deliberately avoid it),
 while giving three genuinely different lighting moods to show off range.
@@ -376,3 +377,569 @@ not a balance test — it asserts the imbalance **exists**, so fixing the econom
 red and the fixer must come back and update it. A green tick that means less than it looks
 like is worse than a red one, and this wave produced three of them (the garage's 3D
 checks, modaltest's Escape checks, this).
+
+---
+
+# WAVE 4
+
+## D30 — Reading of six truncated passages in the Wave-4 brief
+The brief arrived with several sentences cut mid-word. Per D10's precedent (and the
+standing "no questions mid-wave" instruction) they are read here rather than asked
+about, so the reading is auditable and can be corrected in the playtest.
+
+| # | As received | Read as |
+|---|---|---|
+| 2 | "…(the הא + איך משחקים): steering arrows must point outward" | The controls legend wherever it appears — the title screen's key strip **and** the `איך משחקים` overlay. Both fixed. |
+| 6 | "Target: a winning,e max spend, so choosing where to be precise still matters." | Target: a winning **player still cannot afford the maximum garage spend**, so the choice of where to be precise still bites. This is D17's rule restated with quiz rewards now included. |
+| 9 | "Both paths through mod." | Both input paths (keys and pointer) go through **the same code path and the same modal-registry guards** — not two implementations that can drift. |
+| 11 | "Charming, two sentences, not preac" | not **preachy**. |
+| 12 | "answering a quiz about X how a hint of where to find them" | Answering a quiz about a topic unlocks that topic's term; **locked terms show a hint of where to find them**, not the definition. |
+| 15 | "an optional fun-title picker from PRESET options only (e.g. אלוף/ת ⟨cut⟩contest rule)" | Preset titles only, no free text — because free text is a personal-data entry point, and the contest rule forbids collecting any. The `אלוף/ת` form also confirms titles must be offered in both grammatical genders (D27). |
+
+## D31 — Ducking is a registry subscription, not five call sites
+Item 8 asks that engine and world audio stop while **any** modal is open, "for every
+current and future modal". Wiring that at each of the five existing modals guarantees
+the sixth one forgets — which is precisely the failure class D15 was created to end.
+
+`ui/style.js` therefore grows `onModalChange(fn)`: subscribers are called once
+immediately and then on every empty↔non-empty transition of the modal set. The
+registry stays a Set of ids plus a Set of callbacks and keeps its defining property of
+having **no imports of its own**, so audio can subscribe to it without creating a
+cycle. A modal id invented next wave ducks the audio without anyone remembering to
+wire it, and that property is gated rather than merely intended.
+
+Master volume is a **separate** save key from `muted`, not a replacement for it. A
+child who mutes and later unmutes must land back on the volume they chose, and a
+volume of 0 must not be indistinguishable from mute in the UI.
+
+## D32 — The banners were lettered on their far side, and the comment above the bug said so
+Every trackside sponsor board in the game has read back-to-front since Wave 1. The cause
+was a single inverted swap in `gfx/props.js`: the quad was wound so its front normal
+pointed **away** from the centreline, U therefore ran along `+side·tangent` instead of the
+driver's screen-right `−side·tangent`, and the `DoubleSide` material dutifully showed the
+driver the reverse of the authored face. The comment directly above that line states the
+correct rule — screen-right is `−side·tangent` — and the code beneath it does the opposite,
+which is why five waves of readers skimmed past it.
+
+The finish gantry escaped, and its escape is the diagnostic: it is a `PlaneGeometry`
+rotated to face back down the track, so its local +X lands on the driver's screen-right by
+construction. "The finish-line text is fine" was the whole clue.
+
+The same inverted swap sat at the night-city holo billboards, with a louder symptom that
+nobody had connected to it: that material is `FrontSide`, so instead of reading mirrored
+those signs were back-face culled and **invisible from the racing line**. One bug, two
+presentations, neither reported as the other's twin.
+
+Fixed at source (both sites), and *also* guarded centrally: `enforceSignOrientation()` runs
+over the finished track group and re-winds or re-UVs any lettered face that violates the
+invariant. Both, deliberately — the source fix is the honest repair, and the central sweep
+is what makes the guarantee hold for the next module that draws Hebrew into the world
+without knowing this rule. It refuses (rather than silently "repairing") negative world
+scale or negative texture repeat, which UV rewriting cannot honestly fix.
+
+**The invariant, stated once so it can be gated:** for any lettered quad with front normal
+`N`, `U` must increase along `up × N` and `V` along `+Y`. That holds at any viewing angle,
+so a board seen edge-on down a straight obeys the same rule as one seen head-on.
+`tests/signage.test.mjs` re-derives normals and UV gradients from the real position/uv
+buffers and pins it — geometry, not a string match, because a regex on Hebrew text cannot
+see which way a triangle faces.
+
+Track 2 became **עיר הנוירונים** / Neuron City in the same pass. The `id` and `theme` stay
+`'circuit'`: the id is persisted in `results[]` and the theme keys palettes, gantry skins,
+sky and prop sets, so renaming either would have been a save migration in exchange for
+nothing. Display names flow from `trackdef` through `scenes.js:trackNameOf`, so every
+screen followed for free.
+
+## D33 — The game was too easy because the AI's pace fraction, not its rubber band
+A passive player won 15 races out of 15. The instinct is to blame the catch-up band; the
+measurement blamed the opponents' raw speed. The AI's own flat-out lap was already slower
+than a clean driver (oasis 48.08s against a 46.95s reference), and `paceForDifficulty`
+then took a further 3.5–18.5% off that. So the field was never racing the child in the
+first place, and no band setting could have hidden it.
+
+Three changes, each measured rather than reasoned:
+
+1. **`AI_PACE` is flat 1.00**, with a new per-track calibration `TRACK_PACE`
+   (`oasis 1.03 / circuit 0.96 / cloud 1.00`) because ref-autopilot versus AI flat-out
+   differs by **+2.4% / −5.2% / +4.7%** on the three geometries. One global pace lands the
+   field in a different place on every track, which is why the old ladder read as three
+   unrelated difficulties.
+2. **The opponents buy garage parts too** (`aiPartTier` → 0/1/2 for races 1/2/3), through
+   the same `PART_TIERS` the child buys. This is the only lever that raises the AI's top
+   speed — above about 1.05, pace buys nothing on oasis/cloud except time spent off-track —
+   and it makes the garage legible: the rivals visibly upgrade alongside you.
+3. **`BAND_CATCH` (+7.5%) is untouched.** The ceiling is the fairness argument and widening
+   it to manufacture tension would be the punishing kind of difficulty this audience must
+   not meet.
+
+**The never-lapped fix, and why it was subtle.** GAPS.md carried "at 70% pace the player is
+lapped on race 3" for two waves. The floor was written as **−17% of base pace**, and a
+percentage floor silently changes meaning when base pace moves: it was 0.677 effective on
+race 1 but 0.801 on race 3. It is now an absolute effective-pace floor
+(`BAND_FLOOR_PACE = 0.62`), identical on all three races. Measured in the built game, race
+3 at 70% pace went from **1.04 laps down (lapped, alone) to 0.19**.
+
+**Measured finish distribution**, seeds 3/11/19/41/57, real `KartBody` player on the game's
+own `autopilotInput`, 7 real opponents, collisions on, 3 laps, race N → track N:
+
+| pace | race 1 before → after | race 2 before → after | race 3 before → after |
+|---|---|---|---|
+| 100% | 1st ×5 → **mean 2.2** | 1st ×5 → **mean 3.8** | 1st ×5 → **mean 3.8** |
+| 85% | 4th → 6th | 2nd–5th → 6th | 6th–8th → 6th–7th |
+| 70% | 8th, 0.24 back → 0.17 | 8th, 0.25 → 0.15 | 8th, **0.61 → 0.20** |
+
+Garage axis at 100% pace (mean place): stock 2.2 / 3.8 / 3.8 → tier 2 **1.0 / 1.6 / 1.0**.
+So an upgrade is worth +1.2 places on race 1 and +2.2–2.8 on races 2–3 — which is the
+brief's "winning races 2–3 requires a decent prompt", now true rather than asserted.
+
+**The quiz axis fixed itself, and the reason matters more than the outcome.** Measured
+against the OLD field, a correct answer's turbo was worth ~0.15s — about **0.1 of a place**
+(0/2/4/6 correct → 2.2/2.2/2.0/1.8), so the brief's "a couple of quiz boosts wins race 1"
+was simply false. The obvious response was to strengthen `BOOST` in `quiz.js`, and that was
+ordered and then **withdrawn unapplied**, because re-measuring against the NEW field showed
+the target had already come true on its own: 0/2/4/6 correct → **2.67 / 2.00 / 1.33 / 1.00**,
+winning 0/6, 1/6, 4/6, 6/6 of seeds.
+
+Nothing about the boost changed. Compressing the field into ~6 seconds over a ~150s race
+makes finishing position roughly a **0.7s-per-place** function of the player, so the same
+1.3/2.4/6 turbo that used to buy 0.1 of a place now buys one or more. Applying the
+strengthened constant on top of that compression would have overshot and made race 1
+unloseable for anyone who answers.
+
+The general lesson, which is why this paragraph exists: **a balance measurement is only
+valid against the field it was taken on.** Two agents measuring the same lever a few hours
+apart got answers differing by a factor of ten, and neither was wrong. `BOOST` stays at
+`{1.3, 2.4, 6}`. On races 2–3 the turbo is still worth ~nothing (3.50→3.17, 3.83→3.50, zero
+wins at any engagement level), which is correct per the brief: there, the quiz contributes
+through the **tokens** it feeds the garage, not through the turbo.
+
+The gate's old budget was slack enough that the **broken** code passed it (0.72 laps), so it
+was tightened to 0.35 and made two-sided: clean no-engagement driving must not win race 1
+*and* must not be punished either, and a tier-2 kart must win it back so a future rebalance
+cannot make the championship unwinnable.
+
+## D34 — The engine was distorted, not merely loud; and music ducks rather than stops
+"Too loud and grating" turned out to be three faults, and fixing only the level would have
+left it grating at a lower volume. The voice was two detuned saws plus a square through
+`driveCurve(6)` — a tanh with slope ~6 near zero, which is a ~15 dB distortion stage rather
+than the warm saturator its name suggests. And it barely moved: idle and flat-out measured
+**0.98 dB apart**, so the thing a child heard was a constant buzz in the literal sense.
+
+Now: two detuned triangles as the body, one quiet saw purely as harmonic food for the
+filter, the square reduced to a strain-only trace, `driveCurve(2)`, and the lowpass ceiling
+pulled 12 kHz → 5.2 kHz with Q 2.2–6.5 → 1.2–3.2, so the rpm-tracked resonant sweep carries
+the revving instead of the distortion. Output now scales with rpm as well as load.
+
+| rpm | 0 | 0.15 | 0.3 | 0.5 | 0.75 | 1.0 |
+|---|---|---|---|---|---|---|
+| after (rms) | 0.0084 | 0.0129 | 0.0152 | 0.0177 | 0.0214 | **0.0270** |
+
+Before: 0.0801 at rpm 0.15 and 0.1012 at full, i.e. **×1.26** across the whole rev
+range. After: monotonic, peak 0.068, ratio **×2.1**.
+
+**Three parties measured this engine and got three different answers, and the meter was
+the reason.** The builder first recorded idle 0.0074 / ratio ×3.47; a critic measured
+0.0113 / ×2.39 and additionally reported a *non-monotonic dip* (rpm 0.15 louder than
+0.30) stable across three passes; the gate itself printed ×2.60–3.15 on consecutive runs.
+None of them were reading a different build.
+
+`triB` is detuned +0.4%, so against `triA` at a 55 Hz fundamental it beats with a
+**~4.5 second period**. Every one of those measurements used an analyser window of
+46 ms — a fraction of one beat — so each sampled a different point on the beat envelope.
+Repeated passes *within one page load* share the beat phase, which is exactly why the dip
+looked "stable across three passes": it measured the same artifact three times. At
+`fftSize 32768` (743 ms) over 2.5 s windows, cross-page reproducibility is ±2–4% and **no
+build shows a dip at all**, including one with the original strain terms restored.
+
+The builder had already "fixed" the phantom dip by cutting the lugging strain terms, and
+**reverted that on discovering the meter was lying** — removing designed character to
+chase a measurement artifact is the wrong trade. The real defect underneath was separate
+and did survive: idle sat at ~0.005, barely 2 dB above the test's own silence floor, so a
+child on the grid could not hear their kart. Fixed by raising `IDLE_FLOOR` and lowering
+the rpm coefficient — lifting the bottom without touching the top.
+
+The lesson generalises past audio: **a repeated measurement is not an independent
+measurement if the repeats share the thing that biases them.** Every engine number the
+gate prints now comes from one sweep on one long meter, rather than each assertion
+opening its own short window.
+
+**Ducking is one subscription, not a list.** `onModalChange` (D31) is subscribed once and
+never inspects ids, so a modal invented next wave ducks with no wiring. That property is
+what the gate actually tests: replacing the subscription with a hardcoded
+`['quiz','pause','token','meet']` still passes the `pause` probe and fails only the
+unknown-id probe — the decisive proof, since a list is exactly what a future maintainer
+would write.
+
+Two judgement calls inside it. **Music ducks to −9.4 dB rather than stopping**: a quiz card
+is a beat inside the race, not a scene change, and cutting the music dead reads as "the game
+broke", with the restart on close more jarring than the duck. **The SFX bus stays fully
+open**, because the quiz stingers and the buttons the child is about to press live there.
+Engine and world go to true zero over 120 ms via `linearRampToValueAtTime` —
+`setTargetAtTime` only approaches zero asymptotically, which would have left an audible
+floor. A new `worldBus` separates world ambience from SFX so the world can be silenced
+without muting the buttons, and all three group buses are now written from one place
+(`_applyBuses`), because the old code applied duck and volume from two places and a volume
+change mid-duck silently undid the duck.
+
+## D33b — What actually pinned a struggling child at 6th was the slot table, not pace
+The first rebalance hit every literal target at 100% pace and quietly made race 1 as harsh
+as race 3 for everyone else: an 85%-pace child finished **6th on all three races**, where
+Wave 1 gave them 3rd → 6th → 8th. Race 1 is the onboarding race, runs at the AI's own floor,
+and the garage comes *after* it — so that child had no lever available and had not yet been
+taught that prompts buy speed. That is the version of "earned" that reads to an eight-year-old
+as *this game doesn't want me*.
+
+Both obvious fixes were measured first, and **both did nothing**:
+
+| intervention at race 1 | 85% mean place |
+|---|---|
+| as shipped | 6.0 |
+| widen the field's internal pace spread 1.5× / 2× / 2.5× / 3× | 6.0 / 5.6 / 5.8 / 5.6 |
+| cut the race-1 catch-up ceiling to 0.5× / 0.25× / **0×** of `BAND_CATCH` | 5.8 / 6.0 / **6.0** |
+| **stretch the backward slots 1.8× at d01 = 0** | **4.0** |
+
+Removing race 1's catch-up *entirely* moved the outcome by nothing. The cause was never speed.
+Once a player drops below the field's pace, the hold-back floor gathers the pack around them
+and finishing order is decided by **how many opponents are aiming to sit behind the player** —
+and `SLOT_AHEAD` has exactly two negative-enough entries at every difficulty. The answer was
+therefore "6th", on all three races, structurally.
+
+The fix stretches only the **backward** half of the slot table, and only on the gentle races
+(`slotStretch(d01) = 1 + 0.8·(1−d01)²`): race 1 has four or five rivals racing for the places
+behind you, race 3 keeps the original two. The forward slots (+2.5s, +1s) are untouched at
+every difficulty, which is what keeps a clean 100% driver fighting for the win rather than
+being handed it. `BAND_CATCH`, `BAND_HOLD`, `BAND_FLOOR_PACE`, `AI_PACE`, `TRACK_PACE` and
+`aiPartTier` are all unchanged.
+
+Measured in the **built game**, the championship a struggling child plays is now
+**4th → 5th → 6th**:
+
+| pace | race 1 | race 2 | race 3 |
+|---|---|---|---|
+| 100% | 2.2 → 3.0 [2.45 over 11 seeds] | 3.8 → 3.0 | 3.8 → 3.8 |
+| 85% | **6.0 → 4.0** | 6.0 → 5.0 | 6.2 → 6.1 |
+| 70% | 8.0 → **6.0** | 7.4 → 6.8 | 8.0 → 8.0 |
+
+Never-lapped is bit-for-bit untouched (0.17 / 0.15 / 0.20), and a 70%-pace child now finishes
+**6th of 8 on race 1 rather than last** — something the brief has wanted since Wave 1.
+
+**The gate now measures shape, not just bounds.** The previous one asserted three things about
+a struggling player — not lapped, not alone, place ≤ 7 — and nothing about the curve, so it
+passed a 6/6/6 championship as readily as a 3/6/8 one. It now asserts that race 3 minus race 1
+at 85% is **≥ 1.5 places**, that race 2 sits between them, and that race 1 at 85% is **≥ 3.0**
+so the correction cannot be overshot into a free win either. Against the round-1 code it fails
+exactly twice, both new assertions; against the critic's `aiPartTier → 2` mutant — previously
+invisible at 6.0/5.6/6.2 — it now fails eight times.
+
+Honest caveat: at 100% pace race 1 means 2.45 over eleven seeds but spreads 1st–3rd, so a
+machine-perfect line will still occasionally win race 1 outright. Tightening it costs the
+gradient that matters more (`SLOT_STRETCH_EASY = 1.7` buys 2.27 at 100% but slides 85% back to
+4.8 and collapses the race1/race2 ladder). The struggling child's gradient was chosen over the
+last tenth of a place at the top.
+
+## D35 — The intro card, and a gate-sniffing shortcut that was rejected
+Each race now opens on a welcome card: the track's name at display weight and one
+`הידעתם` line tying that track's theme to AI (data / neural networks / cloud computing).
+It registers as `'intro'` and behaves like the one-time explainers rather than like the
+quiz: it **defers** if anything else already owns the screen (a welcome has nothing to
+lose, and stacking one on a panel a child is still reading is the Wave-2 failure the
+registry exists to end), and nothing stacks on **it** — the scrim swallows pointer events
+and it takes Escape in the capture phase, so Escape dismisses the card instead of reaching
+`input.js` and opening pause behind it. `pause.js` now refuses over `'intro'` alongside
+`'token'`/`'meet'`, for their reason: it freezes the sim, it is short, and there is no
+moving kart to rescue a child from.
+
+**The rejected shortcut is the part worth recording.** The card broke `flowtest`'s
+playability slice at *"countdown completed, kart is moving — phase=intro"*, taking thirteen
+downstream checks with it. That slice reaches a race by **clicking the real menu buttons**,
+so it never calls `__DEBUG.goto` and the existing `engine._headless` opt-out did not apply.
+The builder's fix was a `navigator.webdriver` check, argued as load-bearing: a tool driving
+the real UI is indistinguishable from a child by every in-game signal there is.
+
+It was correct that it worked, and it has been **removed anyway**. Sniffing for the test
+harness would have meant that no automated gate ever again sees the card on the path a real
+child takes — production behaviour and gated behaviour permanently divergent, on the one
+screen every single race opens with, and green for exactly that reason. That is the
+"green tick that means less than it looks like" failure D29 was written about, installed
+deliberately. The honest fix was one line in `flowtest`'s `playerBeat()`, which already
+dismisses every other blocking modal the way a child would; the card joins that list, and
+so does the quiz's new first-box explainer. `flowtest --only=play` is green through the
+real card, on the real player path.
+
+Two implementation traps found by mutation and screenshot rather than by review, both worth
+knowing: `h()` applies styles with `Object.assign`, which **cannot set CSS custom
+properties**, so a per-track accent passed as an inline `--var` silently fell back to gold
+on all three tracks; and a "nothing stacks on the card" assertion that checked only DOM
+visibility passed against a broken build because the quiz panel's fade-in had not yet
+reached a non-zero opacity — it now asserts on `quiz.phase` as well.
+
+## D36 — Two input paths, one funnel; and `.on` is a global, not a decoration
+The quiz gained full mouse/touch alongside 1/2/3 + Space. The requirement the brief
+actually cares about is that both go through **one code path**, because two
+implementations drift and only one of them ends up gated. `answer(slot, via)` and
+`dismiss(via)` are the single funnel; `via` is recorded and nothing else, so the
+registry guard, the freeze, the feedback state and the resume countdown are literally
+the same lines for both. Building it this way immediately surfaced a rule the keyboard
+respected and the pointer did not — the `DISMISS_AFTER_S` arming delay lived inside the
+key handler — which moved into `dismiss()`.
+
+**The bug this uncovered is the one worth recording.** The celebration flash added the
+class `.on` to a full-screen element. `.on` is not decorative: `ui/style.js` defines
+`#ui *{pointer-events:none}` and `#ui .on{pointer-events:auto}` as the global opt-in for
+interactivity, and it out-specifies the element's own `pointer-events:none`. So after
+every correct answer an invisible full-screen sheet covered the panel and swallowed every
+click: **a mouse or touch player could not press the continue button at all**, while the
+keyboard sailed straight through. It had been invisible for three waves because the game
+was keyboard-only. Renamed to `.fx`. The general form — *a shared utility class carries
+behaviour, so reusing it as a state marker silently grants that behaviour* — is why the
+gate now hit-tests the continue button rather than merely asserting it exists.
+
+Two gate lessons from the same round. A **real mouse click cannot catch a missing modal
+guard**, because the pause overlay swallows it by geometry — a programmatic `.click()` is
+what tests the policy, and a `page.mouse.click` is what tests the hit-testing; both are
+needed and neither substitutes. And a touch-target floor asserted at 1366×768 did **not**
+bite (padding alone makes the row ~47px there); it only bites at the height-bound
+1024×640, which is where it now lives.
+
+## D37 — A drift can be swallowed by a same-frame quiz turbo
+`driveFeedback()` emits at most one `drift:boost` per frame from the body's `last*`
+provenance fields, which record only the most recent boost. The quiz applies its turbo
+from `quiz.update()` while a drift release happens inside `simulate()`, so when both land
+in the same 1/60 frame the release's tier and source are overwritten and the drift is
+reported as `external` — lost entirely. Forced same-frame in a test: 19 real releases,
+0 counted.
+
+Real odds are one frame-width per answer, so this is rare rather than dangerous. It is
+fixed anyway, because it is the third instance of the same class in one wave — D35's
+rising-edge read, the chained-corner re-boost, and now this — and the class is "a
+per-frame observer sampling a state that can change more than once per frame". Rare bugs
+of a class you have already been bitten by twice are not rare, they are pending.
+
+`KartBody` now keeps a bounded `boostLog` and exposes `drainBoosts()`, returning every
+boost since the last call with its own provenance, oldest first. It returns a shared
+frozen empty array when there is nothing to report, because the common case is every
+frame and the per-frame-allocation ban applies.
+
+## D32b — The central sweep was corrupting the one board D32 called correct
+Bringing the finish gantry into `TEXT_MESHES` (it had been created with no `.name`, so it
+sat outside both the fix and the gate — a coverage hole shared by fix and gate, which is
+the failure CLAUDE.md warns about) immediately exposed two real bugs inside
+`enforceSignOrientation` itself:
+
+1. **It swept per MESH, but geometry can be shared.** The gantry hangs one
+   `PlaneGeometry` off two meshes, so the sweep rewrote that uv buffer twice, taking its
+   own first-pass output as the second pass's "original". It thereby *corrupted* the one
+   board D32 singles out as correct-by-construction — two vertices left with identical
+   UVs and one triangle collapsed to degenerate. Now swept once per geometry.
+2. **It decided "which side of the track" from triangle centroids.** On a 35 m gantry
+   those sit ~17 m off the centreline, and the 16 m pairing radius then failed silently
+   for any board wider than ~11 m. The decision is now made from **quad centres**, and a
+   centred panel skips only the winding repair, never the U check.
+
+The sweep is now a verified no-op on all three tracks — which is what a guard against a
+bug already fixed at source should be, and was not.
+
+## D38 — Legibility is metres of board per character, and nothing else
+The Wave-4 signage shipped 24 original, correctly-themed, factually true Hebrew lines
+rendered at **7 px of cap height** — 0% of a lap with a legible sign on two of three
+tracks. The curriculum was written and then drawn too small to teach.
+
+The governing identity, found by measurement and now written into the code: while a line
+is width-limited, **capMetres ≈ 0.4 × boardWidth / characters** — the tile aspect cancels
+out entirely. So legibility is bought with metres of board per character and by nothing
+else; a bigger font had no room to grow into, and more boards would have traded ambience
+for nothing. The fix was therefore short copy on wide boards: 48 new lines, all 2–3 words
+and ≤14 characters, on boards widened 7→13 m (mid) and 3.6→6.8 m (near).
+
+Two second-order causes, both worth keeping:
+- **The depth band was fighting the field of view.** Round 1 pushed boards to ~45 m off
+  the centreline, where a board leaves a 62° frame before it ever grows — peak 12 px. Cap
+  height is `547 × capMetres / Y`, so the band moved to Y ≈ 23–33 m: still unmistakably
+  mid-ground, now legible all the way in. Density is unchanged at ~1 board on screen.
+- **The size was decided inside a draw callback**, where no gate could see it. It is now
+  an analytic `signLayout()` computed with no canvas, with `measureText` demoted to a
+  clamp that may shrink and never grow. That is why it could shrink to 0.13 em unnoticed.
+
+| track | median best-in-frame | max on lap | % of lap ≥14 px |
+|---|---|---|---|
+| oasis | 4.3 → **10.6 px** | 13.2 → **25.2** | 0% → **27%** |
+| circuit | 3.7 → **9.5 px** | 10.2 → **25.7** | 0% → **25%** |
+| cloud | 5.6 → **10.4 px** | 15.3 → **23.3** | 1% → **26%** |
+
+Also fixed here: signage now builds **after** dressing and ray-tests each candidate from
+the two distances it is actually read from, against props that are tall and cheap —
+deliberately name-free rather than coupled to props.js's mesh names. Occluded candidates
+walk inward rather than being dropped, so no board is lost.
+
+And a process note that explains how a 7 px sign passed review: **every existing preview
+was a static pose that happened to stand near a board.** There is now a chase-camera
+preview framed on the nearest board ≥20 m away, so "can a child read this?" is answerable
+by looking rather than by trusting a comment.
+
+## D39 — The economy, measured at last, was 3× out; and two percentage traps
+D29 recorded that the token-yield gate was **blind to quiz rewards** — its driver held a
+throttle key down the racing line and had never once triggered a beacon, so
+`tokensFromQuiz` printed 0 on every run in the project's history, and the band passed
+precisely because the term that breaks it was absent. It declined to retune, on the
+grounds that tuning against a gate that cannot see the work is tuning blind. This entry
+is that measurement, finally taken.
+
+**Why it stayed invisible for three waves, mechanically:** the quiz shuffles its options
+per showing, so no automated driver could answer *correctly* — it could only answer at
+random. The fix was to expose `correctSlot`, after which a driver can play the game the
+way an engaged child does. A term is not unmeasured because nobody tried; it is
+unmeasured because nothing in the harness could reach it.
+
+Measured on the built game, tokens banked per race (pickups + quiz + finish), 3 tracks ×
+3 seeds:
+
+| player | before | after | vs the 21-token max ask |
+|---|---|---|---|
+| winning + engaged | **35–53** | **12–18** | margin 3–9 |
+| half-right | 31 | 10–14 | |
+| ignores every box | 16–20 | 8–9 | still ≥ the cheapest complete ask (4) |
+
+D29's "~51 for an engaged child" is confirmed (the gate re-measured 53 against the pre-fix
+build). The garage's central lesson is true again for the child it is aimed at.
+
+Four constants moved, all **at source** per D17, and two of them are the same trap in
+different clothes:
+
+- **`REWARD_TOKENS` 3/4/5 → flat 1/1/1.** The invisible term was also the biggest: 5–9
+  boxes a race at 3–5 each paid 15–35 by itself. Flat rather than tiered because a tier-3
+  double is worth *nothing* to the child (race 3 is followed by the podium, not a garage),
+  so the tier only ever mattered as a way to put a 21-token race back on the board —
+  defended by a routing detail in a different file.
+- **Pickup thinning is now whole authored rows, not a fraction of a list.**
+  `TOKEN_KEEP = 0.42` meant a different economy on every track — the same setting gave 3
+  pickups on race 1 and 9 on race 2 — and it cut *across* the artist's rows, leaving
+  orphan tokens at arbitrary offsets. **This is exactly D33b's percentage-floor trap:** a
+  proportion silently changes meaning when the thing it is a proportion of moves. Two
+  independent instances in one wave is a pattern worth naming.
+- **`FINISH_TOKENS` cut from the top only**, `[6,5,…]` → `[5,4,…]`, last place still 3.
+  The target is the child who wins; GAPS.md's standing instruction is to raise the floor
+  rather than lower it.
+- **`tokenReward` caps 8/12 → 4/7.** D17 capped the rebate "below the spend", but a cap is
+  only below the spend *relative to the economy around it* — at 8 it had quietly become
+  half a race's income, and it was what carried the wallet past 21 at garage visit 2
+  (16 + 8 = 24). A written invariant can rot without anyone editing the line it is written
+  on.
+
+Also fixed while measuring: a **menu backdrop race was overwriting `window.__LAST_RESULT__`**
+(backdrops finish too), so the economy gate could measure the title screen instead of the
+child's race. Same family as the Wave-3 lesson that a silence measurement taken on a screen
+secretly running the game is not measuring silence.
+
+**Residual, stated honestly because it is not closed:** the wallet carries between garage
+visits, so the richest measured race (18) plus the largest guided rebate (4) reaches **22**
+at visit 2 — one over the maximum ask. Closing it at source needs a race paying less than a
+complete ask; the only other lever is capping the garage's view of the wallet, which D17
+rejected because it makes the HUD counter, the results screen and the garage budget
+contradict each other in front of a child. The gate prints it every run. Watch it in
+playtest.
+
+## D40 — Badge thresholds are derived from the economy, not typed next to it
+The Wave-4 economy (D39) cut lifetime income from ~135 to ~44 tokens per championship, so
+the two token badges — 50 and 200 — silently changed meaning from "1.1 races / 1.5
+championships" to "3.4 races / 4.5 championships". The high rung became unreachable inside
+the play the brief describes. Re-derived from the imported constants: **50 → 20** (1.35
+races, so the bottom rung is an early reward again) and **200 → 80** (1.8 championships).
+The 1:4 ratio is preserved so the ladder's shape is unchanged and only its scale moves, and
+that ratio is now itself asserted. The glossary term `נתונים` went 25 → **10**, back to a
+first-race unlock.
+
+Three things this pass established that matter more than the numbers:
+
+1. **The condition strings a child reads are now built from the constants.** They were
+   typed literals — "50", "200", "25" — in both languages, so a retune had three places to
+   leave the game telling a child something false about what it wants from them. Asserted:
+   the number on the card is the number the badge tests, in both languages.
+2. **The claims are asserted where they are made.** Calibration used to be read off the
+   2.5-championship end state, which would let the high rung drift half a season out of
+   reach and stay green. It now snapshots at the 1- and 2-championship marks.
+3. **The pin is two-layered on purpose:** a literal pin that says *something moved*, plus a
+   derivation from the live constants that says *what the thresholds now mean in
+   championships*. The second still bites when someone updates the first without
+   re-deriving — which is the realistic failure.
+
+Badge **ids** stay `tokens-50` / `tokens-200` even though the numbers moved. An id is a
+save key: renaming it would silently un-earn the badge for every child who has it.
+
+**One judgement call taken here rather than deferred.** `prompt-80` did not move and shifted
+anyway. In real play the garage budget is the *wallet*, not `DEFAULT_BUDGET`, and measured
+against `prompts.js` a wallet of 13 buys at most a score of 51, 16 → 75, and it takes
+exactly **17** to reach the 84 that clears the badge. Old races banked 35–53, so 17 was
+always in hand; new races bank 12–18. Kept at 80 rather than lowered, because the wallet
+carries between visits — so it lands at garage visit 2 or 3 rather than visit 1, which is
+the right shape for a badge about writing a *good* prompt: it should take a couple of goes.
+It is now the hardest badge not marked `hard`, and it would go unreachable before any token
+threshold if the economy is ever thinned again. That is in GAPS.md as the first thing to
+check after a future retune.
+
+## D41 — The smoothing pass, and one plural that was the wrong kind of plural
+Three calls from the Wave-4 smoothing pass are worth keeping, because each is a rule rather
+than a string.
+
+**`אלופי העונה` → `אלוף/ת העונה`.** The builder defended the masculine plural by pointing at
+D27's house voice (`בוחרים`, `סיימתם`). That misreads D27: its plural is a plural **of
+address** — "you [pl.] do X" — adopted so a verb can be gender-neutral. It is not a claim
+that the player is several people, and a badge *name* names the one child holding it. Two
+sibling badges already used the slashed form, and D30 settled the same question for the
+certificate's title picker, whose chips render inches away on the same screen. The rule:
+**gender-neutrality by plural address does not license a masculine plural noun.**
+`menu.podium.champ` had the same defect in the opposite direction — `אלוף האליפות!`,
+masculine *singular*, on the most triumphant screen in the game — and `אלופ/ת האליפות` reads
+badly in display type, so it became **`זכיתם באליפות!`**: plural address, no gendered noun
+at all.
+
+**`המדליות` → `התגים`.** The collection tab, the toast, the certificate and the glossary
+hints all said `תגים`; only the two reset modals said `מדליות`. English said "badges" in
+both, so the split was Hebrew-only and invisible to anyone reading the English build. This
+is D27's vocabulary-split failure exactly, and it appeared because the reset modals and the
+collection screen were written by two agents who could not see each other. Fixed in the two
+strings *and* in the two `tools/hometest.mjs` regexes that pinned the old word — a gate
+pinning the wrong vocabulary is how a split becomes permanent.
+
+**`גללו` was the last imperative in the game's own voice.** A Hebrew plural imperative *is*
+the masculine form, which is the precise thing D27 exists to exclude; it became `גוללים`.
+Same pass: `הידעת?` → `הידעתם?` (the new intro card's chip already said the latter), and the
+two twin confirm modals — designed to be read side by side — were disagreeing on their safe
+button (`משאירים` vs `להשאיר`).
+
+Four signage lines were also rewritten for an eight-year-old rather than for an adult:
+`איכות קודמת` reads as "the *previous* quality" as readily as "quality first"; `שדה לכל נתון`
+uses שדה in its database sense, which to a child is a field with grass in it; `סף הפעלה` is
+the right concept in unreadable jargon; and `משאב לפי מידה` was procurement Hebrew *and* the
+third `…לפי…` board on one track.
+
+Deliberately NOT changed, with reasons, so nobody re-opens them: the first-quiz-box
+explainer stays cyan rather than gold — the documented rule is that a card wears the colour
+of the thing it explains (the token popup is gold because a token is gold; the beacon is
+cyan), and it is one screen seen once. The four home-screen pills stay equal weight —
+giving `האוסף שלי` gold would put a second gold competitor beside `מתחילים אליפות`, which is
+the one thing that screen must not do. And the in-world gantry and roadside Hebrew stays
+Hebrew in the English build: that is world art, not untranslated UI.
+
+## D42 — A gate that pins copy it does not own turns good edits into regressions
+The final Wave-4 gate went red on exactly one assertion, and not because anything broke.
+`tools/flowtest.mjs`'s tie-break check tested the podium header with `/אלוף/.test(title)`.
+The smoothing pass then rewrote that headline from `אלוף האליפות!` to `זכיתם באליפות!`
+— masculine singular on the proudest screen in the game was precisely the D27 defect the
+pass existed to find — and the gate reported a failure for a copy **improvement**.
+
+That is a worse failure mode than it looks. The assertion is not about the wording at all:
+what it exists to catch is D19's original bug, where the podium's header recomputed the
+player's position independently and disagreed with its own table. By pinning a word it did
+not own, it put a correct edit and a real regression in the same red state — and the way
+that argument usually ends is the copy getting reverted to keep the gate green.
+
+Rewritten to test the property instead: *crowned* means "not the losing headline, and no
+ordinal sentence"; any other place must name its own ordinal and must not be crowned. Only
+the **non**-champion headline is named as a constant, once, because the check needs one
+fixed point and that is the one nothing is likely to rewrite. It still fails if the header
+and the table disagree, which is the whole point of it.
+
+The general rule for this project, where copy is revised by a smoothing pass every wave:
+**gate the behaviour, and name at most one string as an anchor.** A gate is allowed to know
+that a headline changes when you win; it is not allowed to know which words that headline
+uses.

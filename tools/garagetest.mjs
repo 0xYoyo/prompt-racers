@@ -118,9 +118,14 @@ setKartPreviewMounter((container3D, o = {}) => {
   container3D.add(kart.group);
   return kart;
 });
+import { bus } from ${JSON.stringify(resolve(root, 'src/core/bus.js'))};
 // The gate needs the two seams scenes.js owns: onDone (championship) and
 // onExit (free play). Everything else is the untouched scene.
 window.__DONE = null; window.__EXIT = false;
+// …and the bus seam the badge collection listens on. Recorded, never imported
+// by the garage — the garage only emits.
+window.__BUILT = [];
+bus.on('garage:built', p => window.__BUILT.push(p));
 bootPreview((engine, o = {}) => {
   if (window.__FREEPLAY) return freePlayScene(engine, { meet: false, ...o, onExit: () => { window.__EXIT = true; } });
   return garageScene(engine, {
@@ -308,11 +313,30 @@ for (let step = 0; step < 4; step++) {
   const idx = cur.cards.findIndex((c, i) => i > 0 && !c.disabled);
   await clickCard(idx < 0 ? 0 : idx);
 }
+await page.evaluate(() => { window.__BUILT.length = 0; });
 await page.evaluate(() => document.querySelector('.grg-build').click());
 await page.evaluate(() => window.__DEBUG.advance(2));
 await wait(250);
 const rev = await read();
 ok('the build opens the debrief', rev.reveal);
+
+// ── the bus seam the badge collection listens on ─────────────────────────────
+// One build, one `garage:built`. Not in scenes.js's onDone: free play never
+// calls onDone, and a child can read the debrief and then pick "a different
+// prompt" instead of installing — both are builds and both must count. Emitting
+// from the reveal RENDER instead of the transition would fire several times per
+// build (render() runs on every interaction), which is why the count is pinned
+// here and not just the payload.
+{
+  const built = await page.evaluate(() => window.__BUILT);
+  ok('one build emits exactly one garage:built', built.length === 1, `${built.length} event(s)`);
+  const e = built[0] || {};
+  ok('  garage:built carries score/tier/expert/slotKey/coherent',
+    typeof e.score === 'number' && e.score >= 0 && e.score <= 100 &&
+    Number.isInteger(e.tier) && e.tier >= 0 && e.tier <= 3 &&
+    typeof e.expert === 'boolean' && ['engine', 'tires', 'wing', 'chassis'].includes(e.slotKey) &&
+    typeof e.coherent === 'boolean', JSON.stringify(e));
+}
 ok('the debrief shows the kart before and after', rev.beforeAfter.length === 4, rev.beforeAfter.join(' | '));
 ok('…with a real before → after per stat',
   rev.beforeAfter.every(txt => /\d[\s\S]{0,3}[←→][\s\S]{0,3}\d/.test(txt)), rev.beforeAfter[0]);
@@ -324,6 +348,16 @@ await page.evaluate(() => {
 await wait(150);
 const done = await page.evaluate(() => window.__DONE);
 ok('onDone fired', !!done, done ? `gain=${done.gain}` : '');
+{
+  // The badge listener and the championship must be told about the same build.
+  const e = (await page.evaluate(() => window.__BUILT))[0] || {};
+  ok('garage:built describes the same build onDone does',
+    !!done && e.score === done.part.score && e.tier === done.part.tier && e.slotKey === done.part.slotKey,
+    `bus ${e.slotKey}/${e.tier}/${e.score} vs onDone ${done?.part?.slotKey}/${done?.part?.tier}/${done?.part?.score}`);
+  ok('…and installing the part does not emit a second one',
+    (await page.evaluate(() => window.__BUILT.length)) === 1,
+    `${await page.evaluate(() => window.__BUILT.length)} event(s) after install`);
+}
 if (done) {
   const p = done.part;
   const F = (name, cond, d) => ok(`  part.${name}`, cond, d);
@@ -649,6 +683,7 @@ for (let step = 0; step < 4; step++) {
   const idx = cur.cards.findIndex((c, i) => i > 0 && !c.disabled);
   await clickCard(idx < 0 ? 0 : idx);
 }
+await page.evaluate(() => { window.__BUILT.length = 0; });
 await page.evaluate(() => document.querySelector('.grg-build').click());
 await page.evaluate(() => window.__DEBUG.advance(2));
 await wait(250);
@@ -657,6 +692,208 @@ ok('free play still gives the full debrief', fpRev.reveal, fpRev.revealButtons.j
 ok('…but never offers to install a part',
   !fpRev.revealButtons.some(x => /התקנ|Install/.test(x)), fpRev.revealButtons.join(' / '));
 ok('…and calls no onDone', (await page.evaluate(() => window.__DONE)) === null);
+{
+  // The sandbox counts. onDone is the championship's seam and free play never
+  // calls it, so a badge listener wired to onDone would silently ignore every
+  // build a child makes in practice mode.
+  const fpBuilt = await page.evaluate(() => window.__BUILT);
+  ok('a free-play build still emits exactly one garage:built',
+    fpBuilt.length === 1 && fpBuilt[0]?.freePlay === true,
+    `${fpBuilt.length} event(s) · ${JSON.stringify(fpBuilt[0] || {})}`);
+}
+// …and rebuilding after going back through the progress rail counts again.
+{
+  await page.evaluate(() => {
+    window.__BUILT.length = 0;
+    [...document.querySelectorAll('.grg-revactions button')].find(b => /פרומפט|prompt/i.test(b.textContent))?.click();
+  });
+  await wait(150);
+  await clickPill(1);
+  const cur = await read();
+  const idx = cur.cards.findIndex((c, i) => i > 0 && !c.disabled);
+  await clickCard(idx < 0 ? 0 : idx);
+  for (let step = 2; step < 4; step++) {
+    const s2 = await read();
+    const j = s2.cards.findIndex((c, i) => i > 0 && !c.disabled);
+    await clickCard(j < 0 ? 0 : j);
+  }
+  await page.evaluate(() => document.querySelector('.grg-build')?.click());
+  await page.evaluate(() => window.__DEBUG.advance(2));
+  await wait(250);
+  const again = await page.evaluate(() => window.__BUILT);
+  ok('going back and building again emits one more, not zero and not two',
+    again.length === 1, `${again.length} event(s)`);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE REVEAL FITS, OR SCROLLS AND SAYS SO — measured in pixels.
+//
+// The debrief ("מה כל שורה בפרומפט עשתה") is the payoff of the entire
+// educational core, and it used to run off the bottom of the modal on every
+// panel shorter than 1080: the last section was cut mid-row, inside an
+// overflow:auto box with no visible scrollbar (Chrome's overlay scrollbars are
+// invisible until you already scroll), so the screen looked broken rather than
+// scrollable — 156px lost at 1366x768, 275px at 1024x640.
+//
+// This section asserts GEOMETRY, not markup:
+//   · the reveal state was really reached (three debrief rows and the section
+//     title, in the language under test) — an assertion over an empty screen is
+//     not an assertion
+//   · the whole modal and its buttons are inside the viewport
+//   · EITHER the content fits its scroll box outright — last row's bottom edge
+//     inside the box's visible bottom edge — OR the box genuinely scrolls, in
+//     which case the affordance must be VISIBLE (the cue is painted, and a real
+//     scrollbar gutter is reserved) and scrolling to the end must bring the last
+//     row entirely inside the visible box
+//   · the scroll region is keyboard-reachable and still comes before the buttons
+//
+// It runs in its own browser WITHOUT --hide-scrollbars: the gate above hides
+// them so they cannot pollute the kart pixel-diffs, but a check about whether a
+// child can see that there is more to read cannot run in a window where
+// scrollbars have been switched off.
+console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'.repeat(74));
+{
+  const layoutBrowser = await puppeteer.launch({
+    executablePath: CHROME, headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader', '--force-device-scale-factor=1', '--mute-audio'],
+  });
+  const lp = await layoutBrowser.newPage();
+  lp.on('pageerror', e => errs.push('PAGEERROR: ' + e.message));
+  lp.on('console', m => { if (m.type() === 'error') errs.push('CONSOLE: ' + m.text()); });
+  await lp.goto('file://' + htmlPath, { waitUntil: 'load', timeout: 60000 });
+  await lp.evaluate(() => { window.__FREEPLAY = false; });
+  await lp.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+
+  // The three short panels the project tests. 1366x768 is the school laptop and
+  // 1024x640 is the floor; 1280x720 sits between them and used to fail too.
+  const SIZES = [[1366, 768], [1280, 720], [1024, 640]];
+  // Two real prompts, because the reveal's height depends on what was asked: a
+  // sharp one (longest recap, most fragments) and a vague one (the ghost card
+  // flips into the "you could have had this" invitation).
+  const CASES = [
+    ['sharp', { part: 'tires', goal: 'tires.late', constraint: 'tires.wear', style: 'tires.stripe' }],
+    ['vague', { part: 'engine', goal: 'engine.good', constraint: 'engine.none', style: 'engine.any' }],
+  ];
+  // The title of the section that was being clipped, in both languages. If the
+  // language never actually flipped (the capture harness once wrote the language
+  // to save and never called setLang, leaving every string Hebrew), the English
+  // rows fail here instead of quietly testing Hebrew twice.
+  const TITLE = { he: 'מה כל שורה בפרומפט עשתה', en: 'What each line of the prompt did' };
+
+  const measure = async expectTitle => lp.evaluate(title => {
+    const q = s => document.querySelector(s);
+    const box = el => { const r = el.getBoundingClientRect(); return { t: r.top, b: r.bottom, l: r.left, r: r.right, h: r.height }; };
+    const sc = q('.grg-rev-scroll');
+    const rows = [...document.querySelectorAll('.grg-rev-scroll .grg-dbrow')];
+    const labels = [...document.querySelectorAll('.grg-rev-scroll .label')].map(e => e.textContent.trim());
+    if (!sc || !rows.length) return { reached: false, rows: rows.length, labels };
+    const last = rows[rows.length - 1];
+    const cue = q('.grg-morecue');
+    const body = q('.grg-revbody');
+    const install = q('.grg-revactions button');
+    return {
+      reached: true, rows: rows.length, labels, titleShown: labels.includes(title),
+      vw: innerWidth, vh: innerHeight,
+      reveal: box(q('.grg-reveal')), actions: box(q('.grg-revactions')),
+      scroller: box(sc), last: box(last),
+      ch: sc.clientHeight, sh: sc.scrollHeight, scrollTop: sc.scrollTop,
+      hasMore: !!(body && body.classList.contains('has-more')),
+      cueOpacity: cue ? +getComputedStyle(cue).opacity : 0,
+      cueBox: cue ? box(cue) : null,
+      focusable: sc.tabIndex === 0,
+      // eslint-disable-next-line no-bitwise
+      scrollerBeforeButtons: !!(install && (sc.compareDocumentPosition(install) & Node.DOCUMENT_POSITION_FOLLOWING)),
+    };
+  }, expectTitle);
+
+  // The cue fades in and out over 180ms. Reading it mid-transition measures the
+  // transition, not the design, so every measurement waits for it to settle on
+  // 0 or 1 first — the same class of mistake as measuring "silence" on a screen
+  // that is secretly still running the game.
+  const settle = async () => {
+    await lp.waitForFunction(() => {
+      const c = document.querySelector('.grg-morecue');
+      if (!c) return true;
+      const o = +getComputedStyle(c).opacity;
+      return o < 0.02 || o > 0.98;
+    }, { timeout: 5000 }).catch(() => {});
+  };
+
+  for (const lang of ['he', 'en']) {
+    console.log(`  \x1b[2m── lang ${lang} ──\x1b[0m`);
+    for (const [w, h] of SIZES) {
+      for (const [name, sel] of CASES) {
+        await lp.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
+        await lp.evaluate(async (s, l) => {
+          await window.__DEBUG.goto('preview', {
+            lang: l, tokens: 99, meet: false, visit: 2, phase: 'reveal', selection: s,
+          });
+        }, sel, lang);
+        await wait(420);
+        await settle();
+        const tag = `${w}x${h} ${name}`;
+        const m = await measure(TITLE[lang]);
+        // 1. The state under test was really reached, in the language under test.
+        ok(`${tag}: the debrief is on screen, in ${lang}`,
+          m.reached && m.rows === 3 && m.titleShown,
+          m.reached ? `${m.rows} rows · "${(m.labels[m.labels.length - 1] || '').slice(0, 34)}"` : 'no reveal');
+        if (!m.reached || !m.titleShown) continue;
+
+        const issues = [];
+        if (m.reveal.b > m.vh + 1 || m.reveal.t < -1) issues.push(`modal outside viewport (${Math.round(m.reveal.t)}..${Math.round(m.reveal.b)} of ${m.vh})`);
+        if (m.actions.b > m.vh + 1) issues.push(`buttons ${Math.round(m.actions.b - m.vh)}px below the edge`);
+        const overflow = m.sh - m.ch;
+        let mode;
+        if (overflow <= 2) {
+          mode = 'fits';
+          // The clip that started all this: the last line of the last section
+          // sitting below the visible bottom edge of its own container.
+          if (m.last.b > m.scroller.b + 1) issues.push(`last debrief row ${Math.round(m.last.b - m.scroller.b)}px below the box with nothing to scroll`);
+          if (m.hasMore) issues.push('claims there is more below when there is not');
+        } else {
+          mode = `scrolls ${overflow}px`;
+          // The affordance has to be PAINTED, over the end of the box, at a size
+          // a child can see. (A reserved scrollbar gutter cannot be asserted
+          // here: this platform draws overlay scrollbars, which reserve no width
+          // and ignore scrollbar-gutter — which is precisely why the overflow
+          // was invisible in the first place and why the cue has to exist.)
+          if (!m.hasMore || m.cueOpacity < 0.9) issues.push(`overflows ${overflow}px with no visible cue (opacity ${m.cueOpacity})`);
+          if (!m.cueBox) issues.push('no cue element at all');
+          else {
+            if (m.cueBox.b > m.vh + 1) issues.push('the cue itself is off-screen');
+            if (m.cueBox.h < 24 || m.cueBox.r - m.cueBox.l < 120) issues.push(`the cue is too small to notice (${Math.round(m.cueBox.r - m.cueBox.l)}x${Math.round(m.cueBox.h)})`);
+            if (Math.abs(m.cueBox.b - m.scroller.b) > 3) issues.push('the cue is not at the bottom edge of the box');
+          }
+          // …and the end must be reachable: scrolled to the bottom, the last row
+          // has to be ENTIRELY inside the visible box.
+          await lp.evaluate(() => { const s = document.querySelector('.grg-rev-scroll'); s.scrollTop = s.scrollHeight; });
+          await wait(200);
+          await settle();
+          const end = await measure(TITLE[lang]);
+          if (end.last.b > end.scroller.b + 1 || end.last.t < end.scroller.t - 1) {
+            issues.push(`scrolled to the bottom the last row is still ${Math.round(end.last.b - end.scroller.b)}px out`);
+          }
+          // …and once there really is nothing left below, the cue has to say so.
+          // Measured against the LIVE numbers, not against "we asked it to
+          // scroll": the debrief's kart canvases can still be settling, and a cue
+          // that is on while content genuinely remains is telling the truth.
+          // (Only asked of a scroll a child would actually perform: at a
+          // hairline overflow of a dozen pixels, clientHeight/scrollHeight
+          // rounding makes "am I at the bottom" a coin toss for the gate and for
+          // the page alike, and the answer does not matter — nothing is hidden.)
+          const leftAtEnd = end.sh - end.ch - end.scrollTop;
+          if (end.hasMore && leftAtEnd <= 8 && overflow > 24) issues.push(`still says "more below" at the bottom (top ${Math.round(end.scrollTop)} of ${end.sh - end.ch}, opacity ${end.cueOpacity})`);
+        }
+        ok(`${tag}: the explanation is readable (${mode})`, issues.length === 0, issues.join(' · ') || `${m.sh}px of content in ${m.ch}px`);
+        ok(`${tag}: the explanation is keyboard-reachable, before the buttons`,
+          m.focusable && m.scrollerBeforeButtons,
+          `tabindex ${m.focusable ? '0' : 'missing'}, ${m.scrollerBeforeButtons ? 'precedes' : 'FOLLOWS'} the actions`);
+      }
+    }
+  }
+  await layoutBrowser.close();
+}
 
 ok('no page errors anywhere', errs.length === 0, errs[0] || '');
 console.log('  ' + '─'.repeat(74));

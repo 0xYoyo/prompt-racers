@@ -401,7 +401,21 @@ export function scoreFreeText(text, slotKey = 'engine', ctx = {}) {
  * top — generous enough to feel earned, never enough to remove next visit's choice.
  * Expert mode keeps a meaningfully larger rate, as specified.
  */
+/*
+ * Wave 4: the caps came down 8 → 4 guided and 12 → 7 expert, and the rates with
+ * them, because a cap is only "below the spend" relative to the economy around
+ * it. When a race banked ~45 tokens an 8-token rebate was a sixth of a race;
+ * after the source-level rebalance a race banks 14–18, so the SAME number had
+ * quietly grown into half a race's income. That is what decided it, and it is
+ * measurable rather than aesthetic: the wallet CARRIES between garage visits, so
+ * "spend the lot at visit 1, take the rebate, race again" arrived at visit 2
+ * with 16 + 8 = 24 against a 21-token maximum ask — the very thing a single race
+ * can no longer buy. At 4 it arrives with 19–20 and the choice survives both
+ * visits. Expert still pays ~1.75×, the incentive to leave the training wheels,
+ * and 4 tokens is still a whole part: generous enough to feel earned, never
+ * enough to make a visit turn a profit.
+ */
 export function tokenReward(score, expert = false) {
-  const raw = score * (expert ? 0.16 : 0.10);
-  return Math.min(expert ? 12 : 8, Math.round(raw));
+  const raw = score * (expert ? 0.075 : 0.045);
+  return Math.min(expert ? 7 : 4, Math.round(raw));
 }

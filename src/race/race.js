@@ -15,6 +15,12 @@
 //
 // State machine:  intro → countdown → racing → finished → (results)
 //
+// `intro` was aspirational until Wave 4 and is now real: it is the pre-race
+// welcome card (race/introcard.js), which owns the screen before the countdown
+// and contributes a time scale of ZERO to the accumulator, so no fixed step runs
+// and the countdown has not started while a child reads it. It is skipped for
+// backdrops, autopilot and every harness-driven race — see introCardEnabled().
+//
 import * as THREE from 'three';
 import { bus } from '../core/bus.js';
 import { save } from '../core/save.js';
@@ -30,6 +36,7 @@ import { createAIField } from '../kart/ai.js';
 import { ROSTER, nameKey } from '../kart/roster.js';
 import { createHUD } from './hud.js';
 import { createQuizSystem } from './quiz.js';
+import { createIntroCard, introCardEnabled } from './introcard.js';
 import { createEffects } from '../gfx/particles.js';
 import { firstTokenPopup, shouldShowFirstTokenPopup } from '../garage/garage.js';
 import { registerStrings, t } from '../ui/i18n.js';
@@ -97,9 +104,71 @@ export function toVisualParts(parts = {}) {
 // precise one 21), so the garage is always playable and precision is always the
 // thing you have to choose between.
 // Finishing bonus, 1st→8th. Deliberately shallow: the spread between winning and
-// coming last is 3 tokens, because the garage budget is the game's teaching device
+// coming last is 2 tokens, because the garage budget is the game's teaching device
 // and a child who is losing must still be able to afford a specific prompt.
-const FINISH_TOKENS = [6, 5, 5, 4, 4, 3, 3, 3];
+//
+// Wave 4 re-measured the whole economy INCLUDING the quiz term that D29's gate
+// could not see, and this is one of the three numbers that came down. It came
+// down from the TOP only — [6,5,5,4,4,3,3,3] → [5,4,4,3,3,3,3,3] — because the
+// player the rebalance is aimed at is the one who WINS while answering well,
+// and GAPS' standing instruction for this economy is to raise the floor rather
+// than lower the ceiling for the child who is struggling. Last place still pays
+// 3, which with the thinned pickups keeps every finishing position above the
+// cheapest complete ask (4).
+//
+// EXPORTED because tests/badges.test.mjs derives its badge thresholds from this
+// table and had to scrape it out of this file with a regex — so a rename failed
+// at a parse assertion instead of at the thing that actually broke.
+export const FINISH_TOKENS = [5, 4, 4, 3, 3, 3, 3, 3];
+
+// How many pickup CLUSTERS a lap offers, out of the eight trackbuild authors.
+// A cluster is one row of 3–4 tokens laid across the road just before an apex or
+// down a straight; a player driving through it takes the one or two nearest
+// their line. Thinning is done HERE, at the source, and not downstream — see the
+// block in raceScene() where it is applied. Exported so gates can import it.
+//
+// This REPLACES D17's `TOKEN_KEEP = 0.42`, a fraction of each track's authored
+// spot list, and the reason is the same one D33 hit with its percentage pace
+// floor: **a fraction of a list means a different thing on every track.** The
+// filter cut across the authored rows rather than between them, so at the same
+// setting the three tracks paid completely differently — measured on the built
+// game with an engaged driver, race 2 banked 9 pickups where race 1 banked 3,
+// and the leftovers were isolated single tokens at whatever lateral offset
+// happened to survive the arithmetic. Keeping whole rows, and counting the rows,
+// makes the density an absolute quantity: one row a lap, every track, and the
+// row still reads as the row the artist laid down.
+//
+// ONE row a lap, because the quiz term the economy gate could not see (D29)
+// turned out to be the biggest one in the wallet: with it counted, a winning
+// engaged child banked 35–54 tokens against a 21-token maximum ask. A row is
+// worth ~2 tokens to a player driving through it, so one row a lap is ~6 tokens
+// a race on every track — measured, and now the same measurement on all three
+// rather than 3 on race 1 against 9 on race 2.
+export const TOKEN_CLUSTERS_PER_LAP = 1;
+
+/**
+ * Keep `keep` evenly-spaced clusters of the authored spots, whole.
+ * The authored list runs cluster by cluster around the lap, so a gap far larger
+ * than a road is a cluster boundary — that is the only structure this needs, and
+ * it does not care how many tokens the artist put in a row.
+ * Exported for the economy gates; pure, so it can be tested without a track.
+ */
+export function thinTokenSpots(all, keep = TOKEN_CLUSTERS_PER_LAP) {
+  if (!all?.length || keep <= 0) return [];
+  const CLUSTER_GAP_M = 25;                 // rows are metres apart, clusters ~100m
+  const clusters = [[all[0]]];
+  for (let i = 1; i < all.length; i++) {
+    const prev = all[i - 1], p = all[i];
+    const d = Math.hypot(p.x - prev.x, p.y - prev.y, p.z - prev.z);
+    if (d > CLUSTER_GAP_M) clusters.push([]);
+    clusters[clusters.length - 1].push(p);
+  }
+  if (clusters.length <= keep) return all.slice();
+  const step = clusters.length / keep;
+  const out = [];
+  for (let k = 0; k < keep; k++) out.push(...clusters[Math.floor(k * step)]);
+  return out;
+}
 
 const COUNTDOWN_S = 3.4;      // 3 · 2 · 1 · GO
 const TOKEN_RADIUS = 2.6;     // generous — kids should not have to thread a needle
@@ -108,7 +177,10 @@ const COMBO_WINDOW = 2.2;     // seconds to chain a pickup
 /**
  * @param {object} engine
  * @param {object} opts  { track, racerId, difficulty, laps, parts, seed,
- *                         askedIds, onComplete(result), freeCam }
+ *                         askedIds, onComplete(result), freeCam, introCard }
+ *   introCard — force the pre-race welcome card on/off. Omit for the default,
+ *   which is ON for real play and OFF for backdrop / autopilot / harness-driven
+ *   races (introcard.js: introCardEnabled).
  *   askedIds — question ids already asked this championship; passed straight to
  *   the quiz system so no question repeats across the three races.
  */
@@ -148,10 +220,21 @@ export function raceScene(engine, opts = {}) {
   });
 
   // AI visuals. Distant opponents use the cheap LOD so eight karts stay in budget.
+  //
+  // The opponents buy garage parts on races 2-3 (D33's `aiPartTier`), and half
+  // the argument for that change was legibility: the child should SEE the
+  // rivals upgrading alongside them, which is what makes the garage read as the
+  // thing that matters. That argument was false until this line — every
+  // opponent mesh was built with `parts: null`, so they drove tier-1/tier-2
+  // hardware and were drawn stock.
+  const aiVisualParts = field.partTier ? toVisualParts({
+    engine: field.partTier, tires: field.partTier,
+    wing: field.partTier, chassis: field.partTier,
+  }) : null;
   const aiKarts = [];
   for (const k of fieldKarts(field)) {
     const mk = (engine.q.propDensity < 0.5 ? createKartLOD : createKart)(
-      { racer: k.racer, parts: null, engine, lod: engine.q.propDensity < 0.5 ? 1 : 0 });
+      { racer: k.racer, parts: aiVisualParts, engine, lod: engine.q.propDensity < 0.5 ? 1 : 0 });
     scene.add(mk.group);
     aiKarts.push({ ...k, mesh: mk });
   }
@@ -164,8 +247,9 @@ export function raceScene(engine, opts = {}) {
   // the three on-screen numbers honest with each other: fewer tokens visible on track,
   // fewer collected in the HUD, a smaller wallet in the garage. Capping downstream
   // would have made one of them contradict the others in front of a child.
-  const TOKEN_KEEP = 0.42;
-  const spots = (track.tokenSpots || []).filter((_, i) => (i * TOKEN_KEEP) % 1 < TOKEN_KEEP);
+  // The thinning is TOKEN_CLUSTERS_PER_LAP whole rows — see its comment up top
+  // for why counting rows beats keeping a fraction of the authored list.
+  const spots = thinTokenSpots(track.tokenSpots || []);
   const tokens = buildTokens(spots, engine, rng);
   if (tokens) scene.add(tokens.group);
 
@@ -232,6 +316,30 @@ export function raceScene(engine, opts = {}) {
   playerMesh.group.position.copy(player.position);
   playerMesh.group.quaternion.copy(player.renderQuaternion);
 
+  // ---- pre-race intro card -------------------------------------------------
+  // Every race opens on "ברוכים הבאים אל <track>" plus one הידעתם line. It owns
+  // the screen (modal id 'intro') and holds the scene in phase 'intro', which
+  // emits ZERO fixed steps — so the countdown has not begun and raceTime/lapTime
+  // are 0 while it is up. It returns null if it defers behind another modal, and
+  // is off entirely for backdrops, autopilot and harness-driven races.
+  const intro = introCardEnabled(opts, engine)
+    ? createIntroCard({
+      track: trackId, mount: engine.ui,
+      onSkip() {
+        S.phase = 'countdown';
+        S.clock = 0;
+        simAcc = 0;                                  // never bank time across it
+        // D12: hand the keyboard back without touching the SET of held keys, so
+        // a child already holding accelerate keeps throttle into the countdown.
+        if (input) input.enabled = !S.paused && !S.quizFrozen;
+      },
+    })
+    : null;
+  if (intro) {
+    S.phase = 'intro';
+    if (input) { input.enabled = false; input.softReset(); }
+  }
+
   if (!backdrop) bus.emit('race:begin', { track: def.id, laps, racer: racer.id });
 
   // A correct quiz answer pays tokens; the quiz applies the boost itself.
@@ -270,6 +378,10 @@ export function raceScene(engine, opts = {}) {
   let simAcc = 0;
 
   function simulate(dt) {
+    // The intro card holds the world before the countdown. update() already
+    // emits zero steps for it (scale 0); this is the second lock, so a step that
+    // arrives by any other route still cannot start the countdown clock.
+    if (S.phase === 'intro') return;
     S.clock += dt;
 
     if (S.phase === 'countdown') {
@@ -354,9 +466,14 @@ export function raceScene(engine, opts = {}) {
   function update(dtReal) {
     // Quiz runs ONCE per frame on unscaled time — it owns the slow-motion factor
     // and its own countdown must not slow down along with the world.
-    const scale = quiz
-      ? quiz.update(dtReal, player, { racing: S.phase === 'racing' && !S.finished })
-      : 1;
+    // The pre-race card is a full freeze of the same kind the quiz applies: a
+    // time scale of exactly 0, so the accumulator emits no fixed steps at all
+    // (D11/D20). The quiz is not ticked while it is up either — its own clocks
+    // must not advance behind a panel that owns the screen.
+    const scale = S.phase === 'intro' ? 0
+      : quiz
+        ? quiz.update(dtReal, player, { racing: S.phase === 'racing' && !S.finished })
+        : 1;
 
     // A quiz panel freezes the world outright (scale 0). Treat that stretch the
     // way a pause is treated at the input boundary: `enabled` off so nothing
@@ -490,7 +607,12 @@ export function raceScene(engine, opts = {}) {
       finishBonus,
       standings,
     };
-    if (typeof window !== 'undefined') window.__LAST_RESULT__ = result;   // read by the economy gate
+    // Read by the economy gate. NOT written by a backdrop race: the title,
+    // results and garage screens each run a live autopilot race behind their UI,
+    // those races finish too, and one of them silently overwrote the player's
+    // own result — the gate then measured a menu backdrop (0 pickups, nobody
+    // answering questions) and called it the child's race.
+    if (!backdrop && typeof window !== 'undefined') window.__LAST_RESULT__ = result;
     setTimeout(() => {
       bus.emit('race:complete', result);
       opts.onComplete?.(result);
@@ -519,7 +641,7 @@ export function raceScene(engine, opts = {}) {
   }
 
   // ── feedback: turn physics state changes into bus events ────────────────
-  const prev = { drifting: false, tier: -1, boosting: false, wallHit: false, kartHit: false, offTrack: false };
+  const prev = { drifting: false, tier: -1, boosting: false, boostSeq: 0, wallHit: false, kartHit: false, offTrack: false };
   function driveFeedback(dt) {
     void dt;
     if (backdrop) return;   // a menu backdrop must never make engine noise
@@ -532,10 +654,38 @@ export function raceScene(engine, opts = {}) {
       if (player.driftTier > prev.tier && player.driftTier > 0) bus.emit('drift:tier', { tier: player.driftTier });
       prev.tier = player.driftTier;
     }
-    if (player.boosting !== prev.boosting) {
-      prev.boosting = player.boosting;
-      if (player.boosting) { bus.emit('drift:boost', { tier: player.driftTier }); chase.shake(0.35, 0.25); }
+    // Watch the boost SEQUENCE, not the `boosting` rising edge, and read the
+    // tier off the body's recorded provenance rather than off `driftTier`.
+    // Three bugs lived in the two lines this replaces (D35):
+    //   • `_releaseDrift()` zeroes `driftTier` in the same call that starts the
+    //     boost, so every drift:boost the game has ever emitted carried tier 0;
+    //   • quiz.js calls `applyBoost()` on a correct answer, raising the same
+    //     edge, so quiz turbos were indistinguishable from drifts;
+    //   • an edge on `boosting` cannot see a release that lands while a
+    //     previous boost is still running — chained corners, i.e. exactly the
+    //     skill the drift reward exists to celebrate, emitted nothing.
+    //   • and the `last*` fields alone still lose a boost: they record only the
+    //     MOST RECENT one, so a quiz turbo (applied from quiz.update()) landing
+    //     in the same 16ms frame as a drift release (applied inside simulate())
+    //     overwrites the release's provenance and the drift is reported as
+    //     'external'. Forced same-frame: 19 real releases, 0 counted. So drain
+    //     the body's boost log — every boost of the frame, oldest first, each
+    //     with its own tier/source — rather than polling one counter.
+    const boosts = player.drainBoosts?.();
+    if (boosts && boosts.length) {
+      for (const b of boosts) {
+        prev.boostSeq = b.seq;
+        bus.emit('drift:boost', { tier: b.tier, source: b.source });
+      }
+      chase.shake(0.35, 0.25);   // ONE shake per frame, however many boosts drained
+    } else if (player.boostSeq !== prev.boostSeq) {
+      // Safety net for a body that has no log (stubs, older mocks, the AI
+      // bodies a future gate might hand in): the pre-drain behaviour exactly.
+      prev.boostSeq = player.boostSeq;
+      bus.emit('drift:boost', { tier: player.lastBoostTier, source: player.lastBoostSource });
+      chase.shake(0.35, 0.25);
     }
+    prev.boosting = player.boosting;
     if (player.wallHit && !prev.wallHit) { bus.emit('kart:collide', { kind: 'wall', speed: player.speed }); chase.shake(0.6, 0.3); }
     prev.wallHit = !!player.wallHit;
     if (player.kartHit && !prev.kartHit) { bus.emit('kart:collide', { kind: 'kart', speed: player.speed }); chase.shake(0.3, 0.2); }
@@ -627,11 +777,14 @@ export function raceScene(engine, opts = {}) {
     // `quiz` is exposed so a gate can open/inspect a question directly instead
     // of driving an autopilot lap until a beacon happens to fire (which cost
     // tools/modaltest.mjs ~40s per check and made the freeze untestable).
-    player, field, track, hud, input, chase, quiz,
+    // `intro` is exposed for the same reason `quiz` is: a gate must be able to
+    // ask whether the card is up, and skip it, without synthesising input.
+    player, field, track, hud, input, chase, quiz, intro,
     playerMesh, aiKarts,   // exposed for the automated P0 gates (orientation, steering)
     setPaused,
     dispose() {
       offQuiz?.(); offPause?.(); offResume?.();
+      intro?.dispose();          // also releases the 'intro' modal id
       quiz?.dispose();
       fx?.dispose();
       input?.dispose();

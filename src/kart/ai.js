@@ -286,10 +286,52 @@ export function difficulty01(d) {
   return clamp(d, 0, 1);
 }
 
-// Base pace as a fraction of the AI's own flat-out clean lap. Race 1 leaves a
-// clear margin for a competent kid to win; race 3 is within a whisker of the
-// AI's ceiling. (Flat out = 47.4s oasis / 51.1s circuit / 49.3s cloud.)
-const paceForDifficulty = d01 => 0.815 + 0.150 * d01;
+// ---------------------------------------------------------------------------
+// PACE, TRACK CALIBRATION AND THE OPPONENTS' OWN GARAGE  (Wave 4 rebalance)
+// ---------------------------------------------------------------------------
+// Wave 1 carried the whole championship escalation in one number — a base pace
+// of 0.815 -> 0.965 of the AI's speed profile. Measured end-to-end in Wave 4
+// (autopilot player, real KartBody, topSpeed+accel scaled to `pace`, 3 laps,
+// 5 seeds) that left the game a walkover: a clean 100%-pace player won all
+// three races on every seed, on every track, at every difficulty — because the
+// AI's own flat-out was already slower than the reference driver and the pace
+// fraction then took another 3.5-18.5% off it:
+//
+//   4-lap flat-out, one kart, no traffic     oasis    circuit   cloud
+//   reference autopilot (the yardstick)      46.95s   54.56s    48.08s
+//   AI at pace 1.00, stock kart              48.08s   51.71s    50.35s
+//
+// So the escalation is now carried by two honest things instead of one:
+//
+//  1. PACE is a flat 1.00 — the AI simply drives its own speed profile with no
+//     safety margin left in it. It is not a licence to exceed the physics: the
+//     profile is capped at the kart's own topSpeed and built from the real grip
+//     circle at `skill` confidence, and `skill`, mistake rate and hand wobble
+//     still scale with difficulty exactly as before.
+//     TRACK_PACE is a per-geometry calibration, measured from the table above:
+//     the gap between the reference lap and the AI's own flat-out is +2.4% on
+//     oasis, -5.2% on circuit and +4.7% on cloud, so one global number puts the
+//     field in a different place on every track. These three put the FIELD where
+//     the design wants it relative to a clean driver, per track.
+//  2. THE OPPONENTS UPGRADE TOO. Race 1 is stock; race 2 they run tier-1 parts;
+//     race 3 tier-2. Same PART_TIERS the child buys in the garage, same physics,
+//     no secret grip — and it is the only lever that raises the AI's TOP SPEED,
+//     which is what limits it on oasis and cloud (pace above ~1.05 buys nothing
+//     there but off-track time). It also makes the garage legible: the way to
+//     beat an upgraded field is to turn up with an upgrade of your own.
+//
+// Measured result, autopilot player, 5 seeds, place out of 8:
+//   stock player  race 1: 1st-3rd (mean 2.2)   race 2: 3rd-4th   race 3: 3rd-5th
+//   tier-1 player            1st-2nd (1.2)              2nd-3rd          1st-3rd
+//   tier-2 player            1st                        1st-2nd          1st
+const AI_PACE = 1.00;
+const TRACK_PACE = { oasis: 1.03, circuit: 0.96, cloud: 1.00 };
+const paceForDifficulty = () => AI_PACE;
+
+// Championship tier of the opponents' own karts: race 1 stock, race 2 tier 1,
+// race 3 tier 2. Tier 3 is left to the player — the field never out-equips a
+// child who has spent well.
+export const aiPartTier = d01 => clamp(Math.round(2 * difficulty01(d01)), 0, 2);
 
 // ---------------------------------------------------------------------------
 // Rubber band. Two independent terms, summed, then hard-clamped:
@@ -313,40 +355,51 @@ const paceForDifficulty = d01 => 0.815 + 0.150 * d01;
 //     saves a struggling 8-year-old, and driving slower can never make a race
 //     unwinnable for anybody.
 //
-// CEILING vs FLOOR, and why only one of them scales with difficulty
-// -----------------------------------------------------------------
+// CEILING vs FLOOR — and why the floor is now an ABSOLUTE PACE, not a percentage
+// -----------------------------------------------------------------------------
 // The CEILING (catch-up) is scaled down as the championship escalates: a race-3
 // opponent is already running near its own flat-out, so there is very little
 // headroom left above it and handing out +7.5% there would push it past the
-// clean-lap cap the fairness argument rests on.
+// clean-lap cap the fairness argument rests on. Unchanged, still +7.5% max.
 //
-// The FLOOR (hold-back) used to be scaled down the same way — `BAND_HOLD *
-// (1 - 0.45 * d01)`, which left race 3 with 9.4% of authority instead of 17%.
-// That was the bug. The floor is the ONLY thing standing between a struggling
-// child and being lapped, and the need for it GROWS with difficulty, because
-// the base pace grows too (0.815 -> 0.965). Measured, 3-lap races, headless
-// autopilot player with top speed + accel scaled to `pace`, 3 seeds, laps
-// behind the winner at the moment the winner finishes:
+// The FLOOR (hold-back) is the ONLY thing standing between a struggling child
+// and being lapped, and it has now been expressed as the thing it is actually
+// promising: a floor on the opponent's EFFECTIVE PACE — BAND_FLOOR_PACE, 62% of
+// its own clean flat-out — rather than a fixed -17% off whatever the base pace
+// happens to be. A percentage floor silently changes meaning every time the base
+// pace moves: Wave 1's -17% meant 0.677 effective at race 1 and 0.801 at race 3,
+// which is exactly why a 70%-pace child was measured 1.04 laps down (LAPPED) on
+// `cloud` and only 0.24 down on `oasis`. Wave 4 raises the base pace to ~1.00,
+// which would have made that far worse. An absolute floor keeps the promise
+// identical on all three races no matter what the pace above it does.
 //
-//              race 1 (d1)   race 2 (d2)   race 3 (d3)
-//   70% pace   0.24 / 0.24   0.51 / 0.47   0.78 / 0.65      (before / after)
-//   60% pace   0.64 / 0.64   0.90 / 0.85   1.14 / 1.03
+//   effective floor pace, per race (fraction of the AI's own clean flat-out)
+//                       race 1   race 2   race 3
+//   Wave 1 (-17%)        0.677    0.739    0.801     <- race 3 lapped a child
+//   Wave 4 (absolute)    0.620    0.620    0.620
 //
-// i.e. at race 3 a 70%-pace child went from LAPPED (0.78 here, 1.04 in the
-// built game) to comfortably on the lead lap. Races 1 and 2 at 85% and 100%
-// are bit-identical, because at d01 = 0 this changes nothing at all.
+// Measured, 3-lap races, autopilot player with topSpeed+accel scaled to `pace`,
+// 5 seeds, laps behind the winner when the winner finishes (>= 1.00 = lapped):
 //
-// The DECLARED BOUND IS UNCHANGED: the band multiplier still lives inside
-// [1 - BAND_HOLD, 1 + BAND_CATCH] = [0.830, 1.075] and is still measured at
-// exactly 0.8300 .. 1.0750 over the 27-race sweep. All this does is let race 3
-// reach the same floor race 1 always could. Do not "fix" a future
-// never-lapped gap by widening these two constants — an unbounded band is the
-// thing kids notice and resent. tests/ai.test.mjs pins both the bound and the
-// guarantee.
+//                race 1 (oasis)  race 2 (circuit)  race 3 (cloud)
+//   70% pace     0.24 -> 0.17     0.25 -> 0.15      0.61 -> 0.20   (before/after)
+//   85% pace     0.03 -> 0.10     0.09 -> 0.09      0.15 -> 0.10
+//
+// and the worst distance to the NEAREST opponent at 70% pace fell from 0.41 laps
+// to 0.08 — a struggling child is now inside the pack, not alone on an empty
+// track, which is what the floor is for.
+//
+// Do not "fix" a future never-lapped gap by widening BAND_CATCH — an unbounded
+// catch-up is the thing kids notice and resent, and it is capped so an opponent
+// that is behind can never lap faster than its own clean flat-out.
+// tests/ai.test.mjs pins the bound, the floor and the guarantee.
 export const BAND_CATCH = 0.075;      // hard ceiling: +7.5% on target speed
-export const BAND_HOLD = 0.170;       // hard floor:   -17% on target speed
+export const BAND_HOLD = 0.170;       // minimum hold-back authority (see below)
+export const BAND_FLOOR_PACE = 0.62;  // hard floor on effective pace
 const bandCatchMax = d01 => BAND_CATCH * (1 - 0.30 * d01);
-const bandHoldMax = () => BAND_HOLD;               // difficulty-independent
+// Hold-back authority for a given base pace: enough to reach the absolute floor,
+// and never less than the Wave-1 percentage.
+const bandHoldMax = base => Math.max(BAND_HOLD, 1 - BAND_FLOOR_PACE / Math.max(base, 0.1));
 const packCatchMax = d01 => 0.026 * (1 - 0.30 * d01);
 const packHoldMax = () => 0.034;                   // difficulty-independent
 // Seconds of gap at which each term is ~76% saturated. The pack is tight, so
@@ -359,6 +412,31 @@ const PACK_TAU = 2.5;
 // biased backwards (+3s to -11s) so that a good kid is still racing for the
 // win, not for fourth. Scaled down as the championship escalates.
 const SLOT_AHEAD = [2.5, 1, -0.5, -2, -3.5, -5, -6.5];
+
+// THIS TABLE, NOT PACE, IS WHAT DECIDES A STRUGGLING CHILD'S FINISHING PLACE.
+// -------------------------------------------------------------------------
+// Once a player drops below the field's own speed the hold-back floor gathers
+// everybody around them, and the order is then settled by how many opponents
+// are AIMING to sit behind the player — two of them, at every difficulty, which
+// is why Wave 4 shipped a championship that read 6th -> 6th -> 6th to an
+// 85%-pace child. Measured: dropping the race-1 catch-up ceiling to zero moved
+// that 6.0 by nothing at all, and widening the field's internal pace spread by
+// 3x moved it to 5.6. The slot table moved it to 4.0.
+//
+// So the backward half of the table is STRETCHED at low difficulty: on race 1
+// four or five opponents are racing for the places behind the player, and by
+// race 3 only the original two are. The forward slots (+2.5s, +1s) are left
+// alone at every difficulty — they are what keeps a clean 100% driver fighting
+// for the win rather than handed it.
+//
+//   mean place, autopilot player, 11 seeds      race 1   race 2   race 3
+//   100% pace   before / after                  2.2/2.5  3.8/3.1  3.8/3.8
+//    85% pace   before / after                  6.0/4.1  6.0/5.0  6.2/6.1
+//
+// The falloff is squared so race 2 keeps most of the escalation: the stretch is
+// 1.8x at d01 = 0, 1.2x at d01 = 0.5 and 1.0x (i.e. Wave-1 behaviour) at d01 = 1.
+const SLOT_STRETCH_EASY = 1.8;
+const slotStretch = d01 => 1 + (SLOT_STRETCH_EASY - 1) * (1 - d01) * (1 - d01);
 
 // ===========================================================================
 // 4. AIDriver
@@ -388,6 +466,9 @@ export class AIDriver {
     this.P = o.persona ? { ...persona(this.personality), ...o.persona } : persona(this.personality);
     this.rng = makeRng((o.seed ?? 1) * 7919 + 13);
     this.d01 = difficulty01(o.difficulty);
+    // Per-geometry pace calibration, handed down by createAIField (which is the
+    // only thing that knows which track def this spline belongs to).
+    this.trackPace = o.trackPace ?? 1;
 
     this.line = racingLine(this.spline);
     this.paceOverride = o.pace ?? null;
@@ -481,7 +562,7 @@ export class AIDriver {
     // ---- pace ------------------------------------------------------------
     const wave = 1 + P.paceWave * Math.sin(this.time * (P.waveHz ?? 0.42) + this._wavePhase);
     if (this.paceOverride != null) this.pace = this.paceOverride * wave;
-    else this.pace = paceForDifficulty(this.d01) * P.pace * this.racerPace() * wave * this.band;
+    else this.pace = this.basePace() * P.pace * this.racerPace() * wave * this.band;
 
     // ---- mistakes ---------------------------------------------------------
     this._tickMistakes(dt);
@@ -561,6 +642,16 @@ export class AIDriver {
     inp.drift = drift.want; inp.hop = false;
     return inp;
   }
+
+  /**
+   * This driver's un-banded pace: difficulty pace x the track calibration. The
+   * band is expressed as a multiplier ON THIS, and the never-lapped floor is an
+   * absolute pace, so both are meaningless without it.
+   */
+  basePace() { return paceForDifficulty(this.d01) * this.trackPace; }
+
+  /** Lowest band multiplier this driver can ever reach (the absolute floor). */
+  bandFloor() { return 1 - bandHoldMax(this.basePace()); }
 
   /** Small fixed per-racer pace offset so the field is not eight clones. */
   racerPace() {
@@ -752,14 +843,19 @@ export class AIDriver {
   applyBand(dt, gapSeconds, packGapSeconds = 0) {
     if (!this.banded) { this.band = 1; return 1; }
     // Aim for our slot, not for the player's exact bumper.
-    const rp = Math.tanh((gapSeconds + this.slotAhead * (1 - 0.35 * this.d01)) / BAND_TAU);
+    // Opponents that aim BEHIND the player have their slot stretched on the
+    // gentle races (see SLOT_STRETCH_EASY) — that stretch is the championship's
+    // whole gradient for anyone driving below the field's own pace.
+    const slot = this.slotAhead * (this.slotAhead < 0 ? slotStretch(this.d01) : 1);
+    const rp = Math.tanh((gapSeconds + slot * (1 - 0.35 * this.d01)) / BAND_TAU);
     const rk = Math.tanh(packGapSeconds / PACK_TAU);
     // Catch-up (rp > 0, we are behind the human) is difficulty-scaled; hold-back
     // (rp < 0, we are up the road and the human is struggling) is not. See the
     // CEILING vs FLOOR note above the constants.
-    const dPlayer = rp > 0 ? rp * bandCatchMax(this.d01) : rp * bandHoldMax();
+    const holdMax = bandHoldMax(this.basePace());
+    const dPlayer = rp > 0 ? rp * bandCatchMax(this.d01) : rp * holdMax;
     const dPack = rk > 0 ? rk * packCatchMax(this.d01) : rk * packHoldMax();
-    const target = clamp(1 + dPlayer + dPack, 1 - BAND_HOLD, 1 + BAND_CATCH);
+    const target = clamp(1 + dPlayer + dPack, 1 - holdMax, 1 + BAND_CATCH);
     // ~1.4s time constant: the band is a mood, never a gear change.
     this.band = damp(this.band, target, 0.7, dt);
     if (this.band > this.stats.bandMax) this.stats.bandMax = this.band;
@@ -802,6 +898,13 @@ export function createAIField(spline, def, engine, opts = {}) {
   const slots = opts.slots || gridSlots(spline, def, count + 1);
   const playerSlot = opts.playerSlot ?? 0;
   const surface = def?.theme === 'cloud' ? 'cloud' : def?.theme === 'circuit' ? 'grass' : 'sand';
+  const trackPace = TRACK_PACE[def?.id] ?? 1;
+  // The opponents' own garage. `opts.parts` still wins (A/B telemetry hands the
+  // whole field the player's parts on purpose); otherwise the field runs the
+  // championship tier for this difficulty. Exposed on the api as `parts` so the
+  // race scene can dress them to match if it wants to.
+  const tier = aiPartTier(difficulty);
+  const aiParts = opts.parts || (tier > 0 ? { engine: tier, tyres: tier, frame: tier, turbo: tier } : null);
 
   const field = ROSTER.filter(r => r.id !== playerId).slice(0, count);
   const free = slots.filter((_, i) => i !== playerSlot);
@@ -811,10 +914,10 @@ export function createAIField(spline, def, engine, opts = {}) {
   field.forEach((racer, i) => {
     const body = opts.bodies?.[i] || new KartBody({
       spline, stats: racer.stats, startSlot: free[i] || free[free.length - 1],
-      parts: opts.parts, surface,
+      parts: aiParts, surface,
     });
     const drv = new AIDriver({
-      body, spline, racer, difficulty,
+      body, spline, racer, difficulty, trackPace,
       seed: (opts.seed ?? 1) * 101 + i * 37,
       rubberBand: opts.rubberBand !== false,
     });
@@ -839,10 +942,18 @@ export function createAIField(spline, def, engine, opts = {}) {
 
   const api = {
     drivers, bodies, karts, line: racingLine(spline), difficulty: d01,
+    // What the opponents are driving: the championship part tier and the parts
+    // object itself, so a caller can dress the AI karts to match their physics.
+    partTier: tier, parts: aiParts,
 
     /** Tokens the AI may deviate slightly to collect. `[{position, active}]`. */
     setTokens(list) { tokens = list; ctx.tokens = list; },
 
+    /**
+     * Mid-life difficulty change. Moves skill / mistakes / band authority, but
+     * NOT the opponents' part tier — their karts are built once, and swapping
+     * hardware under a running race would change lap times mid-lap.
+     */
     setDifficulty(d) {
       api.difficulty = difficulty01(d);
       for (const drv of drivers) drv.setDifficulty(d);

@@ -27,7 +27,10 @@ import * as THREE from 'three';
 import { bus } from '../core/bus.js';
 import { save } from '../core/save.js';
 import { makeRng } from '../core/rng.js';
-import { h } from '../ui/style.js';
+// style.js is deliberately dependency-free (see its modal-registry header), so
+// importing it here creates no cycle. `onModalChange` is the seam that makes the
+// modal duck automatic — see AudioSystem._modalDucked / setModalDuck.
+import { h, onModalChange, pushModal, popModal } from '../ui/style.js';
 import { registerStrings, t, num } from '../ui/i18n.js';
 
 // ── small maths helpers ──────────────────────────────────────────────────────
@@ -45,6 +48,35 @@ const UNLOCK_EVENTS = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'clic
 const MAX_VOICES = 56;        // hard cap on concurrent scheduled sfx/music voices
 const MUSIC_HEADROOM = 20;    // music may use this many voices beyond the sfx cap
 
+// ── mix constants (Wave 4) ───────────────────────────────────────────────────
+// Pinned here rather than inline so tests/audio.test.mjs and the settings screen
+// have one place to read, and so a future tweak is one line and not a hunt.
+// ENGINE_BUS was set by measuring the built game against the rest of the mix,
+// not by ear-guessing: race music meters rms 0.027 / peak 0.44, SFX peak 0.19
+// (token) to 0.40 (wall hit). The engine is CONTINUOUS, so it has to sit under
+// both — at 0.21 it lands at rms 0.024 flat out, just under the music bed, with
+// its peaks ~18 dB below the SFX so a collision still cuts through. Wave 3's
+// 0.32, through a 15 dB drive stage, metered rms 0.101 — four times the music.
+const ENGINE_BUS = 0.21;
+const ENGINE_LEVEL = 0.34;    // player engine voice level inside that bus
+const AI_ENGINE_LEVEL = 0.075; // per-AI-kart voice at closest range
+// Idle presence. The engine's level at rpm 0, as a fraction of its flat-out
+// level — NOT a tuning fudge but the thing that stops "quieter" turning into
+// "inaudible on the grid". See EngineVoice._levelFor.
+const IDLE_FLOOR = 0.46;
+
+// Modal ducking. The engine and the world go to TRUE zero (a linear ramp, so it
+// is a fade and not a click); music only steps back.
+const MODAL_DUCK_RAMP = 0.12;  // seconds — fast enough to feel instant, slow
+                               // enough that no voice clicks off
+const MODAL_MUSIC = 0.34;      // music floor while a modal owns the screen
+
+/** Saved master volume (save.js `volume`, 0..1), falling back to the default. */
+function readSavedVolume() {
+  const v = save.read('volume');
+  return typeof v === 'number' && isFinite(v) ? clamp(v, 0, 1) : 0.75;
+}
+
 // Soft-clip curve. UNITY GAIN below `knee` (so normal material is untouched and
 // the meters tell the truth), then a tanh knee that asymptotes to `ceil`. Since
 // WaveShaper clamps its input to [-1,1], the master output can never exceed
@@ -58,8 +90,13 @@ function softClipCurve(knee = 0.55, ceil = 0.97) {
   }
   return c;
 }
-// harder asymmetric drive for the engine — this is what makes a two-stroke rasp.
-function driveCurve(k = 6) {
+// Gentle asymmetric saturation for the engine. Wave 4: `k` was 6, which is not a
+// warm saturator at all — tanh(6x)/tanh(6) has a slope of ~6 near zero, so the
+// stage was a 15 dB distortion boost that turned the oscillator stack into a
+// constant grating buzz. At k≈2 the slope near zero is ~2 and the curve only
+// rounds the peaks, which is what "warm" actually means. The asymmetry is kept:
+// it is what stops the tone sounding like a plain filtered synth pad.
+function driveCurve(k = 2) {
   const n = 1024, c = new Float32Array(n), d = Math.tanh(k);
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
@@ -119,7 +156,9 @@ const THEMES = {
     lead: 'pluck', bassWave: 'triangle', padWave: 'triangle',
     perc: 'hand', padCut: 1500, leadOct: 12, colour: '#ffc247',
   },
-  // Circuit City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+  // Neuron City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+  // (The theme id and the track id both stay `circuit`; only the display name
+  // changed this wave — עיר המעגלים → עיר הנוירונים.)
   circuit: {
     bpm: 124, root: 45 /* A2 */, scale: SCALES.minor, seed: 55019,
     prog: [{ r: 0, c: [0, 3, 7, 10] }, { r: 7, c: [0, 3, 7, 10] },
@@ -185,13 +224,34 @@ function buildMelody(theme, role) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Persistent engine voice. Allocated ONCE; every state change is an AudioParam
-// automation, never a new node. Layers:
-//   saw A + saw B (detuned)  → body
-//   square @ 2x (quiet)      → the buzzy two-stroke edge
-//   sine sub @ 0.5x          → weight
-//   band-passed noise        → induction roar / air
-//   + a lowpassed noise bed  → off-track surface rumble
-// then a shared lowpass (cutoff tracks rpm) and a tanh drive stage.
+// automation, never a new node.
+//
+// ── WAVE 4 REDESIGN ─────────────────────────────────────────────────────────
+// The Wave-3 voice was two detuned SAWS plus a square, through a heavy tanh(6)
+// drive, at a bus level of 0.32. Measured on the real build it sat at rms 0.080
+// at rpm 0.15 and only 0.101 at full throttle: a loud, constant, grating buzz
+// that barely acknowledged the throttle and covered the music and the SFX.
+// Three separate things were wrong, and all three are fixed here:
+//   1. TIMBRE. Saws + square + hard drive is an all-harmonics wall. The body is
+//      now two detuned TRIANGLES (odd harmonics, rolling off fast = warm) with a
+//      single quiet saw for something for the filter to bite on, and the square
+//      is down to a trace that only appears under strain. The drive is tanh(2).
+//   2. DYNAMICS. Output level was a function of load only, so idle and flat-out
+//      measured almost the same. It now scales with rpm as well, ~2.4x across
+//      the range, so a child hears the kart accelerate rather than just hearing
+//      a filter open.
+//   3. MIX. The engine is a CONTINUOUS bed under intermittent SFX and music, so
+//      it must sit well below both. Bus level 0.32 → ENGINE_BUS.
+//
+// Layers:
+//   triangle A + triangle B (detuned) → warm body
+//   sawtooth (quiet)                  → harmonic food for the resonant sweep
+//   square @ 2x (trace, strain-only)  → the two-stroke edge, now an accent
+//   sine sub @ 0.5x                   → weight
+//   band-passed noise                 → induction roar / air
+//   + a lowpassed noise bed           → off-track surface rumble
+// then a shared resonant lowpass whose cutoff sweeps with rpm — that sweep, not
+// distortion, is what now carries the "revving" sensation — and a soft drive.
 // Irregularity comes from two incommensurate LFOs on detune + amplitude, so the
 // pitch never sits perfectly still — that is the difference between an engine
 // and a test tone.
@@ -212,11 +272,13 @@ class EngineVoice {
     this.shaper.curve = A._driveCurve;
     this.shaper.connect(this.out);
 
-    this.drive = c.createGain(); this.drive.gain.value = 0.55;
+    this.drive = c.createGain(); this.drive.gain.value = 0.40;
     this.drive.connect(this.shaper);
 
+    // Moderate resonance: enough for the cutoff sweep to be *heard* as a sweep,
+    // well short of the Q=6.5 whistle the old boost setting produced.
     this.lp = c.createBiquadFilter();
-    this.lp.type = 'lowpass'; this.lp.frequency.value = 500; this.lp.Q.value = 3.5;
+    this.lp.type = 'lowpass'; this.lp.frequency.value = 420; this.lp.Q.value = 1.6;
     this.lp.connect(this.drive);
 
     // amplitude wobble node (base 1.0, LFOs add on top)
@@ -230,12 +292,17 @@ class EngineVoice {
       o.start(0);
       return { o, g: gg };
     };
-    this.sawA = mk('sawtooth', 0.34);
-    this.sawB = mk('sawtooth', 0.28); this.sawB.o.detune.value = 11;
-    this.sqr = mk('square', 0.13);
-    this.sub = mk('sine', 0.30);
+    // Warm body first, edge second. Triangles carry the note; the saw is only
+    // there so the resonant sweep has upper harmonics to move through.
+    this.triA = mk('triangle', 0.32);
+    this.triB = mk('triangle', 0.24); this.triB.o.detune.value = 9;
+    this.saw = mk('sawtooth', 0.085);
+    this.sqr = mk('square', 0.022);            // trace only; strain brings it in
+    this.sub = mk('sine', 0.26);
     this.whine = mk('sine', 0.0);              // boost-only resonant whistle
     this.whine.o.detune.value = 4;
+    // every pitched layer, in one place — used by the detune/LFO wiring below
+    this.oscs = [this.triA, this.triB, this.saw, this.sqr, this.sub, this.whine];
 
     // noise: induction roar
     this.nz = c.createBufferSource(); this.nz.buffer = A._noiseBuf; this.nz.loop = true;
@@ -257,10 +324,10 @@ class EngineVoice {
     this.lfoB = c.createOscillator(); this.lfoB.type = 'triangle'; this.lfoB.frequency.value = 11.31;
     this.jitA = c.createGain(); this.jitA.gain.value = 14;   // cents
     this.jitB = c.createGain(); this.jitB.gain.value = 6;
-    this.ampA = c.createGain(); this.ampA.gain.value = 0.18; // wobble depth
+    this.ampA = c.createGain(); this.ampA.gain.value = 0.12; // wobble depth
     this.lfoA.connect(this.jitA); this.lfoB.connect(this.jitB);
     this.lfoA.connect(this.ampA); this.ampA.connect(this.wob.gain);
-    for (const v of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) {
+    for (const v of this.oscs) {
       this.jitA.connect(v.o.detune); this.jitB.connect(v.o.detune);
     }
     this.lfoA.start(0); this.lfoB.start(0);
@@ -293,48 +360,81 @@ class EngineVoice {
 
     const sq = (p, v) => { try { p.setTargetAtTime(v, time, tau); } catch { /* param clamp */ } };
 
-    sq(this.sawA.o.frequency, f);
-    sq(this.sawB.o.frequency, f * 1.004);
+    sq(this.triA.o.frequency, f);
+    sq(this.triB.o.frequency, f * 1.004);
+    sq(this.saw.o.frequency, f);
     sq(this.sqr.o.frequency, f * 2);
     sq(this.sub.o.frequency, f * 0.5);
     sq(this.whine.o.frequency, f * 6);
-    for (const v of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) sq(v.o.detune, det);
+    for (const v of this.oscs) sq(v.o.detune, det);
 
-    // cutoff opens hard with rpm — this is most of the "revving" sensation.
-    // Strain adds a mid-growl on top; coasting shuts the filter down fast, which
-    // is what makes lifting off audibly *relax*.
-    sq(this.lp.frequency, clamp((280 + Math.pow(rpm, 1.4) * 4200 * (boost ? 1.5 : 1) * (0.7 + 0.5 * load)
-      + 950 * strain) * lerp(1, 0.5, coast), 120, 12000));
-    sq(this.lp.Q, (boost ? 6.5 : lerp(2.2, 4.6, rpm)) + 1.6 * strain);
-    sq(this.drive.gain, (lerp(0.42, 0.78, load) + 0.28 * strain) * (boost ? 1.22 : 1) * lerp(1, 0.72, coast));
-    // the square layer IS the strain: buzzy odd harmonics when it is working hard
-    sq(this.sqr.g.gain, 0.10 + 0.17 * strain - 0.05 * coast);
+    // The cutoff sweep is now the WHOLE revving sensation — the drive stage no
+    // longer manufactures harmonics, so what the child hears opening up is this
+    // filter travelling. Ceiling pulled down from 12 kHz to 5.2 kHz: above that
+    // there is nothing left but the harsh top of the saw, which is exactly the
+    // part that made the old voice grate. Coasting shuts it down fast, which is
+    // what makes lifting off audibly *relax*.
+    // `strain` peaks at LOW rpm under full throttle (it is throttle minus speed),
+    // so anything it boosts makes the bottom of the rev range louder. Kept small
+    // deliberately: it is a lugging *colour*, and when it was strong enough to
+    // matter it could make pulling away quieter as it faded — the level going
+    // BACKWARDS as the kart speeds up. Monotonicity is gated; this is the term
+    // that would break it.
+    sq(this.lp.frequency, clamp((300 + Math.pow(rpm, 1.25) * 2350 * (boost ? 1.35 : 1) * (0.75 + 0.4 * load)
+      + 420 * strain) * lerp(1, 0.55, coast), 140, 5200));
+    sq(this.lp.Q, (boost ? 3.2 : lerp(1.2, 2.4, rpm)) + 0.9 * strain);
+    sq(this.drive.gain, (lerp(0.32, 0.52, load) + 0.14 * strain) * (boost ? 1.12 : 1) * lerp(1, 0.75, coast));
+    // the square layer IS the strain: buzzy odd harmonics when it is working hard,
+    // and essentially absent the rest of the time
+    sq(this.sqr.g.gain, clamp(0.018 + 0.055 * strain - 0.012 * coast, 0, 0.09));
 
-    // noise roar tracks rpm and load
-    sq(this.bp.frequency, 420 + rpm * 2600);
-    sq(this.nzg.gain, lerp(0.03, 0.115, rpm) * lerp(0.6, 1.25, load) * lerp(1, 0.45, coast));
-    sq(this.whine.g.gain, boost ? 0.045 : 0.0);
+    // noise roar tracks rpm and load — halved, it was a hiss bed of its own
+    sq(this.bp.frequency, 420 + rpm * 1900);
+    sq(this.nzg.gain, lerp(0.014, 0.052, rpm) * lerp(0.6, 1.25, load) * lerp(1, 0.45, coast));
+    sq(this.whine.g.gain, boost ? 0.022 : 0.0);
 
     // idle burble: deep, slow wobble at low rpm, tightening as it revs out.
     // Under strain the wobble deepens and slows — that is the "lug".
     sq(this.lfoA.frequency, lerp(4.1, 23, rpm) * lerp(1, 0.68, strain));
     sq(this.lfoB.frequency, lerp(9.3, 47, rpm));
-    sq(this.ampA.gain, lerp(0.26, 0.05, rpm) + 0.14 * strain + 0.05 * coast);
-    sq(this.jitA.gain, lerp(22, 5, rpm) + 10 * strain);
-    sq(this.jitB.gain, lerp(9, 2.5, rpm));
+    sq(this.ampA.gain, lerp(0.17, 0.035, rpm) + 0.09 * strain + 0.035 * coast);
+    sq(this.jitA.gain, lerp(16, 4, rpm) + 7 * strain);
+    sq(this.jitB.gain, lerp(7, 2, rpm));
 
     const rum = surf === 'grass' ? 0.22 : surf === 'sand' ? 0.19 : surf === 'dirt' ? 0.16 : 0;
     sq(this.rlp.frequency, surf === 'sand' ? 420 : 240);
     sq(this.rzg.gain, rum * lerp(0.35, 1, rpm));
 
-    if (this.enabled) sq(this.out.gain, this.level * lerp(0.72, 1, load) * lerp(1, 0.62, coast));
+    if (this.enabled) sq(this.out.gain, this.level * this._levelFor(rpm, load, coast));
+  }
+
+  // Loudness as a function of speed. Two failure modes, one on each side:
+  //
+  //  * TOO FLAT. The Wave-3 voice scaled with LOAD alone, so idling and flat-out
+  //    measured within 1 dB of each other and it read as a constant buzz.
+  //  * TOO STEEP. The obvious overcorrection is a curve that starts near zero, and
+  //    an engine you cannot hear on the grid is not "quiet", it is broken — a
+  //    child pulling away, or restarting after a crash, hears nothing. The first
+  //    version of this curve started at 0.30 and metered rms 0.005 at rpm 0,
+  //    barely 2 dB over the test's own silence floor and ~15 dB under the music.
+  //
+  // So the constant term is a real IDLE FLOOR, not a fudge: the engine is always
+  // present, and the rev range adds ~2.3x (7 dB) on top. Pitch and the filter
+  // sweep carry the rest of the acceleration sensation — level alone never had
+  // to, and leaning on level alone is what pushed the idle to silence.
+  // tests/audio.test.mjs pins BOTH ends: a low-rpm floor and monotonicity.
+  _levelFor(rpm, load, coast) {
+    return (IDLE_FLOOR + 0.60 * Math.pow(rpm, 0.85)) * lerp(0.80, 1, load) * lerp(1, 0.55, coast);
   }
 
   enable(time, fade = 0.25) {
     if (this.enabled) return;
     this.enabled = true;
     const g = this.out.gain;
-    try { g.cancelScheduledValues(time); g.setValueAtTime(g.value, time); g.linearRampToValueAtTime(this.level, time + fade); } catch { /* noop */ }
+    // Ramp to the IDLE level, not to full: the following setAt() writes the real
+    // value, and ramping to `level` first put an audible swell on every start.
+    const v = this.level * this._levelFor(0, 0.5, 0);
+    try { g.cancelScheduledValues(time); g.setValueAtTime(g.value, time); g.linearRampToValueAtTime(v, time + fade); } catch { /* noop */ }
   }
   disable(time, fade = 0.35) {
     if (!this.enabled) return;
@@ -343,7 +443,7 @@ class EngineVoice {
     try { g.cancelScheduledValues(time); g.setValueAtTime(g.value, time); g.linearRampToValueAtTime(0, time + fade); } catch { /* noop */ }
   }
   dispose() {
-    for (const n of [this.sawA, this.sawB, this.sqr, this.sub, this.whine]) { try { n.o.stop(); } catch { /* */ } }
+    for (const n of this.oscs) { try { n.o.stop(); } catch { /* */ } }
     for (const n of [this.nz, this.rz, this.lfoA, this.lfoB]) { try { n.stop(); } catch { /* */ } }
     try { this.out.disconnect(); } catch { /* */ }
   }
@@ -359,7 +459,7 @@ class DriftVoice {
     const c = A.ctx;
     this.A = A;
     this.active = false;
-    this.out = c.createGain(); this.out.gain.value = 0; this.out.connect(A.sfxBus);
+    this.out = c.createGain(); this.out.gain.value = 0; this.out.connect(A.worldBus);
     this.bp = c.createBiquadFilter(); this.bp.type = 'bandpass'; this.bp.frequency.value = 1200; this.bp.Q.value = 2.6;
     // broadband air layer — supporting cast now, not the main event
     this.hiss = c.createGain(); this.hiss.gain.value = 0.5;
@@ -463,9 +563,14 @@ class AudioSystem {
     this.broken = false;          // Web Audio unavailable — permanently silent
     this._ownsCtx = true;
     this.muted = !!save.read('muted');
-    // Balanced by measurement (.tmp/audiocheck.mjs): the engine is a continuous
-    // bed and must sit ~5 dB under the SFX peaks or collisions vanish under it.
-    this.vol = { master: 0.9, music: 0.85, sfx: 1.0, engine: 0.32 };
+    // Balanced by measurement: the engine is a CONTINUOUS bed under intermittent
+    // SFX and music, so it must sit well under both or it is all a player hears.
+    // Wave 4 dropped engine 0.32 → ENGINE_BUS after measuring the built game: the
+    // old voice metered rms 0.080 at idle rpm against 0.101 flat out, i.e. a
+    // permanent buzz with almost no throttle response. See EngineVoice's header.
+    this.vol = { master: readSavedVolume(), music: 0.85, sfx: 1.0, engine: ENGINE_BUS };
+    this._ducked = false;         // soft duck (pause menu, legacy duck() calls)
+    this._modalDucked = false;    // hard duck — ANY modal owns the screen
     this.sounds = new Map();
     this._pending = [];           // {end} — deterministic voice accounting
     this._nodes = new Set();      // live source nodes, for dispose()
@@ -479,7 +584,19 @@ class AudioSystem {
     this.music = null;
     this._registerSounds();
     this._wireBus();
+    this._wireModalDuck();
     this._installUnlock();
+  }
+
+  // ── automatic modal ducking ────────────────────────────────────────────────
+  // Subscribing to the registry itself — NOT to a list of modal ids, and NOT at
+  // each modal's call site. Wave 3's five modals were wired one at a time and the
+  // sixth would have been forgotten; `onModalChange` fires for every id that will
+  // ever be pushed, including ones that do not exist yet. tests/audio.test.mjs
+  // pins that by pushing an invented id.
+  _wireModalDuck() {
+    if (this._offModal) return;
+    this._offModal = onModalChange(any => this.setModalDuck(any));
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -517,7 +634,7 @@ class AudioSystem {
     // two stick-slip densities for the drift scrape (see grainBuffer)
     this._grainSlow = grainBuffer(c, makeRng(0x5C4A9E), 46, 1900);
     this._grainFast = grainBuffer(c, makeRng(0x7EA411), 190, 2900);
-    this._driveCurve = driveCurve(6);
+    this._driveCurve = driveCurve(2);   // Wave 4: was 6 — see driveCurve()
 
     this.master = c.createGain();
     this.master.gain.value = this.muted ? 0 : this.vol.master;
@@ -537,6 +654,13 @@ class AudioSystem {
     this.musicBus = c.createGain(); this.musicBus.gain.value = this.vol.music;
     this.sfxBus = c.createGain(); this.sfxBus.gain.value = this.vol.sfx;
     this.engineBus = c.createGain(); this.engineBus.gain.value = this.vol.engine;
+    // WORLD bus: continuous, diegetic, "the kart is doing something" audio that
+    // is not the engine — currently the drift scrape. It exists so the modal duck
+    // can silence the world without touching the SFX bus, which must stay OPEN:
+    // the quiz's own stingers and every UI click live there, and a modal that
+    // muted its own buttons would be worse than no ducking at all.
+    this.worldBus = c.createGain(); this.worldBus.gain.value = 1;
+    this.worldBus.connect(this.sfxBus);
 
     this.musicBus.connect(this.comp);
     this.sfxBus.connect(this.comp);
@@ -546,9 +670,14 @@ class AudioSystem {
     this.clip.connect(this.master);
     this.master.connect(c.destination);
 
-    this.engine = new EngineVoice(this, { level: 0.30, player: true });
+    this.engine = new EngineVoice(this, { level: ENGINE_LEVEL, player: true });
     this.drift = new DriftVoice(this);
     this.music = new MusicEngine(this);
+    // A duck may already be in force when the graph is (re)built — e.g. the game
+    // was reloaded straight into a scene that opens a modal, or dispose()/init()
+    // cycled the context while a panel was up. Apply it, do not assume open.
+    // `force` because init() has not set this.ok yet — see _applyBuses.
+    this._applyBuses(0, true);
   }
 
   // ── autoplay unlock ────────────────────────────────────────────────────────
@@ -647,29 +776,93 @@ class AudioSystem {
     if (!this.muted) this.unlock();
   }
   /**
-   * duck(on) — pull the race bed down under a modal (pause menu, quiz card) so
-   * the child can think. Never a hard cut: the world is still there, quieter.
+   * setMasterVolume(v, persist = true) — the settings screen's volume slider.
+   *   v        0..1, clamped; anything non-finite is treated as 0.
+   *   persist  write it to save (`volume`); pass false for a preview drag.
+   * Returns the clamped value. Independent of `muted`: while muted the output
+   * stays at zero and unmuting restores exactly this level.
+   */
+  setMasterVolume(v, persist = true) {
+    const x = clamp(typeof v === 'number' && isFinite(v) ? v : 0, 0, 1);
+    this.vol.master = x;
+    if (persist) { try { save.set({ volume: x }); } catch { /* private mode */ } }
+    this._applyMute(0.05);
+    try { bus.emit('audio:masterVolume', x); } catch { /* */ }
+    return x;
+  }
+  /** @returns {number} the current master volume, 0..1 (NOT affected by mute). */
+  getMasterVolume() { return this.vol.master; }
+
+  /**
+   * setModalDuck(on) — called automatically by the modal registry subscription in
+   * _wireModalDuck(); nothing needs to call it by hand. While ANY modal owns the
+   * screen the engine and the world bus go to true zero and the music steps back
+   * to MODAL_MUSIC. Both moves are linear ramps over MODAL_DUCK_RAMP, so they
+   * fade rather than click, and the state survives volume changes because every
+   * bus gain is written from one place (_applyBuses).
+   */
+  setModalDuck(on) {
+    const v = !!on;
+    if (v === this._modalDucked) return;
+    this._modalDucked = v;
+    this._applyBuses(MODAL_DUCK_RAMP);
+  }
+
+  /**
+   * duck(on) — the SOFT duck: the pause menu's "pull the race bed down a bit".
+   * Kept for `race:pause` / `race:resume`, and now subordinate to the modal duck,
+   * which is a full stop rather than an attenuation.
    */
   duck(on = true) {
     this._ducked = !!on;
-    if (!this.ready) return;
-    const tN = this.now;
-    const set = (node, v) => { try { node.gain.setTargetAtTime(v, tN, 0.08); } catch { node.gain.value = v; } };
-    set(this.musicBus, this.vol.music * (on ? 0.42 : 1));
-    set(this.engineBus, this.vol.engine * (on ? 0.20 : 1));
-    set(this.sfxBus, this.vol.sfx * (on ? 0.72 : 1));
+    this._applyBuses(0.12);
+  }
+
+  /**
+   * The ONLY place the three group buses are written. Every state that can move
+   * them — the per-group volumes, the soft duck, the modal duck — is folded in
+   * here, so they can never disagree. That mattered: the old code applied the
+   * duck and the volumes from two places, and a volume change mid-duck undid it.
+   */
+  _applyBuses(fade = 0.08, force = false) {
+    // `force` exists for _build(), which runs BEFORE init() sets this.ok — so the
+    // `ready` guard was permanently true there and the duck-recovery call at the
+    // end of _build() was dead code. Measured: dispose() + init() with a modal
+    // open left _modalDucked true and engineBus wide open at 0.21. Not reachable
+    // today (main.js inits once at boot, nothing calls dispose()), but it is a
+    // guard that silently did nothing, which is worse than no guard at all.
+    if (!force && !this.ready) return;
+    if (!this.musicBus) return;                       // graph not built yet
+    const t = this.ctx ? this.ctx.currentTime : 0;    // not `this.now` — same reason
+    const ramp = (node, v) => {
+      if (!node) return;
+      const g = node.gain;
+      try {
+        g.cancelScheduledValues(t);
+        g.setValueAtTime(g.value, t);
+        if (fade > 0) g.linearRampToValueAtTime(v, t + fade); else g.setValueAtTime(v, t);
+      } catch { try { g.value = v; } catch { /* */ } }
+    };
+    const m = this._modalDucked, d = this._ducked;
+    // Engine and world: SILENT under a modal — not quiet, silent. A linear ramp
+    // to exactly 0 (setTargetAtTime only ever approaches it asymptotically).
+    ramp(this.engineBus, m ? 0 : this.vol.engine * (d ? 0.20 : 1));
+    ramp(this.worldBus, m ? 0 : 1);
+    // Music: JUDGEMENT CALL — it ducks, it does not stop. A quiz card is a beat
+    // inside the race, not a scene change; cutting the music dead makes it read
+    // as "the game broke" and the restart on close is far more jarring than the
+    // duck. -9 dB is enough for the Hebrew to be read in peace.
+    ramp(this.musicBus, this.vol.music * (m ? MODAL_MUSIC : d ? 0.42 : 1));
+    // SFX stays OPEN under a modal: the quiz stingers and the UI clicks the child
+    // is about to make are on this bus.
+    ramp(this.sfxBus, this.vol.sfx * (d && !m ? 0.72 : 1));
   }
 
   setVolume(p = {}) {
     Object.assign(this.vol, p);
     if (!this.ready) return;
-    const tN = this.now;
-    const set = (node, v) => { try { node.gain.setTargetAtTime(v, tN, 0.03); } catch { node.gain.value = v; } };
-    if (p.music !== undefined) set(this.musicBus, this.vol.music);
-    if (p.sfx !== undefined) set(this.sfxBus, this.vol.sfx);
-    if (p.engine !== undefined) set(this.engineBus, this.vol.engine);
     if (p.master !== undefined) this._applyMute(0.03);
-    if (this._ducked) this.duck(true);     // keep a modal duck in force
+    this._applyBuses(0.03);
   }
 
   // ── voice budget ───────────────────────────────────────────────────────────
@@ -844,14 +1037,14 @@ class AudioSystem {
     const n = Math.min(3, list.length);
     while (this._ai.length < n) {
       const i = this._ai.length;
-      this._ai.push(new EngineVoice(this, { level: 0.085, detune: [-72, 58, 121][i], player: false }));
+      this._ai.push(new EngineVoice(this, { level: AI_ENGINE_LEVEL, detune: [-72, 58, 121][i], player: false }));
     }
     for (let i = 0; i < this._ai.length; i++) {
       const v = this._ai[i];
       if (i < n) {
         const s = list[i];
         const d = clamp(1 - (s.dist ?? 0) / 45, 0.05, 1);
-        v.level = 0.09 * d * d;
+        v.level = AI_ENGINE_LEVEL * d * d;
         v.enable(tN);
         v.setAt(tN, s, 0.09);
       } else v.disable(tN);
@@ -876,6 +1069,7 @@ class AudioSystem {
   dispose() {
     for (const off of this._offs) { try { off(); } catch { /* */ } }
     this._offs.length = 0;
+    if (this._offModal) { try { this._offModal(); } catch { /* */ } this._offModal = null; }
     this._removeUnlock();
     if (this.ok) {
       try { this.music.stop(0); } catch { /* */ }
@@ -894,6 +1088,7 @@ class AudioSystem {
     this.music = null;
     // stay usable: re-init() rebuilds everything, and the bus can be re-wired
     this._wireBus();
+    this._wireModalDuck();
     this._installUnlock();
   }
 
@@ -1188,10 +1383,10 @@ class AudioSystem {
     S('engine.ai', 'engine', 2.60, 'Engine: 3 AI karts nearby', function (t) {
       while (this._ai.length < 3) {
         const i = this._ai.length;
-        this._ai.push(new EngineVoice(this, { level: 0.085, detune: [-72, 58, 121][i], player: false }));
+        this._ai.push(new EngineVoice(this, { level: AI_ENGINE_LEVEL, detune: [-72, 58, 121][i], player: false }));
       }
       this._ai.forEach((v, i) => {
-        v.level = 0.09 - i * 0.015;
+        v.level = AI_ENGINE_LEVEL - i * 0.012;
         v.enable(t + i * 0.1, 0.15);
         v.setAt(t + i * 0.1, { rpm01: 0.35 + i * 0.12, load: 0.7 }, 0.1);
         v.setAt(t + 1.0, { rpm01: 0.8 - i * 0.1, load: 0.9 }, 0.35);
@@ -1226,6 +1421,8 @@ class AudioSystem {
     on('audio:mute', m => this.setMuted(typeof m === 'boolean' ? m : (m && m.muted)));
     on('audio:toggleMute', () => this.toggleMute());
     on('audio:volume', p => this.setVolume(p || {}));
+    // Master volume, for the settings screen. Accepts a bare number or {volume}.
+    on('audio:masterVolume:set', p => this.setMasterVolume(typeof p === 'number' ? p : (p && (p.volume ?? p.value))));
     on('audio:music', p => { if (!p || p.stop) this.stopMusic(); else this.playMusic(p.track || p.id || 'menu', p); });
     on('audio:stopMusic', () => this.stopMusic());
 
@@ -1559,7 +1756,15 @@ export const audio = new AudioSystem();
 // code reads this, but it is what lets tests/audio.test.mjs measure the REAL
 // graph inside the REAL built game rather than a look-alike offline rig.
 try {
-  if (typeof window !== 'undefined') { audio.bus = bus; window.__AUDIO = audio; }
+  if (typeof window !== 'undefined') {
+    audio.bus = bus;
+    // The REAL modal registry from ui/style.js — the same Set quiz.js and
+    // pause.js push into, not a stand-in. tests/audio.test.mjs uses it to prove
+    // the duck is driven by the registry (including ids invented at test time)
+    // rather than by a hardcoded list here.
+    audio.modal = { push: pushModal, pop: popModal };
+    window.__AUDIO = audio;
+  }
 } catch { /* */ }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1626,7 +1831,7 @@ registerStrings({
     'audio.s.music.race': 'מרוץ',
     'audio.s.music.garage': 'מוסך',
     'audio.s.music.race.oasis': 'מרוץ — נווה הנתונים',
-    'audio.s.music.race.circuit': 'מרוץ — עיר המעגלים',
+    'audio.s.music.race.circuit': 'מרוץ — עיר הנוירונים',
     'audio.s.music.race.cloud': 'מרוץ — פסגת הענן',
   },
   en: {
@@ -1651,6 +1856,13 @@ registerStrings({
     'audio.group.engine': 'Engine',
     'audio.group.quiz': 'Quiz',
     'audio.group.music': 'Music',
+    // The three race themes by TRACK NAME, not by theme id. Without these the
+    // English preview falls back to the registry label ("Music: race — circuit"),
+    // which leaks the internal id — and the id deliberately stayed `circuit`
+    // when the track was renamed Circuit City → Neuron City this wave.
+    'audio.s.music.race.oasis': 'Race — Data Oasis',
+    'audio.s.music.race.circuit': 'Race — Neuron City',
+    'audio.s.music.race.cloud': 'Race — Cloud Peak',
   },
 });
 

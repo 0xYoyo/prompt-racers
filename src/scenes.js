@@ -22,6 +22,8 @@ import { ROSTER } from './kart/roster.js';
 import { TRACKS } from './track/trackdef.js';
 import { getLang } from './ui/i18n.js';
 import { costOf } from './garage/prompts.js';
+import { collectionScene } from './ui/collection.js';
+import { startBadgeTracker } from './core/badges.js';
 
 // Points per finishing place, 1st → 8th.
 export const POINTS = [10, 8, 6, 5, 4, 3, 2, 1];
@@ -239,8 +241,20 @@ setBackdrop(() => {
 });
 
 // ── scenes ─────────────────────────────────────────────────────────────────
+// ── האוסף שלי — the badge/glossary tracker ─────────────────────────────────
+// Started once, here, at module load rather than inside a scene: badges are
+// earned DURING a race and the tracker must already be subscribed to the bus
+// when the first token is collected, not from the next time the collection
+// screen happens to be opened. It is bus-driven and stateless between events,
+// so starting it early costs nothing and starting it late loses badges.
+startBadgeTracker();
+
 export const SCENES = {
   menu: (eng, o) => titleScene(eng, o),
+
+  // The collection screen brings its own route home and its own backdrop, so
+  // unlike the garage it needs no withHomeControl() wrapper here.
+  collection: (eng, o = {}) => collectionScene(eng, o),
 
   // The screen opens on whoever the child last drove. menus.js reads `racerId`
   // out of opts and never touches the save itself (it must stay previewable in
@@ -395,14 +409,22 @@ export const SCENES = {
     // The podium is where a championship is banked. Counted exactly once per
     // ledger (the child can revisit the podium as often as they like), and
     // `championshipCounted` is cleared by resetChampionship() in ui/menus.js.
-    if (championshipDone() && !save.read('championshipCounted')) {
-      save.set({
-        championshipsDone: (Number(save.read('championshipsDone')) || 0) + 1,
-        championshipCounted: true,
-      });
-    }
     const standings = totalPoints();
     const me = standings.find(s => s.isPlayer);
+    if (championshipDone() && !save.read('championshipCounted')) {
+      const championship = (Number(save.read('championshipsDone')) || 0) + 1;
+      save.set({ championshipsDone: championship, championshipCounted: true });
+      // The championship badges (finish one, win one) have no other way to know
+      // a season ended. Emitted INSIDE the once-per-ledger guard, so revisiting
+      // the podium — which a child may do freely — cannot re-award anything.
+      // Standings are computed above so the event can carry the real result.
+      bus.emit('championship:complete', {
+        place: me?.place ?? 0,
+        points: me?.points ?? 0,
+        races: races().filter(Boolean).length,
+        championship,
+      });
+    }
     const scene = podiumScene(eng, {
       ...o,
       standings,

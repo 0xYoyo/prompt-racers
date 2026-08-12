@@ -1249,7 +1249,7 @@ export function windowTexture(size = 512) {
 }
 
 /**
- * The city that surrounds עיר המעגלים: merged tower blocks on three distance
+ * The city that surrounds עיר הנוירונים: merged tower blocks on three distance
  * rings, keyed to the horizon so fog does the aerial perspective. Two draw
  * calls total (facades + roof-light beacons ride the same material).
  */
@@ -1765,7 +1765,17 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
         // side — get it wrong and the Hebrew reads back-to-front, which is the
         // default outcome if you letter a DoubleSide quad and never check the
         // other side of the circuit.
-        const [a, b] = side > 0 ? [p0, p1] : [p1, p0];
+        // The swap was INVERTED against the rule the comment above states, so
+        // every sponsor board in the game has been lettered on its far side
+        // since Wave 1: the quad wound its front normal away from the
+        // centreline, U ran along +side·tangent instead of the driver's
+        // screen-right, and the DoubleSide material duly showed the driver the
+        // reverse of the authored face. Hebrew read back-to-front on all three
+        // tracks. The finish gantry escaped because it is a PlaneGeometry
+        // rotated to face back down the track, which lands its U correctly.
+        // Pinned geometrically (normals + uv gradients, not a string match) by
+        // tests/signage.test.mjs — see D32.
+        const [a, b] = side > 0 ? [p1, p0] : [p0, p1];
         boards.face(
           [[a.x, yb, a.z], [b.x, yb, b.z], [b.x, yt, b.z], [a.x, yt, a.z]],
           [[u0, v0], [u0 + du, v0], [u0 + du, v0 + dv], [u0, v0 + dv]], null);
@@ -2125,7 +2135,11 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
       const u0 = (k % 2) * 0.5, v0 = 1 - (Math.floor(k / 2) + 1) * 0.5;
       const gy = Math.max(heightAt(p0.x, p0.z), p0.y - 0.3);
       const yb = gy + 5.0, yt = gy + 9.4;
-      const [a2, b2] = side > 0 ? [p0, p1] : [p1, p0];
+      // Same inverted swap as the sponsor boards above, with a louder symptom:
+      // this material is FrontSide, so instead of reading mirrored the night
+      // city's holo billboards were back-face culled and simply INVISIBLE from
+      // the racing line.
+      const [a2, b2] = side > 0 ? [p1, p0] : [p0, p1];
       signs.face(
         [[a2.x, yb, a2.z], [b2.x, yb, b2.z], [b2.x, yt, b2.z], [a2.x, yt, a2.z]],
         [[u0, v0], [u0 + 0.5, v0], [u0 + 0.5, v0 + 0.5], [u0, v0 + 0.5]], null);

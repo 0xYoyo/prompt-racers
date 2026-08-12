@@ -249,10 +249,14 @@ export const TRACKS = [
     startT: 0.005,
   },
   {
+    // NOTE: `id` and `theme` stay 'circuit'. The id is persisted inside saved
+    // `results[]` entries, so renaming it would orphan every existing save; the
+    // theme string keys palettes, gantry skins and prop sets across the codebase.
+    // Only the DISPLAY names changed (Wave 4, item 13).
     id: 'circuit',
     theme: 'circuit',
-    nameHe: 'עיר המעגלים',
-    nameEn: 'Circuit City',
+    nameHe: 'עיר הנוירונים',
+    nameEn: 'Neuron City',
     laps: 3,
     difficulty: 2,
     width: 9,

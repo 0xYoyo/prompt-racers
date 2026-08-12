@@ -189,6 +189,415 @@ export const BRANDS = [
 
 function hexCss(h) { return '#' + h.toString(16).padStart(6, '0'); }
 
+// ---------------------------------------------------------------------------
+// THE ANTI-MIRRORING RULE (Wave 4, item 7)
+// ---------------------------------------------------------------------------
+//
+// Every piece of lettering in the 3D world is a textured quad. Whether its text
+// reads forwards or backwards has NOTHING to do with which side of the track it
+// sits on, or with FrontSide/DoubleSide — it depends on one thing only:
+//
+//     the direction in which the texture's U coordinate increases,
+//     projected onto the viewer's screen-right.
+//
+// For a camera looking along `d`, screen-right is `d x up`. A viewer reading a
+// quad looks along `-N` (N = the quad's own front normal), so
+//
+//     screen-right = (-N) x up = up x N            <-- SIGN_U_AXIS below
+//
+// So the invariant is: **U must increase along `up x N`, and V along +Y.**
+// It holds for any normal, at any viewing angle, on any track — a board seen
+// edge-on down a straight obeys exactly the same rule as one seen head-on.
+//
+// Sanity check against the two known cases:
+//   * the start gantry is CORRECT: its board is a PlaneGeometry (U = local +X)
+//     rotated to face back down the track (N = -tan), and up x (-tan) = right,
+//     which is where local +X lands. Hence its Hebrew reads properly.
+//   * the barrier sponsor boards were MIRRORED: they letter U along +tangent on
+//     the right-hand side (and -tangent on the left), i.e. along `side*tan`,
+//     while the rule demands `up x (-side*right) = -side*tan`. Exactly reversed,
+//     on both sides, which is why the mirroring showed up on all three tracks.
+//
+// `enforceSignOrientation()` below is the single central place that guarantees
+// the rule holds on the FINISHED track group, whoever built the geometry.
+const SIGN_UP = new THREE.Vector3(0, 1, 0);
+
+/** The one true U direction for a text quad whose front normal is `n`. */
+export function signUAxis(n, out = new THREE.Vector3()) {
+  return out.crossVectors(SIGN_UP, n).setY(0).normalize();
+}
+
+/**
+ * Append an upright, correctly-lettered text quad.
+ *
+ * @param mb      target MB
+ * @param c       {x,y,z} panel centre
+ * @param n       front normal (horizontal; the side the text is read from)
+ * @param w,h     panel size in metres
+ * @param uv      [u0, v0, du, dv] rect in the texture
+ */
+function addSignFace(mb, c, n, w, h, uv) {
+  const N = new THREE.Vector3(n.x, 0, n.z).normalize();
+  const U = signUAxis(N);
+  const [u0, v0, du, dv] = uv;
+  const hw = w / 2, hh = h / 2;
+  const base = mb.count;
+  // bl, br, tr, tl — this winding gives face normal U x Y = N (see above), so
+  // the quad is front-facing to exactly the viewer who can read it.
+  const pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+  const uvs = [[u0, v0], [u0 + du, v0], [u0 + du, v0 + dv], [u0, v0 + dv]];
+  pts.forEach(([a, b], k) => mb.vert(
+    c.x + U.x * a, c.y + b, c.z + U.z * a, uvs[k][0], uvs[k][1]));
+  mb.quad(base, base + 1, base + 2, base + 3);
+}
+
+/** Two single-sided faces back to back — never one DoubleSide quad (see above). */
+function addSignPanel(mb, c, n, w, h, uv, thickness = 0.06) {
+  const N = new THREE.Vector3(n.x, 0, n.z).normalize();
+  const f = { x: c.x + N.x * thickness / 2, y: c.y, z: c.z + N.z * thickness / 2 };
+  const b = { x: c.x - N.x * thickness / 2, y: c.y, z: c.z - N.z * thickness / 2 };
+  addSignFace(mb, f, N, w, h, uv);
+  addSignFace(mb, b, N.clone().negate(), w, h, uv);
+}
+
+/**
+ * Meshes whose geometry carries readable lettering. Anything named here is
+ * swept by `enforceSignOrientation`; anything not named here is left alone
+ * (flipping the UVs of the road would be a spectacular own goal).
+ */
+export const TEXT_MESHES = new Set(['boards', 'holo-signs', 'signage', 'gantry-board']);
+
+/**
+ * CENTRAL GUARANTEE: no lettering in the world is ever mirrored.
+ *
+ * Sweeps every text mesh in a finished track group and, per quad:
+ *   1. if the face points away from the racing line, reverses its winding so it
+ *      faces the driver (a DoubleSide banner hid this; a FrontSide one vanished);
+ *   2. if U increases against `up x N`, mirrors the quad's U range in place —
+ *      which flips the lettering back the right way round without touching the
+ *      texture, the material, or any placement code.
+ *
+ * Running here rather than at each placement site is deliberate: signage is
+ * emitted from three different modules, and this is the only choke point every
+ * one of them passes through. Fixing it per-placement is how it came back.
+ *
+ * @returns {{repairedUV:number, repairedWinding:number, meshes:string[], bad:string[]}}
+ */
+export function enforceSignOrientation(group, spline, opts = {}) {
+  const stat = { repairedUV: 0, repairedWinding: 0, meshes: [], bad: [] };
+  const p0 = new THREE.Vector3(), p1 = new THREE.Vector3(), p2 = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  const N = new THREE.Vector3(), T = new THREE.Vector3(), want = new THREE.Vector3();
+  const cen = new THREE.Vector3();
+  group.updateMatrixWorld(true);
+  // One sweep per GEOMETRY, not per mesh. The finish gantry hangs the same
+  // PlaneGeometry off two meshes (one board per direction), and rewriting a
+  // shared uv buffer once per mesh mangles it: the second pass takes the first
+  // pass's output as its "original" and half-flips it. The invariant is
+  // invariant under the rotation about Y that distinguishes the two boards
+  // (U = R(+X), N = R(+Z), and up x R(+Z) = R(+X) for every angle), so one
+  // sweep is not merely cheaper, it is the only coherent answer.
+  const swept = new Set();
+
+  group.traverse(o => {
+    if (!o.isMesh || !TEXT_MESHES.has(o.name)) return;
+    stat.meshes.push(o.name);
+    // A mirrored transform or a mirrored texture repeat cannot be repaired by
+    // rewriting UVs — it would just move the problem. Refuse loudly instead.
+    if (o.matrixWorld.determinant() < 0) stat.bad.push(`${o.name}: negative world scale`);
+    for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+      for (const key of ['map', 'emissiveMap']) {
+        const tex = m?.[key];
+        if (tex?.isTexture && (tex.repeat.x < 0 || tex.repeat.y < 0)) {
+          stat.bad.push(`${o.name}: ${key}.repeat has a negative axis`);
+        }
+      }
+    }
+    const geo = o.geometry;
+    const pos = geo?.attributes?.position, uvA = geo?.attributes?.uv, idx = geo?.index;
+    if (!pos || !uvA || !idx) return;
+    if (swept.has(geo.uuid)) return;
+    swept.add(geo.uuid);
+    const uv = uvA.array;
+    const uv0 = Float32Array.from(uv);            // decisions read the ORIGINAL uvs
+    const flip = new Map();                       // vertex -> [uLo, uHi]
+    const tris = idx.count / 3;
+
+    // Phase 1 — collect the upright, lettered faces of this mesh.
+    //
+    // `c` is the centre of the face's QUAD, not of its triangle. Every lettered
+    // surface here is two triangles over four vertices (MB.quad and
+    // PlaneGeometry both), and a triangle centroid sits at a CORNER of the
+    // board. On a 35 m finish gantry that corner is ~17 m off the centreline, so
+    // the "which side of the track am I on?" question below was being answered
+    // about a corner rather than about the board — which is how a board straddling
+    // the centreline got treated as a right-hand board and re-wound.
+    const faces = [];
+    const qc = new THREE.Vector3();
+    for (let f = 0; f < tris; f++) {
+      const ia = idx.getX(f * 3), ib = idx.getX(f * 3 + 1), ic = idx.getX(f * 3 + 2);
+      p0.fromBufferAttribute(pos, ia).applyMatrix4(o.matrixWorld);
+      p1.fromBufferAttribute(pos, ib).applyMatrix4(o.matrixWorld);
+      p2.fromBufferAttribute(pos, ic).applyMatrix4(o.matrixWorld);
+      e1.subVectors(p1, p0); e2.subVectors(p2, p0);
+      N.crossVectors(e1, e2);
+      if (N.lengthSq() < 1e-12) continue;
+      N.normalize();
+      if (Math.abs(N.y) > 0.8) continue;          // a lid or a floor, not lettering
+      cen.copy(p0).add(p1).add(p2).multiplyScalar(1 / 3);
+      // The quad: this triangle plus its partner, over their 4 distinct vertices.
+      const g = (f & ~1) * 3;                     // first index of the quad's pair
+      const set = new Set();
+      for (let k = 0; k < 6 && g + k < idx.count; k++) set.add(idx.getX(g + k));
+      if (set.size === 4) {
+        qc.set(0, 0, 0);
+        for (const vi of set) qc.add(p0.fromBufferAttribute(pos, vi).applyMatrix4(o.matrixWorld));
+        qc.multiplyScalar(0.25);
+      } else {
+        qc.copy(cen);                             // not a quad: fall back honestly
+      }
+      faces.push({ f, ia, ib, ic, n: N.clone(), c: qc.clone(), e1: e1.clone(), e2: e2.clone() });
+    }
+
+    // Phase 2 — which faces have a back-to-back twin? A panel built as two
+    // single-sided faces (the correct way to letter something readable from
+    // both directions) legitimately has one face pointing away from the track,
+    // and must NOT be re-wound.
+    for (const a of faces) {
+      // Twin test: opposite normals, and quad centres a few centimetres apart
+      // through the panel. Comparing quad centres (rather than the triangle
+      // centroids this used to compare) makes the distance limit mean what it
+      // says: the old 16 m limit silently failed for any board wider than ~11 m,
+      // because two corners of one board are further apart than that.
+      a.paired = faces.some((b) => {
+        if (b === a || a.n.dot(b.n) > -0.9) return false;
+        const dx = a.c.x - b.c.x, dy = a.c.y - b.c.y, dz = a.c.z - b.c.z;
+        const gap = Math.abs(a.n.x * dx + a.n.y * dy + a.n.z * dz);
+        return gap < 0.4 && (dx * dx + dy * dy + dz * dz) < 4;
+      });
+    }
+
+    // Phase 3 — repair. Decisions read the ORIGINAL uvs, so the two triangles
+    // of one quad always agree and a shared vertex is never flipped twice.
+    for (const fc of faces) {
+      const { ia, ib, ic } = fc;
+      N.copy(fc.n);
+      // Which way is "toward the driver" here? Toward the centreline. A panel
+      // that straddles the centreline (the finish gantry) has no such direction,
+      // so the WINDING repair is skipped for it — but the U check below is not.
+      // U-vs-normal is a property of the quad alone and holds wherever it sits;
+      // bailing out of the whole face here is how the gantry board stayed
+      // unswept even after it was named.
+      const s = spline.closestT(fc.c);
+      const centred = Math.abs(s.lateral) < 0.5;   // straddles the road: no "inward"
+      if (!centred) {
+        const right = spline.rightAt(s.t);
+        const inward = -Math.sign(s.lateral);
+        want.set(right.x * inward, 0, right.z * inward).normalize();
+        if (!fc.paired && N.dot(want) < 0) {      // back-to-front: re-wind it
+          idx.setX(fc.f * 3 + 1, ic); idx.setX(fc.f * 3 + 2, ib);
+          N.negate(); fc.n.negate();
+          stat.repairedWinding++;
+        }
+      }
+      // U gradient in world space, from the standard tangent solve. It depends
+      // on the uv<->position mapping only, so re-winding above cannot skew it.
+      const du1 = uv0[ib * 2] - uv0[ia * 2], dv1 = uv0[ib * 2 + 1] - uv0[ia * 2 + 1];
+      const du2 = uv0[ic * 2] - uv0[ia * 2], dv2 = uv0[ic * 2 + 1] - uv0[ia * 2 + 1];
+      const det = du1 * dv2 - du2 * dv1;
+      if (Math.abs(det) < 1e-12) continue;
+      T.set(
+        (fc.e1.x * dv2 - fc.e2.x * dv1) / det,
+        (fc.e1.y * dv2 - fc.e2.y * dv1) / det,
+        (fc.e1.z * dv2 - fc.e2.z * dv1) / det).setY(0);
+      if (T.lengthSq() < 1e-12) continue;
+      T.normalize();
+      signUAxis(N, want);
+      if (T.dot(want) >= 0) continue;             // already reads forwards
+      const us = [uv0[ia * 2], uv0[ib * 2], uv0[ic * 2]];
+      const lo = Math.min(...us), hi = Math.max(...us);
+      for (const vi of [ia, ib, ic]) if (!flip.has(vi)) flip.set(vi, [lo, hi]);
+    }
+    if (flip.size) {
+      for (const [vi, [lo, hi]] of flip) uv[vi * 2] = lo + hi - uv0[vi * 2];
+      uvA.needsUpdate = true;
+      stat.repairedUV += flip.size / 4;           // 4 verts per quad
+    }
+  });
+
+  if (stat.bad.length && typeof console !== 'undefined') {
+    for (const b of stat.bad) console.error(`[signage] ${b}`);
+  }
+  if (opts.throwOnFail && stat.bad.length) {
+    throw new Error('signage: unrepairable mirroring — ' + stat.bad.join('; '));
+  }
+  return stat;
+}
+
+// ---------------------------------------------------------------------------
+// ROADSIDE SIGNAGE — ambient curriculum (Wave 4, item 14)
+// ---------------------------------------------------------------------------
+//
+// Two or three Hebrew words per board, at most SIGN_MAX_CHARS characters, themed
+// to the track. The length limit is not style, it is optics: cap height is
+// `0.4 * boardWidth / characters` (see signLayout), so every character costs the
+// whole board 7% of its legibility. The first draft averaged 16 characters on a
+// 7 m board and rendered at 7 px of Hebrew from the driver's seat — correct,
+// well-themed curriculum that no child could read. 16 lines per track so a
+// 14-board lap never repeats. All original copy; no brands, no real companies.
+export const TRACK_SIGNS = {
+  // נווה הנתונים — data
+  oasis: {
+    skin: { bg: '#efdcb8', edge: '#c4402f', fg: '#38200f', lit: 0 },
+    lines: [
+      // 'איכות קודמת' read as "the PREVIOUS quality" as easily as "quality comes
+      // first" — ambiguous at 40 km/h. 'שדה לכל נתון' used שדה in its database
+      // sense, which to an eight-year-old is a field with grass in it.
+      'נתונים נקיים', 'תווית לדוגמה', 'אוסף אימון', 'קודם איכות',
+      'דפוס חוזר', 'מאגר נתונים', 'מודדים ומשפרים', 'עוד דוגמאות',
+      'פחות טעויות', 'תמונות ומילים', 'מיון לפי סוג', 'טבלה מסודרת',
+      'רעש מסתיר דפוס', 'דוגמה טובה', 'נתונים חסרים', 'קודם בודקים',
+    ],
+  },
+  // עיר הנוירונים — neural networks
+  circuit: {
+    skin: { bg: '#0d1236', edge: '#ff5fae', fg: '#8ff6ff', lit: 1.25 },
+    lines: [
+      'רשת נוירונים', 'שכבה על שכבה', 'משקלים לומדים', 'נוירון מדליק',
+      'קלט אל פלט', 'סיבוב אימון', 'טעות מלמדת', 'חיבורים חזקים',
+      // 'סף הפעלה' is the right concept and unreadable jargon; the same idea in
+      // words a child owns, and it rhymes with 'נוירון מדליק' two rows up.
+      'שכבה נסתרת', 'אות עובר הלאה', 'נדלק או כבוי', 'מתאמנים שוב',
+      'זיהוי דפוסים', 'חיזוי מהיר', 'רשת עמוקה', 'למידה בשלבים',
+    ],
+  },
+  // פסגת הענן — cloud computing
+  cloud: {
+    // DARK board, light letters — the reverse of the other two. Cloud Peak is a
+    // white plateau under a pale dawn sky, and the original ivory-on-ivory board
+    // was invisible as a SHAPE before it was ever unreadable as text. A dark
+    // panel silhouetted on the plateau edge is also the frame's only altitude
+    // cue from a seated camera (GAPS: "does not read as above the clouds").
+    skin: { bg: '#2c3350', edge: '#ffc247', fg: '#f7f1e6', lit: 0.5 },
+    lines: [
+      'מחשוב ענן', 'מרכז נתונים', 'כוח לפי דרישה', 'שרת רחוק',
+      'הכול מגובה', 'העלאה והורדה', 'אלפי מחשבים', 'מתרחב לפי צורך',
+      'תשובה מהירה', 'אחסון בענן', 'גיבוי אוטומטי', 'חיבור מאובטח',
+      // 'משאב לפי מידה' was adult procurement Hebrew, and the third "…לפי…" board
+      // on a track that already has 'כוח לפי דרישה' and 'מתרחב לפי צורך'.
+      'חלוקת עומס', 'זמין מכל מקום', 'רשת עולמית', 'רק מה שצריך',
+    ],
+  },
+};
+
+// --- atlas geometry, stated once so the gate can re-derive a tile from a UV ---
+//
+// 2 x 8 = 16 tiles, so a 14-board lap never shows the same line twice (the 2 x 4
+// atlas did, six times a lap). The tiles are 4:1, and the boards are built to the
+// same aspect: a wide, short board is what lets a SHORT line of Hebrew be set at
+// the largest cap height per square metre of board — see signLayout.
+export const SIGN_COLS = 2;
+export const SIGN_ROWS = 8;
+/** Tile aspect (width / height) — the board's aspect must match it. */
+export const SIGN_TILE_ASPECT = SIGN_ROWS / SIGN_COLS;
+
+/**
+ * Average glyph advance of the bold Hebrew face, in em. Used so sign sizing is
+ * ANALYTIC and therefore measurable headlessly: `measureText` needs a real font
+ * and a real canvas, so anything that decides size inside the draw callback is
+ * invisible to a gate and can silently shrink to nothing (which is exactly what
+ * happened — see the legibility gate in tests/signage.test.mjs).
+ */
+const SIGN_ADV_EM = 0.55;
+/** Cap height of the Hebrew face as a fraction of the em box. */
+export const SIGN_CAP_EM = 0.70;
+const SIGN_FIT_W = 0.86;      // fraction of tile width the text may occupy
+const SIGN_MAX_EM = 0.52;     // font size ceiling, as a fraction of tile height
+/** Longest line the boards are designed to set at full size. */
+export const SIGN_MAX_CHARS = 14;
+
+/**
+ * Lay a sign line out on its tile, deterministically and without a canvas.
+ * @returns {{rows:string[], fontFrac:number, capFrac:number}}
+ *   fontFrac/capFrac are fractions of the TILE HEIGHT, which equals the board's
+ *   world height — so `capFrac * boardHeightMetres` is the glyph cap height a
+ *   driver actually sees, and that is what the legibility gate projects.
+ *
+ * THE ONE IDENTITY WORTH REMEMBERING. While a line is width-limited,
+ *
+ *     capMetres = SIGN_CAP_EM * SIGN_FIT_W * boardWidthMetres / characters
+ *               ≈ 0.4 * boardWidth / characters
+ *
+ * — the tile aspect cancels out entirely. Legible signage is therefore bought
+ * with METRES OF BOARD WIDTH PER CHARACTER and with nothing else, which is why
+ * the fix for 7 px Hebrew was short copy on wide boards rather than a bigger
+ * font (there was no room for a bigger font) or more boards (there was no
+ * shortage of boards).
+ */
+export function signLayout(line, aspect = SIGN_TILE_ASPECT) {
+  const n = String(line).length;
+  const byWidth = (SIGN_FIT_W * aspect) / (SIGN_ADV_EM * Math.max(1, n));
+  const fontFrac = Math.min(SIGN_MAX_EM, byWidth);
+  return { rows: [String(line)], fontFrac, capFrac: fontFrac * SIGN_CAP_EM };
+}
+
+/** UV rect of sign `i` in the sign atlas. */
+export function signUV(i) {
+  const N = SIGN_COLS * SIGN_ROWS;
+  const k = ((i % N) + N) % N;
+  const col = k % SIGN_COLS, row = (k / SIGN_COLS) | 0;
+  const du = 1 / SIGN_COLS, dv = 1 / SIGN_ROWS;
+  return [col * du, 1 - (row + 1) * dv, du, dv];
+}
+
+/** Eight themed sign faces baked into one atlas — one draw call for the lap. */
+export function signAtlas(theme, size = 1024) {
+  const set = TRACK_SIGNS[theme] || TRACK_SIGNS.oasis;
+  const K = set.skin;
+  return canvasTexture('signs:' + theme, size, (ctx, S) => {
+    const tw = S / SIGN_COLS, th = S / SIGN_ROWS;
+    ctx.fillStyle = K.bg; ctx.fillRect(0, 0, S, S);
+    set.lines.forEach((line, i) => {
+      const ox = (i % SIGN_COLS) * tw, oy = ((i / SIGN_COLS) | 0) * th;
+      ctx.save();
+      ctx.translate(ox, oy);
+      ctx.fillStyle = K.bg; ctx.fillRect(0, 0, tw, th);
+      // a weave/scanline so the board is not a flat colour at close range
+      for (let y = 0; y < th; y += 5) {
+        ctx.fillStyle = `rgba(255,255,255,${0.018 + (y % 15) * 0.001})`;
+        ctx.fillRect(0, y, tw, 2);
+      }
+      ctx.fillStyle = K.edge;
+      ctx.fillRect(0, 0, tw, th * 0.055);
+      ctx.fillRect(0, th * 0.945, tw, th * 0.055);
+      ctx.direction = 'rtl'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      // Size comes from `signLayout` — analytic, canvas-free, and therefore
+      // visible to the legibility gate. `measureText` is used ONLY as a safety
+      // clamp for a font wider than the model expects; it can shrink, never grow,
+      // and if it ever bites the gate's projection is an over-estimate.
+      const lay = signLayout(line, tw / th);
+      let px = Math.max(8, Math.round(th * lay.fontFrac));
+      for (let g = 0; g < 4; g++) {
+        ctx.font = `bold ${px}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
+        const wpx = Math.max(...lay.rows.map(r => ctx.measureText(r)?.width || 0));
+        if (wpx <= tw * SIGN_FIT_W || px <= 8) break;
+        px = Math.round(px * Math.max(0.6, (tw * SIGN_FIT_W) / wpx));
+      }
+      ctx.font = `bold ${px}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
+      const nR = lay.rows.length;
+      const lead = px * 1.18;
+      lay.rows.forEach((row, r) => {
+        const cyR = th * 0.52 + (r - (nR - 1) / 2) * lead;
+        ctx.fillStyle = 'rgba(0,0,0,0.30)';
+        ctx.fillText(row, tw / 2 + tw * 0.006, cyR + th * 0.014);
+        ctx.fillStyle = K.fg;
+        ctx.fillText(row, tw / 2, cyR);
+      });
+      ctx.restore();
+    });
+  });
+}
+
 /** A sponsor board / banner face. Cached by brand index + size. */
 export function brandTexture(index, size = 256) {
   const b = BRANDS[index % BRANDS.length];
@@ -793,6 +1202,15 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     geos.push(boardGeo);
     for (const side of [0, Math.PI]) {
       const board = new THREE.Mesh(boardGeo, gMat);
+      // NAMED, and therefore swept by enforceSignOrientation and seen by the
+      // gate. It was anonymous until Wave 4 round 2, which meant the single
+      // piece of lettering D32 cites as the diagnostic ("the finish-line text is
+      // fine") was the one piece neither the central guarantee nor the test
+      // could see. It reads correctly only by construction — a PlaneGeometry
+      // rotated by pi flips its normal and its U together — and "correct by
+      // construction, unchecked" is precisely the seam this project keeps losing
+      // days to.
+      board.name = 'gantry-board';
       board.position.set(0, HGT + 0.45 + boardH / 2, side ? -0.14 : 0.14);
       board.rotation.y = side;
       board.castShadow = false;
@@ -826,6 +1244,175 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     gan.rotation.y = Math.atan2(fr.tan.x, fr.tan.z);
     group.add(gan);
   }
+
+  // =========================================================================
+  // 8b. ROADSIDE SIGNAGE — the ambient curriculum
+  // =========================================================================
+  // Short AI-themed Hebrew boards, themed per track. Most of them sit in the
+  // MID-GROUND band (15-34 m past the barrier), which is the depth rung GAPS.md
+  // calls the highest-value visual fix left: at that distance a board is still
+  // legible at racing speed but reads as scenery rather than as track furniture.
+  // They thin with propDensity and, being at least 7 m outside the drivable
+  // width, are structurally incapable of touching the racing line (the build
+  // audit re-proves that anyway).
+  //
+  // SIZING, round 2: the mid boards are 11 x 2.75 m, not 7 x 3.5. The first pass
+  // traded depth against legibility and lost the trade — pushing boards out to
+  // 23-39 m while sizing them for arm's length put the Hebrew at 6.5-8 px of cap
+  // height from the chase camera, i.e. texture rather than text. Because cap
+  // height is `0.4 * boardWidth / characters`, a WIDER, SHORTER board with
+  // SHORTER copy buys legibility without touching the placement, so the depth
+  // rung survives intact. Pinned by the legibility gate in tests/signage.test.mjs.
+  //
+  // Deferred until after the dressing pass (section 10) so a board can be tested
+  // against the props that would otherwise stand in front of it.
+
+  /**
+   * The props worth ray-testing a sign against: TALL enough to cross a board
+   * (>3 m) and SMALL enough to trace cheaply (<20k triangles). That pair of
+   * thresholds picks out exactly the lamp masts, marshal posts, paddock masts
+   * and palms — the thin verticals that bisect a board — while excluding the
+   * terrain and the cloud layer (six-figure triangle counts) and the barrier
+   * (long, but knee-high, and every sign clears it by design). Deliberately
+   * name-free: coupling this to props.js's internal mesh names would rot the
+   * moment that file is reorganised, and rot silently.
+   */
+  function signOccluders() {
+    const out = [];
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    group.traverse(o => {
+      if (!o.isMesh || !o.geometry || /^signage/.test(o.name)) return;
+      const g = o.geometry;
+      const tris = (g.index ? g.index.count : (g.attributes.position?.count || 0)) / 3;
+      if (tris < 1 || tris > 20000) return;
+      box.setFromObject(o);
+      if (box.max.y - box.min.y < 3) return;
+      out.push(o);
+    });
+    return out;
+  }
+
+  const _ray = new THREE.Raycaster();
+  const _eye = new THREE.Vector3(), _dir = new THREE.Vector3();
+  /**
+   * Would a driver reading this board see a mast through the middle of it?
+   * Probes the two spots the board is actually read from — roughly 45 m and 28 m
+   * back up the racing line, at chase-camera eye height.
+   */
+  function signOccluded(occl, t, centre) {
+    if (!occl.length) return false;
+    for (const back of [45, 28]) {
+      const rt = ((t - back / L) % 1 + 1) % 1;
+      const rp = spline.offsetPoint(rt, 0);
+      _eye.set(rp.x, rp.y + 3.25, rp.z);
+      _dir.set(centre.x - _eye.x, centre.y - _eye.y, centre.z - _eye.z);
+      const dist = _dir.length();
+      if (dist < 1) continue;
+      _ray.set(_eye, _dir.multiplyScalar(1 / dist));
+      _ray.near = 0.5; _ray.far = dist - 1.0;
+      if (_ray.intersectObjects(occl, false).length) return true;
+    }
+    return false;
+  }
+
+  const placeSignage = () => {
+    const SIGNS = TRACK_SIGNS[def.theme] || TRACK_SIGNS.oasis;
+    const density = q.propDensity ?? 1;
+    // high 1.0 -> ~84 m apart, medium 0.7 -> ~122 m, low 0.35 -> ~210 m
+    const step = density >= 0.9 ? 84 : density >= 0.6 ? 122 : 210;
+    const nSign = Math.max(3, Math.round(L / step));
+    const srng = makeRng(3300 + def.points.length * 17 + Math.round(L));
+    const panels = new MB(false);
+    const posts = new MB(false);
+    // How far out the ground can actually carry a board. Cloud Peak's plateau
+    // ends ~17 m past the barrier and then falls 20 m to the cloud sea, so the
+    // outward search below tops out there — and that is the honest answer to
+    // "Cloud Peak gets no depth rung": there is no mid-ground land to put one on.
+    // What it gets instead is the plateau EDGE (see edgeSeek), which is scenery
+    // no other track can have.
+    const maxOut = SKY_TRACK ? 17 : 34;
+    const occl = signOccluders();
+    let placed = 0;
+    for (let i = 0; i < nSign; i++) {
+      const t = ((startT + (i + 0.5) / nSign + srng.range(-0.006, 0.006)) % 1 + 1) % 1;
+      // keep the start/finish complex clear — the gantry is the read there
+      if (Math.abs(((t - startT + 1.5) % 1) - 0.5) < 0.018) continue;
+      const side = i % 2 === 0 ? 1 : -1;
+      const w = spline.widthAt(t);
+      // On the low tier only the mid-ground boards survive: they are the ones
+      // doing the depth work, and the barrier already carries sponsor boards.
+      const mid = density < 0.6 ? true : i % 3 !== 0;
+      const pw = mid ? 13.0 : 6.8, ph = pw / SIGN_TILE_ASPECT;
+      // Cloud Peak wants its boards ON the drop, standing against open sky; the
+      // ground tracks want them spread through the mid-ground band for depth.
+      //
+      // THE BAND IS CAPPED BY THE FIELD OF VIEW, not by taste. A board `Y` metres
+      // off the centreline leaves the 62-degree frame once the driver is closer
+      // than ~0.93*Y along the track, so the largest it is ever seen at is
+      // ~547 * capMetres / Y pixels. Round 1 scattered boards out to Y = 45 m,
+      // where even a perfectly-sized board tops out at 12 px and then slides out
+      // of frame — depth beyond about 34 m is depth nobody can read. So the band
+      // is 8-18 m past the run-off (Y ~ 23-33 m): still unmistakably mid-ground,
+      // still a rung above the barrier furniture, and now legible the whole way in.
+      const wanted = !mid ? 1.8
+        : SKY_TRACK ? Math.min(maxOut, srng.range(11, 17))
+          : Math.min(maxOut, srng.range(8, 18));
+
+      // Walk inward from the wanted distance until the ground is solid AND no
+      // prop stands between the board and a driver reading it. Both used to be
+      // "skip the sign", which is why the tracks quietly lost boards and why one
+      // circuit board ended up bisected by a lamp mast.
+      let put = null;
+      for (const out of [wanted, wanted * 0.78, wanted * 0.58, wanted * 0.4, 1.8]) {
+        const p = spline.offsetPoint(t, side * (w + RUNOFF + out));
+        const gy = heightAt(p.x, p.z);
+        if (gy < p.y - (mid ? 1.6 : 0.8)) continue;      // perched on the drop
+        const bottom = mid ? (SKY_TRACK ? 4.2 : 3.0) : 1.9;
+        const cy = gy + bottom + ph / 2;
+        if (signOccluded(occl, t, { x: p.x, y: cy, z: p.z })) continue;
+        put = { p, gy, cy };
+        break;
+      }
+      if (!put) continue;
+      const { p, gy, cy } = put;
+      const tan = spline.tangentAt(t), right = spline.rightAt(t);
+      // Face the centreline, angled back down the track so a driver arriving at
+      // speed gets a square-on read rather than a sliver.
+      const n = new THREE.Vector3(
+        -side * right.x - 0.62 * tan.x, 0, -side * right.z - 0.62 * tan.z).normalize();
+      addSignPanel(panels, { x: p.x, y: cy, z: p.z }, n, pw, ph, signUV(placed), 0.10);
+      // legs, at the panel's own ends
+      const U = signUAxis(n);
+      const legH = cy + ph / 2 - gy;
+      for (const s2 of [-1, 1]) {
+        posts.box(p.x + U.x * s2 * pw * 0.40, gy + legH / 2, p.z + U.z * s2 * pw * 0.40,
+          0.20, legH, 0.20, 0.8);
+      }
+      placed++;
+    }
+    if (panels.count) {
+      const atlas = signAtlas(def.theme, Math.min(S, 512) * 2);
+      const gP = panels.geometry(); geos.push(gP);
+      const litK = (TRACK_SIGNS[def.theme] || TRACK_SIGNS.oasis).skin.lit;
+      const sMesh = new THREE.Mesh(gP, keep(new THREE.MeshStandardMaterial({
+        map: atlas, roughness: 0.78, metalness: 0, side: THREE.FrontSide,
+        emissiveMap: litK ? atlas : null,
+        emissive: litK ? 0xffffff : 0x000000, emissiveIntensity: litK,
+      })));
+      // FrontSide, and every face built from `up x N` — see the anti-mirroring
+      // rule above. Two back-to-back faces, never one DoubleSide quad.
+      sMesh.name = 'signage';
+      sMesh.castShadow = false;
+      sMesh.receiveShadow = !!q.shadows;
+      group.add(sMesh);
+      const gL = posts.geometry(); geos.push(gL);
+      const legs2 = new THREE.Mesh(gL, fenceMat);
+      legs2.name = 'signage-posts';
+      legs2.castShadow = !!q.shadows;
+      group.add(legs2);
+    }
+  };
 
   // =========================================================================
   // 9. CHECKPOINTS + TOKEN SPOTS
@@ -875,6 +1462,18 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
   let dress = null;
   if (opts.dress !== false) {
     dress = dressTrack(group, spline, def, engine, makeRng(7700 + def.points.length));
+  }
+
+  // Signage last of all the world geometry: it is the only thing here that needs
+  // to know what else is standing between it and the driver (see signOccluded).
+  placeSignage();
+
+  // CENTRAL ANTI-MIRRORING PASS. Runs on the FINISHED group — our own signage,
+  // the dressing's barrier sponsor boards and the night city's holo billboards
+  // all pass through here, so no module can reintroduce mirrored Hebrew by
+  // getting its own placement maths backwards. See the rule near BRANDS.
+  if (opts.signOrientation !== false) {
+    group.userData.signOrientation = enforceSignOrientation(group, spline);
   }
 
   void metalMaps;
@@ -1107,7 +1706,7 @@ function wrap(engine, ctx, place) {
  * the A/B frame against the reference art.
  */
 export function preview(engine) { return previewFor(engine, 'oasis'); }
-/** Same framing on עיר המעגלים — the neon night city. */
+/** Same framing on עיר הנוירונים — the neon night city. */
 export function previewCircuit(engine) { return previewFor(engine, 'circuit'); }
 /** Same framing on פסגת הענן — dawn above the clouds. */
 export function previewCloud(engine) { return previewFor(engine, 'cloud'); }
@@ -1166,6 +1765,71 @@ function previewAerialFor(engine, id) {
 export function previewCorner(engine) { return previewCornerFor(engine, 'oasis'); }
 export function previewCornerCircuit(engine) { return previewCornerFor(engine, 'circuit'); }
 export function previewCornerCloud(engine) { return previewCornerFor(engine, 'cloud'); }
+
+/**
+ * THE SIGNAGE FRAME: the chase camera, at the point on the lap where the
+ * roadside curriculum reads largest. Exists so "can a child read this?" is a
+ * question anyone can answer by LOOKING, not only by trusting the numbers in
+ * tests/signage.test.mjs — the sizing bug this frame was added for survived a
+ * round of review precisely because every existing preview was a static pose
+ * that happened to stand close to a board.
+ */
+export function previewSigns(engine) { return previewSignsFor(engine, 'oasis'); }
+export function previewSignsCircuit(engine) { return previewSignsFor(engine, 'circuit'); }
+export function previewSignsCloud(engine) { return previewSignsFor(engine, 'cloud'); }
+
+function previewSignsFor(engine, id) {
+  const ctx = baseScene(engine, id);
+  return wrap(engine, ctx, (camera, track, rig) => {
+    const sp = track.spline;
+    // Sign panel centres, in world space.
+    const pts = [];
+    track.group.updateMatrixWorld(true);
+    track.group.traverse(o => {
+      if (!o.isMesh || o.name !== 'signage') return;
+      const pos = o.geometry.attributes.position;
+      for (let q = 0; q < pos.count / 4; q += 2) {          // one per board
+        const c = new THREE.Vector3();
+        for (let k = 0; k < 4; k++) {
+          c.add(new THREE.Vector3().fromBufferAttribute(pos, q * 4 + k).applyMatrix4(o.matrixWorld));
+        }
+        pts.push(c.multiplyScalar(0.25));
+      }
+    });
+    // CHASE_PRESETS.chase at rest, walked round the lap: keep the pose where a
+    // board is both in frame and closest.
+    const FOV = 62, DIST = 5.5, HGT = 3.25;
+    const half = Math.tan((FOV * Math.PI / 180) / 2) * (16 / 9);
+    let bestT = 0, bestScore = 0;
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < 600; i++) {
+      const t = i / 600;
+      const fr = sp.frameAt(t);
+      const eye = new THREE.Vector3(fr.pos.x - fr.tan.x * DIST, fr.pos.y + HGT, fr.pos.z - fr.tan.z * DIST);
+      for (const p of pts) {
+        tmp.subVectors(p, eye);
+        const fwd = tmp.x * fr.tan.x + tmp.z * fr.tan.z;
+        if (fwd < 8) continue;
+        const side = Math.abs(tmp.x * -fr.tan.z + tmp.z * fr.tan.x);
+        if (side > fwd * half * 0.8) continue;               // outside the frame
+        // Ignore anything nearer than 20 m: a board at arm's length proves
+        // nothing about the roadside curriculum, and framing one is how the
+        // sizing miss went unnoticed. This frame is about the MID-GROUND read.
+        if (tmp.length() < 20) continue;
+        const score = 1 / tmp.length();
+        if (score > bestScore) { bestScore = score; bestT = t; }
+      }
+    }
+    const fr = sp.frameAt(bestT);
+    camera.fov = FOV; camera.updateProjectionMatrix();
+    camera.position.set(fr.pos.x - fr.tan.x * DIST, fr.pos.y + HGT, fr.pos.z - fr.tan.z * DIST);
+    const near = sp.offsetPoint((bestT + 9 / sp.length) % 1, 0);
+    const far = sp.offsetPoint((bestT + 24 / sp.length) % 1, 0);
+    camera.lookAt(near.x * 0.76 + far.x * 0.24, near.y * 0.76 + far.y * 0.24 + 0.15,
+      near.z * 0.76 + far.z * 0.24);
+    rig.setShadowFocus(near);
+  });
+}
 
 function previewCornerFor(engine, id) {
   const ctx = baseScene(engine, id);

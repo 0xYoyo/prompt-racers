@@ -224,7 +224,11 @@ export function attachPauseControl(opts = {}) {
     // reachable from it. The quiz holds its own freeze while the pause menu sits
     // on top, and race.js's setPaused() will not hand input back underneath it.
     // See the policy block in ui/style.js.
-    if (modalHas('token') || modalHas('meet')) return;
+    // 'intro' (the Wave-4 pre-race welcome card) joins token/meet for the same
+    // reason: it freezes the sim, it is short, and it has its own dismissal and
+    // its own capture-phase Escape. There is no moving kart to rescue a child
+    // from behind it.
+    if (modalHas('token') || modalHas('meet') || modalHas('intro')) return;
     freeze(true);
     bus.emit('race:pause');                       // audio ducks on this
     ov = pauseOverlay({

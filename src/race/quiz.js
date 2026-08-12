@@ -81,6 +81,7 @@
 import * as THREE from 'three';
 import { bus } from '../core/bus.js';
 import { makeRng } from '../core/rng.js';
+import { save } from '../core/save.js';
 import { h, injectStyles, pushModal, popModal, modalOpen } from '../ui/style.js';
 import { registerStrings, t, num, getLang } from '../ui/i18n.js';
 import { QUESTIONS, questionsForDifficulty, tiersForDifficulty, bankStats } from './quizdata.js';
@@ -94,10 +95,17 @@ import { applyTheme } from '../gfx/sky.js';
 
 registerStrings({
   he: {
-    'quiz.badge': 'שאלת פרומפט',
+    // "שאלת פרומפט" named one of the six topics (quiz.topic.*) as if it were all
+    // of them, and it was the only surface still using that name: the new
+    // explainer says "שאלה אחת על AI", the badge conditions say "שאלה במרוץ" and
+    // the glossary hints say "שאלה בנושא … במרוץ". One thing, one name (D27).
+    'quiz.badge': 'שאלת AI',
     'quiz.hint': 'בוחרים עם {k}',
     'quiz.correct': 'נכון!',
     'quiz.reward': 'טורבו ועוד {n} טוקנים',
+    // Singular form. A correct answer now pays ONE token on tiers 1–2 (see
+    // REWARD_TOKENS), and "ועוד 1 טוקנים" is not Hebrew.
+    'quiz.reward1': 'טורבו ועוד טוקן אחד',
     'quiz.timeUp': 'נגמר הזמן',
     'quiz.answerMarked': 'התשובה הנכונה מסומנת',
     'quiz.continue': 'ממשיכים לנסוע…',
@@ -124,12 +132,23 @@ registerStrings({
     'quiz.topic.iterate': 'שיפור בשלבים',
     'quiz.topic.mistakes': 'לבדוק אחרי ה־AI',
     'quiz.topic.vibe': 'וייב־קודינג',
+    // ── the one-time "what is a quiz box" explainer ──────────────────────────
+    // Two sentences, and both of them are checked against the code: a correct
+    // answer really does call applyBoost() and pay REWARD_TOKENS (a flat 1 per
+    // tier), and a wrong answer really does pay 0 with nothing subtracted
+    // anywhere. House voice: impersonal plural, no gendered imperative (D27).
+    'quiz.intro.kicker': 'חדש על המסלול',
+    'quiz.intro.title': 'תיבת שאלה',
+    'quiz.intro.1': 'כל תיבה כזאת היא שאלה אחת על AI — תשובה נכונה נותנת <b>טורבו</b> ועוד <b>טוקנים למוסך</b>.',
+    'quiz.intro.2': 'תשובה שלא קלעה לא עולה כלום, אז שווה לאסוף כל תיבה שרואים בדרך.',
+    'quiz.intro.go': 'קדימה לשאלה! (רווח)',
   },
   en: {
-    'quiz.badge': 'Prompt question',
+    'quiz.badge': 'AI question',
     'quiz.hint': 'Choose with {k}',
     'quiz.correct': 'Correct!',
     'quiz.reward': 'Boost and {n} tokens',
+    'quiz.reward1': 'Boost and 1 token',
     'quiz.timeUp': 'Time is up',
     'quiz.answerMarked': 'The right answer is marked',
     'quiz.continue': 'Back to racing…',
@@ -147,6 +166,11 @@ registerStrings({
     'quiz.topic.iterate': 'Improving in steps',
     'quiz.topic.mistakes': 'Checking the AI',
     'quiz.topic.vibe': 'Vibe coding',
+    'quiz.intro.kicker': 'New on the track',
+    'quiz.intro.title': 'Question box',
+    'quiz.intro.1': 'Every one of these boxes is a single question about AI — a right answer gives a <b>boost</b> plus <b>extra tokens for the garage</b>.',
+    'quiz.intro.2': 'An answer that misses costs nothing at all, so every box on the way is worth grabbing.',
+    'quiz.intro.go': 'On to the question! (Space)',
   },
 });
 
@@ -204,7 +228,31 @@ const TIME_LIMIT = { 1: 20, 2: 18, 3: 16 };
 // away before it had been read).
 const DISMISS_AFTER_S = 0.45;
 
-const REWARD_TOKENS = { 1: 3, 2: 4, 3: 5 };
+// Tokens for a correct answer, by question tier.
+//
+// 3/4/5 → a flat 1 in Wave 4, and this is the single number that mattered most.
+// An engaged child meets 5–9 question boxes in a race (measured on the built
+// game, three tracks × three seeds), so at 3–5 tokens each the quiz alone paid
+// 15–35 against a 21-token maximum garage ask — three times the pickups and the
+// finish bonus put together. D29 measured that and deliberately did NOT retune,
+// because the end-to-end gate could not see the term; the gate can see it now
+// (tools/flowtest.mjs answers real questions), so the retune is measured rather
+// than guessed. One token per correct answer also states the economy in a
+// sentence a child can hold: four right answers buy a part.
+//
+// FLAT across tiers, and that is a deliberate second decision. A tier-3 double
+// prize was measured first: it only appears on race 3, which is followed by the
+// podium rather than a garage, so it looked free. It is not free — it put a
+// 21-token race back on the board (exactly the maximum ask) whose only defence
+// was a routing detail two files away, and the day someone adds a garage visit
+// after race 3 the game's central economic invariant would break silently. One
+// token per correct answer holds on every race, needs no asterisk, and states
+// the rule in a sentence a child can hold: four right answers buy a part.
+//
+// EXPORTED because tests/badges.test.mjs derives its badge thresholds from these
+// numbers and previously scraped them out of this file with a regex, so a rename
+// failed at a parse assertion rather than at the calibration it invalidated.
+export const REWARD_TOKENS = { 1: 1, 2: 1, 3: 1 };
 const BOOST = { strength: 1.3, duration: 2.4, impulse: 6 };
 
 /* ═════════════════════════════════════════════════ beacon placement (Wave 3) ══
@@ -345,14 +393,33 @@ const QUIZ_CSS = `
   color:var(--txt);text-shadow:0 2px 0 rgba(0,0,0,.45);margin:clamp(1px,.5vh,6px) 0}
 
 .quiz-opts{display:flex;flex-direction:column;gap:clamp(6px,1vh,11px)}
+/* A finger, not just a key. min-block-size is a logical property, so the row
+   grows in the block direction in both RTL and LTR; 48px is the smallest target
+   a child's fingertip lands on reliably, and the row is full-width so the whole
+   strip — number chip included — is the button. touch-action:manipulation
+   removes the double-tap-to-zoom wait, which is what makes a tap feel like a
+   click rather than like a delay. */
 .quiz-opt{display:flex;align-items:center;gap:clamp(9px,1.4vw,15px);width:100%;
   font-family:var(--font);text-align:start;cursor:pointer;
+  min-block-size:clamp(48px,6.2vh,62px);
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  user-select:none;-webkit-user-select:none;
   padding:clamp(7px,1.15vh,13px) clamp(9px,1.1vw,15px);
   border-radius:var(--r-m);color:var(--txt);
   background:linear-gradient(180deg,rgba(255,255,255,.085),rgba(255,255,255,.035));
   border:1px solid var(--stroke-hi);
   transition:transform .12s var(--ease),background .15s,border-color .15s,filter .15s}
-.quiz-opt:hover{background:rgba(255,255,255,.15);transform:translateY(-1px)}
+/* Hover only where hovering exists. On a touch screen :hover sticks to the
+   last thing tapped, so the option a child answered with would stay lit under
+   the feedback colours. */
+@media (hover:hover){
+  .quiz-opt:hover{background:rgba(255,255,255,.15);transform:translateY(-1px);
+    border-color:rgba(255,255,255,.38)}
+  .quiz-opt:hover .quiz-key{background:rgba(255,255,255,.20)}
+}
+/* The press itself, for mouse AND touch — the only feedback a tap ever gets. */
+.quiz-opt:active:not(:disabled){transform:translateY(1px);
+  background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.5)}
 .quiz-opt:focus-visible{outline:3px solid var(--info);outline-offset:3px}
 .quiz-key{flex:none;display:flex;align-items:center;justify-content:center;
   inline-size:clamp(26px,3.2vh,34px);block-size:clamp(26px,3.2vh,34px);
@@ -377,8 +444,11 @@ const QUIZ_CSS = `
    player who was drifting when the beacon fired. */
 .quiz-hint.held{color:var(--gold-1)}
 /* Only offered once the feedback is up — while the question is live there is
-   nothing to continue to. */
-.quiz-cont{display:none;padding:8px 18px;font-size:clamp(13px,1.8vh,16px)}
+   nothing to continue to. Sized as a real touch target: this is the only way
+   out of the panel for a player with no keyboard at all. */
+.quiz-cont{display:none;padding:10px 22px;font-size:clamp(13px,1.8vh,16px);
+  min-block-size:clamp(44px,5.6vh,54px);align-items:center;justify-content:center;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 .quiz-answered .quiz-cont{display:inline-flex}
 
 .quiz-result{display:none;flex-direction:column;gap:clamp(4px,.8vh,9px);
@@ -401,9 +471,44 @@ const QUIZ_CSS = `
 
 .quiz-flash{position:absolute;inset:0;pointer-events:none;opacity:0;
   background:radial-gradient(60% 46% at 50% 50%,rgba(255,214,107,.34),transparent 72%)}
-.quiz-flash.on{animation:quizFlash .55s var(--ease) both}
+/* NOT ".on" — that class is style.js's global pointer-events opt-in (#ui * is
+   pointer-events:none and #ui .on turns it back on), and it out-specifies the
+   pointer-events:none above. The celebration flash is a full-screen sibling
+   drawn OVER the card, so as a side effect of a RIGHT answer it became a
+   transparent sheet that swallowed every click on the panel underneath: after a
+   correct answer, a mouse or touch player could not press the continue button at
+   all, while the keyboard sailed through. Found by the pointer-parity gate. */
+.quiz-flash.fx{animation:quizFlash .55s var(--ease) both}
 @keyframes quizFlash{0%{opacity:0}18%{opacity:1}100%{opacity:0}}
-@media (prefers-reduced-motion:reduce){.quiz-flash.on{animation:none}}
+@media (prefers-reduced-motion:reduce){.quiz-flash.fx{animation:none}}
+
+/* ── the one-time "what is a question box" explainer ──────────────────────────
+   Same shape as the garage's first-token popup so a child reads a familiar
+   card, but in the BEACON's palette (cyan/violet with three satellites) rather
+   than the token's gold, because the two must never be confused — the whole
+   point of the beacon art is that it is not a coin. */
+.qzint-scrim{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  padding:22px;background:rgba(6,8,20,.62);backdrop-filter:blur(2px);font-family:var(--font)}
+.qzint-card{width:min(540px,92%);padding:22px 26px 20px;display:flex;flex-direction:column;gap:11px;
+  border-radius:var(--r-l);border:1px solid rgba(111,195,255,.36);
+  background:linear-gradient(180deg,rgba(28,40,64,.96),rgba(15,18,30,.97));
+  box-shadow:var(--sh-pop),0 0 60px rgba(111,195,255,.22)}
+.qzint-top{display:flex;align-items:center;gap:13px}
+.qzint-orb{position:relative;inline-size:46px;block-size:46px;flex:none;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,#eaffff,#9ee6ff 42%,#2f9dff);
+  box-shadow:0 0 26px rgba(95,208,255,.6),0 1px 0 rgba(255,255,255,.6) inset}
+.qzint-orb i{position:absolute;inline-size:9px;block-size:9px;border-radius:50%;
+  inset-block-start:50%;inset-inline-start:50%;margin:-4.5px}
+.qzint-orb i:nth-child(1){background:var(--gold-1);translate:0 -26px}
+.qzint-orb i:nth-child(2){background:#6fe8ff;translate:22px 13px}
+.qzint-orb i:nth-child(3){background:#c9a6ff;translate:-22px 13px}
+.qzint-kicker{font-size:11px;font-weight:900;letter-spacing:.04em;color:var(--info)}
+.qzint-title{font-size:26px;line-height:1.05}
+.qzint-p{font-size:15.5px;font-weight:700;line-height:1.5;color:#eaeef6}
+.qzint-p b{color:var(--info);font-weight:900}
+.qzint-actions{display:flex;justify-content:flex-end;margin-top:3px}
+.qzint-actions .btn{min-block-size:clamp(44px,5.6vh,54px);
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 `;
 
 function injectQuizCSS() {
@@ -413,6 +518,88 @@ function injectQuizCSS() {
   el.id = 'pr-quiz-style';
   el.textContent = QUIZ_CSS;
   document.head.appendChild(el);
+}
+
+/* ══════════════════════════════════════════ first-question-box explainer ══ */
+//
+// The very first time a child ever drives into a question box, they should learn
+// what the box IS before they are asked anything: right answer → turbo + tokens,
+// wrong answer → nothing bad. Modelled one-for-one on garage.js's first-token
+// popup (TOKEN_INTRO_FLAG / shouldShowFirstTokenPopup / firstTokenPopup), and it
+// obeys the same registry policy (D15/D18):
+//
+//   • it DEFERS behind anything else already open — `shouldShowFirstQuizPopup()`
+//     is false while ANY modal is up, exactly like the token explainer's, and
+//   • when it defers the save flag is LEFT UNTOUCHED, so the next question box
+//     shows it. A beacon respawns; the explainer is never lost.
+//
+// The save flag is a new key. `save.js` merges unknown keys against DEFAULTS, so
+// this is safe without editing that file, but the lead must add
+// `quizBoxIntroSeen: false` to DEFAULTS and to the settings full-reset.
+export const QUIZ_INTRO_FLAG = 'quizBoxIntroSeen';
+export const shouldShowFirstQuizPopup = () => !save.read(QUIZ_INTRO_FLAG) && !modalOpen();
+export const markFirstQuizPopupSeen = () => { save.set({ [QUIZ_INTRO_FLAG]: true }); };
+
+/**
+ * The one-time "what a question box is" card. Marks the flag immediately (so a
+ * double-fire in one frame cannot show it twice); pass {persist:false} to show
+ * it without touching the save, as the preview does.
+ *
+ * The caller owns the modal registry: this is opened from inside the quiz
+ * system's own frozen sequence and the id it holds is 'quiz', so nothing about
+ * the policy changes — a question box owns the screen the same way whether the
+ * first thing it shows is this card or the question itself.
+ *
+ * @param o {onClose?:fn, persist?:boolean}
+ * @returns HTMLElement with an extra `close()` method.
+ */
+export function firstQuizPopup(o = {}) {
+  injectQuizCSS();
+  if (o.persist !== false) markFirstQuizPopupSeen();
+  let closed = false;
+  // ONE way out, whatever asks for it: the button (mouse, finger, or an
+  // assistive activation), Space/Enter, or Escape. Two implementations of "go
+  // on" drift, and only one of them ends up carrying the e.repeat guard.
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    removeEventListener('keydown', onKey, true);
+    root.remove();
+    o.onClose?.();
+  };
+  // Escape closes THIS rather than falling through to input.js, which would open
+  // the pause menu on top of it. Capture phase + stopPropagation, the same
+  // discipline the token explainer and ui/menus.js overlays use. Space/Enter are
+  // the same key the quiz's own feedback takes, with D20's guard: Space is also
+  // the drift key, and a child who was holding it when the box fired must not
+  // have this card taken away by a key they never released.
+  const onKey = e => {
+    if (closed) return;
+    const isGo = e.code === 'Space' || e.key === ' ' || e.key === 'Enter';
+    if (!isGo && e.key !== 'Escape') return;
+    if (e.repeat) { e.preventDefault(); return; }
+    e.preventDefault(); e.stopPropagation();
+    close();
+  };
+  addEventListener('keydown', onKey, true);
+  const btn = h('button.btn', { type: 'button', onclick: close }, t('quiz.intro.go'));
+  // `.on` re-enables pointer events (style.js turns them off for everything
+  // inside #ui by default) so the scrim SWALLOWS taps instead of letting them
+  // fall through to the world behind it. It deliberately does not close on a
+  // stray tap: this is a teaching card, and it goes away on its own button.
+  const root = h('div.qzint-scrim.on.fade-in', null,
+    h('div.qzint-card.pop-in', null,
+      h('div.qzint-top', null,
+        h('div.qzint-orb', null, h('i'), h('i'), h('i')),
+        h('div', null,
+          h('div.qzint-kicker', null, t('quiz.intro.kicker')),
+          h('div.display.qzint-title', null, t('quiz.intro.title')))),
+      h('div.qzint-p', { html: t('quiz.intro.1') }),
+      h('div.qzint-p', { html: t('quiz.intro.2') }),
+      h('div.qzint-actions', null, btn)));
+  root.close = close;
+  root.focusButton = () => btn.focus({ preventScroll: true });
+  return root;
 }
 
 /* ══════════════════════════════════════════════════════════════════ system ══ */
@@ -633,11 +820,19 @@ export function createQuizSystem(engine, opts = {}) {
   const elHint = h('div.quiz-hint');
   const elFlash = h('div.quiz-flash');
 
+  // MOUSE / TOUCH (Wave 4). Every option is a real <button>, and its `click` is
+  // the ONE pointer event that matters: a mouse click, a finger tap and an
+  // assistive-tech activation all raise it, so there is a single listener rather
+  // than a mouse branch and a touch branch that drift apart. It calls the SAME
+  // answer() the keyboard calls — the registry guard, the freeze, the feedback
+  // state and the resume countdown are therefore not "also implemented" for the
+  // pointer, they are the same lines. The only thing the `via` argument does is
+  // record which hand arrived, so a gate can prove it actually took this path.
   const optEls = [];
   for (let k = 0; k < 3; k++) {
     const txt = h('span.quiz-txt');
     const btn = h('button.quiz-opt', {
-      type: 'button', onclick: () => answer(k),
+      type: 'button', onclick: () => answer(k, 'pointer'),
     }, h('span.quiz-key.num', null, String(k + 1)), txt);
     optEls.push({ btn, txt });
   }
@@ -655,7 +850,7 @@ export function createQuizSystem(engine, opts = {}) {
   // a mouse/touch player, and a player still holding Space as a drift key when
   // the beacon fired (their keydown already happened; auto-repeats are ignored
   // on purpose, see onKey), both need a visible way out.
-  const elCont = h('button.btn.quiz-cont', { type: 'button', onclick: () => dismiss() });
+  const elCont = h('button.btn.quiz-cont', { type: 'button', onclick: () => dismiss('pointer') });
   const elFoot = h('div.quiz-foot', null, elHint, elCont);
 
   const card = h('div.quiz-card.panel-lift', null,
@@ -664,13 +859,19 @@ export function createQuizSystem(engine, opts = {}) {
   card.setAttribute('role', 'dialog');
   card.setAttribute('aria-live', 'polite');
 
-  const root = h('div.quiz-root', null, h('div.quiz-scrim'), card, elFlash);
+  // `.on` on the scrim: pointer events are off for everything inside #ui, so
+  // without it a tap that misses the card lands on the world behind the panel.
+  // (It is inert while the root is hidden — `visibility:hidden` is not
+  // hit-testable — so the menu backdrop's disabled quiz system swallows nothing.)
+  const root = h('div.quiz-root', null, h('div.quiz-scrim.on'), card, elFlash);
   mount.appendChild(root);
 
   /* ── state ────────────────────────────────────────────────────────────────*/
-  // idle | question | feedback | resume
-  //   question/feedback/resume all hold the world at FREEZE_SCALE. `resume` is
-  //   the 3 · 2 · 1 hand-back: the panel is already gone, the sim is not back yet.
+  // idle | intro | question | feedback | resume
+  //   intro/question/feedback/resume all hold the world at FREEZE_SCALE. `intro`
+  //   is the one-time explainer, shown the first time a child ever meets a box;
+  //   `resume` is the 3 · 2 · 1 hand-back: the panel is already gone, the sim is
+  //   not back yet.
   let phase = 'idle';
   let phaseT = 0;            // seconds in the current phase (REAL time)
   let beat = -1;             // last countdown beat emitted during `resume`
@@ -680,6 +881,9 @@ export function createQuizSystem(engine, opts = {}) {
   const asked = [];          // ids opened by THIS system, in order (see quiz:open)
   let body = null;           // player body, for applyBoost
   let lastResult = null;
+  let introEl = null;        // the one-time explainer, while it is on screen
+  let pendingPick = null;    // the question the explainer is standing in front of
+  let lastVia = null;        // 'key' | 'pointer' — which hand drove the last step
 
   const offLang = bus.on('lang:changed', () => { if (phase !== 'idle') renderQuestion(); });
 
@@ -720,12 +924,57 @@ export function createQuizSystem(engine, opts = {}) {
     elResult.classList.toggle('soft', !good);
     elVerdictTxt.textContent = good ? t('quiz.correct')
       : (shown.timedOut ? t('quiz.timeUp') : t('quiz.answerMarked'));
+    const paid = REWARD_TOKENS[shown.data.tier] || 1;
     elSub.textContent = good
-      ? t('quiz.reward', { n: num(REWARD_TOKENS[shown.data.tier] || 3) })
+      ? (paid === 1 ? t('quiz.reward1') : t('quiz.reward', { n: num(paid) }))
       : t('quiz.noPenalty');
     elWarm.textContent = good ? '' : t(shown.warmKey);
     elWarm.style.display = good ? 'none' : '';
     elWhy.textContent = s.why;
+  }
+
+  /** True when this child has never met a question box before AND nothing else
+   *  owns the screen. `opts.forceIntro` is for the preview only. */
+  function introDue() {
+    // `forceIntro` is a preview/gate override in BOTH directions: true = always,
+    // false = never (the question previews must show a question, not the
+    // explainer, on a machine whose save has never seen one). Left undefined —
+    // which is what the game passes — it is the save flag and nothing else.
+    if (opts.forceIntro != null) return !!opts.forceIntro && !modalOpen();
+    return shouldShowFirstQuizPopup();
+  }
+
+  /**
+   * The one-time explainer, shown INSTEAD of the question for one beat and then
+   * followed straight into it. The world is frozen for the whole of it (phase is
+   * not 'idle', so the time scale is FREEZE_SCALE and race.js gates input off
+   * exactly as it does for a question — D12's held keys survive it for free).
+   */
+  function openIntro(pick) {
+    pushModal('quiz');
+    phase = 'intro';
+    phaseT = 0;
+    pendingPick = pick || null;
+    const el = firstQuizPopup({
+      persist: opts.introPersist !== false,
+      onClose: () => {
+        if (introEl !== el) return;     // torn down by close()/dispose(): nothing follows
+        introEl = null;
+        phase = 'idle';
+        popModal('quiz');
+        const p = pendingPick;
+        pendingPick = null;
+        bus.emit('quiz:introClosed', {});
+        openQuestion(p);                // …and now the question the box was for
+      },
+    });
+    introEl = el;
+    mount.appendChild(el);
+    // Deliberately NOT focused: a focused <button> activates on the keyUP of
+    // Space, which is the one key a child may already be holding down (drift)
+    // when the box fires — the card would be gone before it was read. Space is
+    // handled by the popup's own keydown instead, where e.repeat can guard it.
+    bus.emit('quiz:intro', {});
   }
 
   function openQuestion(pick) {
@@ -734,6 +983,10 @@ export function createQuizSystem(engine, opts = {}) {
     // pause menu. The beacon that triggered us has already been consumed and
     // will respawn, so nothing is lost — the question simply comes later.
     if (modalOpen('quiz')) return;
+    // First box this child has ever met: explain what a box IS first. If
+    // anything else owns the screen, introDue() is false and the flag is left
+    // alone, so the NEXT box explains instead (the registry policy, D15/D18).
+    if (introDue()) { openIntro(pick); return; }
     pushModal('quiz');
     shown = pick || drawQuestion();
     asked.push(shown.data.id);
@@ -779,7 +1032,7 @@ export function createQuizSystem(engine, opts = {}) {
     if (phase === 'question') {
       if (digit == null) return;
       e.preventDefault();
-      answer(digit);
+      answer(digit, 'key');
     } else if (phase === 'feedback') {
       // Space is the one documented key; Enter is accepted as the usual
       // "confirm" alias. Digits deliberately are NOT — the child just pressed
@@ -787,21 +1040,28 @@ export function createQuizSystem(engine, opts = {}) {
       // double-tap. DISMISS_AFTER_S covers the same trap for Space/Enter.
       if (e.code !== 'Enter' && e.code !== 'Space') return;
       e.preventDefault();
-      if (phaseT > DISMISS_AFTER_S) dismiss();
+      dismiss('key');            // the DISMISS_AFTER_S arming lives inside dismiss()
     }
   }
 
-  function answer(slot) {
+  /**
+   * THE one place an answer is chosen, whatever chose it: 1/2/3, a mouse click
+   * on the option, or a finger tap on it. `via` is recorded and nothing else —
+   * every rule below applies to all of them identically.
+   */
+  function answer(slot, via = 'code') {
     // The SAME policy the keyboard obeys, enforced in the same place. `onKey`
     // checked this; the `.quiz-opt` onclick did not, so a programmatic click
     // answered a question hidden behind the pause menu and started the 3·2·1
     // underneath it. That it was unreachable with a real mouse was geometry
     // (the full-screen `.mn-ov` swallows the click), not policy — and geometry
     // is not what the modal registry exists to rely on (D15/D18).
-    if (modalOpen('quiz')) return;
-    if (phase !== 'question' || shown.answered != null) return;
+    if (modalOpen('quiz')) return false;
+    if (phase !== 'question' || shown.answered != null) return false;
+    lastVia = via;
     shown.answered = slot;
     finishQuestion(false);
+    return true;
   }
 
   function timeout() {
@@ -831,7 +1091,7 @@ export function createQuizSystem(engine, opts = {}) {
     renderResult();
 
     if (good) {
-      elFlash.classList.remove('on'); void elFlash.offsetWidth; elFlash.classList.add('on');
+      elFlash.classList.remove('fx'); void elFlash.offsetWidth; elFlash.classList.add('fx');
       if (body?.applyBoost) body.applyBoost(BOOST.strength, BOOST.duration, BOOST.impulse);
     }
     emitResult(good, timedOut);
@@ -844,7 +1104,7 @@ export function createQuizSystem(engine, opts = {}) {
       correct: good,
       chosen: shown.answered == null ? null : shown.order[shown.answered],
       correctIndex: d.correct,
-      tokens: good ? (REWARD_TOKENS[d.tier] || 3) : 0,
+      tokens: good ? (REWARD_TOKENS[d.tier] ?? 1) : 0,
       timedOut: !!timedOut,
     };
     lastResult = payload;
@@ -858,16 +1118,23 @@ export function createQuizSystem(engine, opts = {}) {
    * frozen right through it, so the kart is never moving again before the
    * player is looking at the road instead of at a paragraph.
    */
-  function dismiss() {
+  function dismiss(via = 'code') {
     // Same reason as answer(): the gold continue button is a pointer path into
     // the same state machine, and the policy belongs to the registry.
-    if (modalOpen('quiz')) return;
-    if (phase !== 'feedback') return;
+    if (modalOpen('quiz')) return false;
+    if (phase !== 'feedback') return false;
+    // The arming delay used to live in the KEY handler only, so a fast
+    // double-click — answer, then the continue button appearing under the
+    // cursor — could blink the explanation away exactly the way a double-tap of
+    // `1` used to. It belongs here, where both hands pass through it.
+    if (phaseT <= DISMISS_AFTER_S) return false;
+    lastVia = via;
     hidePanel();
     phase = 'resume';
     phaseT = 0;
     beat = -1;
     bus.emit('quiz:dismiss', lastResult);
+    return true;
   }
 
   function hidePanel() {
@@ -879,6 +1146,10 @@ export function createQuizSystem(engine, opts = {}) {
 
   function close() {
     if (phase === 'idle') return;
+    // A scene change on top of the explainer: take it away WITHOUT letting its
+    // onClose run on into a question (introEl is cleared first, and onClose
+    // checks its own identity against it).
+    if (introEl) { const el = introEl; introEl = null; pendingPick = null; el.close(); }
     popModal('quiz');
     hidePanel();
     phase = 'idle';
@@ -981,6 +1252,15 @@ export function createQuizSystem(engine, opts = {}) {
     get phase() { return phase; },
     /** The id of the question currently on screen, or null. */
     get currentId() { return phase === 'idle' ? null : (shown?.data?.id ?? null); },
+    /** The tier of the question currently on screen, or null. */
+    get currentTier() { return phase === 'idle' ? null : (shown?.data?.tier ?? null); },
+    /** Which of the three buttons is the right one — the option ORDER is shuffled
+     *  per showing, so a gate that wants to play as a child who ANSWERS WELL
+     *  cannot work it out from the question bank alone. Exists for the token
+     *  economy gate: without it no automated driver can produce the quiz term
+     *  that dominates the wallet, which is precisely how that term went
+     *  unmeasured for three waves (D29). */
+    get correctSlot() { return phase === 'idle' ? null : (shown?.correctSlot ?? null); },
     /** Every id this race has shown, in order — the same ids `quiz:open` carries. */
     get askedIds() { return asked.slice(); },
     /** How many questions are eligible after the championship exclusion. */
@@ -988,6 +1268,11 @@ export function createQuizSystem(engine, opts = {}) {
     get timeScale() { return scale; },
     get lastResult() { return lastResult; },
     get beaconCount() { return N; },
+    /** 'key' | 'pointer' — which input drove the last answer/dismiss. Exists so
+     *  a gate can prove the pointer path was the one actually exercised. */
+    get lastVia() { return lastVia; },
+    /** Is the one-time first-question-box explainer on screen right now? */
+    get introOpen() { return !!introEl; },
     /** Force a question open — used by previews and by the dev harness. */
     openQuestion(pick) { openQuestion(pick); },
     /** The player's "I have read it" — feedback → 3·2·1 → resume. */
@@ -995,6 +1280,7 @@ export function createQuizSystem(engine, opts = {}) {
     /** Force the panel shut immediately, skipping the countdown (scene change). */
     close,
     dispose() {
+      if (introEl) { const el = introEl; introEl = null; pendingPick = null; el.close(); }
       popModal('quiz');            // a torn-down scene must not leave a phantom
       removeEventListener('keydown', onKey);
       offLang();
@@ -1025,6 +1311,10 @@ function previewScene(engine, o = {}) {
   const quiz = createQuizSystem(engine, {
     spline, def, difficulty: o.difficulty ?? 1, rng: makeRng(7311),
     enabled: false, freeze: true, mount: engine.ui,
+    // Screenshots must not depend on whether this machine's save has ever seen
+    // a question box: the explainer is forced on for previewIntro and forced
+    // OFF for every other preview, and never writes the flag either way.
+    forceIntro: !!o.intro, introPersist: false,
   });
   scene.add(quiz.group);
 
@@ -1062,7 +1352,9 @@ function previewScene(engine, o = {}) {
   camera.position.copy(cp);
   camera.lookAt(look);
 
-  if (o.demo) {
+  if (o.intro) {
+    quiz.openQuestion(pickDemoQuestion('prompt-better-one', o.difficulty ?? 1));
+  } else if (o.demo) {
     const pick = pickDemoQuestion(o.demo, o.difficulty ?? 1);
     quiz.openQuestion(pick);
     if (o.state === 'correct') simulateAnswer(pick.correctSlot);
@@ -1121,6 +1413,11 @@ export function previewCorrect(engine) {
 /** The no-penalty state: wrong answer, correct one marked, warm line, explanation. */
 export function previewWrong(engine) {
   return previewScene(engine, { demo: 'prompt-better-one', state: 'wrong' });
+}
+
+/** The one-time explainer, as a child meets their very first question box. */
+export function previewIntro(engine) {
+  return previewScene(engine, { intro: true });
 }
 
 export { QUESTIONS, bankStats, tiersForDifficulty };

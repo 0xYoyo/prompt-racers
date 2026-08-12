@@ -10,11 +10,16 @@
 // RTL is the default and the arrow-key mapping is written visually, not by index:
 // under RTL the grid flows right-to-left, so ArrowLeft advances the array.
 import * as THREE from 'three';
-import { h, injectStyles, modalOpen } from './style.js';
+import { h, injectStyles, modalOpen, pushModal, popModal } from './style.js';
 import { registerStrings, t, num, ordinal, formatTime, setLang, getLang, isRTL } from './i18n.js';
 import { save } from '../core/save.js';
 import { bus } from '../core/bus.js';
 import { makeRng } from '../core/rng.js';
+// The mixer, for the master-volume slider only. Every call into it is optional
+// (`audio.setMasterVolume?.()`) — see applyVolume(). audio.js imports nothing
+// from here, so there is no cycle, and it is already in every preview bundle
+// via core/harness.js.
+import { audio } from '../audio/audio.js';
 import { ROSTER as ROSTER_IMPORT } from '../kart/roster.js';
 // learn.js builds on overlayRoot() from this file, so these two modules import
 // each other. That is safe here and only here: every binding crossing the cycle
@@ -98,9 +103,21 @@ const champFinished = () => champRace() >= CHAMP_RACES;
  * `championshipCounted` is the podium's once-per-ledger guard for the
  * championshipsDone counter (see SCENES.podium in scenes.js).
  *
- * Deliberately NOT cleared: lang / quality / muted (preferences), tipsSeen and
- * expertUnlocked (things the child has already been taught — re-teaching them is
- * patronising), and bestLap (a personal record, not championship state).
+ * Deliberately NOT cleared: lang / quality / muted / volume (preferences),
+ * tipsSeen and expertUnlocked (things the child has already been taught —
+ * re-teaching them is patronising), and bestLap (a personal record, not
+ * championship state).
+ *
+ * And, added in Wave 4 and the reason this list is worth reading twice:
+ * `badges`, `glossary`, `stats` and `funTitle` — האוסף שלי. A badge is something
+ * the child earned once and keeps; a glossary term is something they have been
+ * taught; `stats` are the lifetime counters the badges are measured against, so
+ * clearing them would un-earn every badge that is still to come. None of them
+ * belong to a championship, and a child who starts a new one must not be made to
+ * watch their collection empty as the price. DO NOT ADD THEM TO THE CLEAR LIST:
+ * the ONE thing in this game that empties the collection is the settings
+ * screen's full wipe (`save.reset()`), which says so on the way. Pinned by
+ * tools/hometest.mjs, which asserts they survive this function.
  */
 export function resetChampionship() {
   save.set({
@@ -136,6 +153,7 @@ registerStrings({
     'menu.viewPodium': 'לטבלת האליפות',
     'menu.howto': 'איך משחקים',
     'menu.freePlay': 'המוסך של בורג',
+    'menu.collection': 'האוסף שלי',
     'menu.settings': 'הגדרות',
     // ONE word for the one destination. Every "way out" in the game lands on
     // this screen, and it used to be called four different things — חזרה here
@@ -179,7 +197,7 @@ registerStrings({
     'menu.results.youPlaced': 'סיימתם במקום ה{p}',
     'menu.results.tokenHint': 'טוקנים הם הדלק של המוסך — קונים איתם שדרוגים',
 
-    'menu.podium.champ': 'אלוף האליפות!',
+    'menu.podium.champ': 'זכיתם באליפות!',
     'menu.podium.done': 'סוף האליפות',
     'menu.podium.congratsWin': 'כל הכבוד, {name}! לקחתם את גביע מרוץ הפרומפטים.',
     'menu.podium.congrats': 'סיימתם את האליפות במקום ה{p}, {name}. מרוץ יפה!',
@@ -198,12 +216,33 @@ registerStrings({
     'menu.set.sound': 'צלילים',
     'menu.set.on': 'דולק',
     'menu.set.off': 'כבוי',
+    'menu.set.volume': 'עוצמת קול',
+    // The row label names the THING, the button names the ACTION — the row used
+    // to print "איפוס התקדמות" twice, once as a label and once on the button.
+    'menu.set.progress': 'ההתקדמות שלכם',
     'menu.set.reset': 'איפוס התקדמות',
-    'menu.set.resetAsk': 'למחוק את כל ההתקדמות? אין דרך חזרה.',
-    'menu.set.resetYes': 'כן, למחוק הכול',
-    'menu.set.resetNo': 'לא, להשאיר',
     'menu.set.resetDone': 'הכול אופס. מתחילים מחדש!',
     'menu.set.close': 'סגירה',
+
+    // ── the two destructive confirms (D32) ──────────────────────────────────
+    // Two different things, and a child must be able to tell them apart in one
+    // glance: each carries a SCOPE chip in its own colour, each spells out what
+    // it erases in a list, and the championship one says out loud what it KEEPS
+    // — the reassuring half is what makes the two readable as different.
+    'menu.confirm.scopeChamp': 'האליפות בלבד',
+    'menu.confirm.scopeAll': 'הכול',
+    'menu.newChamp.ask': 'להתחיל אליפות חדשה?',
+    'menu.newChamp.what': 'מוחקים את האליפות הנוכחית: התוצאות, הטוקנים, החלקים שבנינו במוסך, והפרומפט הכי טוב שלכם.',
+    'menu.newChamp.keep': 'התגים והמילון שבאוסף שלכם נשארים.',
+    'menu.newChamp.yes': 'כן, אליפות חדשה',
+    'menu.newChamp.no': 'לא, משאירים',
+    'menu.set.wipeAsk': 'למחוק את כל ההתקדמות?',
+    'menu.set.wipeWhat': 'מוחקים הכול: האליפות, הטוקנים והחלקים — וגם התגים והמילון שבאוסף שלכם. אין דרך חזרה.',
+    'menu.set.wipeYes': 'כן, למחוק הכול',
+    // Same words as the twin confirm's 'menu.newChamp.no' — the two modals are
+    // deliberately read side by side, and the safe button was an infinitive on
+    // one and the house-voice present plural on the other.
+    'menu.set.wipeNo': 'לא, משאירים',
 
     // menu.pause.* is registered by ui/pause.js, which owns that screen.
 
@@ -211,7 +250,8 @@ registerStrings({
     'menu.how.driveT': 'נוהגים',
     'menu.how.driveB': 'חצים ימינה ושמאלה מסובבים, חץ למעלה נותן גז.',
     'menu.how.driftT': 'מחליקים',
-    'menu.how.driftB': 'רווח בתוך סיבוב = החלקה, ובסוף מקבלים טורבו.',
+    // Either key, never both — same story the legend's "Shift / Space" tells.
+    'menu.how.driftB': 'מחזיקים Shift או רווח בתוך סיבוב = החלקה, ובסוף מקבלים טורבו.',
     'menu.how.tokenT': 'אוספים טוקנים',
     'menu.how.tokenB': 'כל מרוץ מזכה בטוקנים לפי המקום שסיימתם בו.',
     'menu.how.garageT': 'משדרגים במוסך',
@@ -227,6 +267,7 @@ registerStrings({
     'menu.viewPodium': 'Championship Standings',
     'menu.howto': 'How to Play',
     'menu.freePlay': "Boreg's Garage",
+    'menu.collection': 'My Collection',
     'menu.settings': 'Settings',
     'menu.back': 'Main Menu',
     'menu.enterHint': 'Press Enter to start',
@@ -281,18 +322,29 @@ registerStrings({
     'menu.set.sound': 'Sound',
     'menu.set.on': 'On',
     'menu.set.off': 'Off',
+    'menu.set.volume': 'Volume',
+    'menu.set.progress': 'Your progress',
     'menu.set.reset': 'Reset progress',
-    'menu.set.resetAsk': 'Erase all progress? There is no undo.',
-    'menu.set.resetYes': 'Yes, erase it',
-    'menu.set.resetNo': 'No, keep it',
     'menu.set.resetDone': 'All reset. Fresh start!',
     'menu.set.close': 'Close',
+
+    'menu.confirm.scopeChamp': 'Championship only',
+    'menu.confirm.scopeAll': 'Everything',
+    'menu.newChamp.ask': 'Start a new championship?',
+    'menu.newChamp.what': 'This erases the current championship: the results, the tokens, the parts built in the garage, and your best prompt.',
+    'menu.newChamp.keep': 'Your badges and glossary stay in your collection.',
+    'menu.newChamp.yes': 'Yes, new championship',
+    'menu.newChamp.no': 'No, keep it',
+    'menu.set.wipeAsk': 'Erase all progress?',
+    'menu.set.wipeWhat': 'This erases everything: the championship, the tokens and the parts — and the badges and glossary in your collection too. There is no undo.',
+    'menu.set.wipeYes': 'Yes, erase everything',
+    'menu.set.wipeNo': 'No, keep it',
 
     'menu.how.title': 'How to Play',
     'menu.how.driveT': 'Drive',
     'menu.how.driveB': 'Left and right arrows steer, up arrow gives it gas.',
     'menu.how.driftT': 'Drift',
-    'menu.how.driftB': 'Hold Space through a corner to drift, then get a boost.',
+    'menu.how.driftB': 'Hold Shift or Space through a corner to drift, then get a boost.',
     'menu.how.tokenT': 'Collect tokens',
     'menu.how.tokenB': 'Every race pays out tokens based on where you finish.',
     'menu.how.garageT': 'Upgrade in the garage',
@@ -380,6 +432,62 @@ const MENU_CSS = `
   padding:0 8px;border-radius:8px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.2);
   box-shadow:0 2px 0 rgba(0,0,0,.45),0 1px 0 rgba(255,255,255,.15) inset;
   font-size:12px;font-weight:800;color:#f4f1ea;direction:ltr;unicode-bidi:isolate}
+/* THE KEYCAPS ARE A PICTURE OF A KEYBOARD, AND A KEYBOARD DOES NOT MIRROR.
+   Each cap already isolated itself, but the CAPS GROUP is a flex row that
+   inherited the document direction — so under RTL the row laid out right-to-left
+   and "←  →" printed as "→  ←": two arrows pointing AT each other, which is not
+   a thing any keyboard has ever looked like. A child reading it learns the wrong
+   key for the wrong direction. The group is pinned to LTR (and isolated, so it
+   cannot leak into the Hebrew label beside it); the label stays in the document
+   direction, where it belongs. */
+.mn-caps{display:inline-flex;align-items:center;gap:6px;direction:ltr;unicode-bidi:isolate}
+/* "Shift / Space" — a slash, because these are two keys that each do the same
+   thing, and two caps side by side read as a chord to press together. */
+.mn-caps .or{font-size:13px;font-weight:800;color:rgba(244,241,234,.5);line-height:1}
+
+/* ---------- corner icon buttons (settings / how-it-was-built) ---------- */
+/* The home screen had six buttons stacked under the logo and read as a form.
+   The two that are not "play the game" — Settings and "how was this built" —
+   moved into the corners as round icons, so the centre column is only the four
+   things a child came here to do.
+   Every corner icon carries its label as a real text node INSIDE the button:
+   that is the accessible name, it is what hover and keyboard focus reveal, and
+   it means the button still answers to its own words for anything that searches
+   the DOM by text. The icon art is inline SVG — no asset files (contest rule)
+   and no emoji, whose glyphs differ per platform and would land as tofu on the
+   machines this ships to (the same reason pause draws '❚❚' rather than '⏸'). */
+.mn-corner{position:absolute;z-index:6;inset-block-start:clamp(10px,2vh,18px);display:flex;gap:8px}
+.mn-corner.tl{inset-inline-start:clamp(10px,2vw,18px)}
+.mn-corner.tr{inset-inline-end:clamp(10px,2vw,18px)}
+/* Defensive: attachHomeControl() parks its pill in exactly this corner at 18px
+   on any screen that mounts one. The title screen mounts none, but a future
+   screen carrying both must not stack them — the icon drops into its own lane,
+   the same way the race's copy of the pill does. */
+#ui:has(.mn-home) .mn-corner.tl{inset-block-start:calc(18px + 4.7em)}
+.mn-icon{position:relative;width:46px;height:46px;flex:none;padding:0;border-radius:50%;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--txt);border:1px solid var(--stroke-hi);
+  background:linear-gradient(180deg,rgba(52,52,72,.94),rgba(20,20,31,.96));
+  box-shadow:0 0 0 1px rgba(0,0,0,.45),0 8px 20px rgba(0,0,0,.5);
+  transition:transform .14s var(--ease),background .14s,color .14s}
+.mn-icon svg{width:24px;height:24px;display:block}
+.mn-icon:hover{transform:translateY(-2px);color:var(--gold-1);
+  background:linear-gradient(180deg,rgba(70,70,96,.96),rgba(30,30,44,.97))}
+.mn-icon:focus-visible{outline:3px solid rgba(255,255,255,.92);outline-offset:3px;color:var(--gold-1)}
+/* The label. HOVER AND FOCUS both reveal it — a child driving the menu from the
+   keyboard has to be able to see what the icon is, and a tooltip that only
+   answers the mouse is invisible to exactly the children who need it most.
+   No transition on the reveal: it must be readable in a still frame, and a
+   property mid-transition reads as its old value under the screenshot harness. */
+.mn-iconlab{position:absolute;inset-block-start:calc(100% + 7px);
+  white-space:nowrap;font-size:12px;font-weight:800;letter-spacing:.02em;color:var(--txt);
+  background:rgba(10,9,18,.94);border:1px solid var(--stroke-hi);border-radius:var(--r-pill);
+  padding:5px 12px;box-shadow:0 6px 18px rgba(0,0,0,.55);
+  visibility:hidden;opacity:0;pointer-events:none}
+.mn-corner.tl .mn-iconlab{inset-inline-start:0}
+.mn-corner.tr .mn-iconlab{inset-inline-end:0}
+.mn-icon:hover .mn-iconlab,.mn-icon:focus-visible .mn-iconlab,
+.mn-icon:focus .mn-iconlab{visibility:visible;opacity:1}
 
 /* ---------- shared screen head ---------- */
 .mn-head{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}
@@ -674,6 +782,53 @@ const MENU_CSS = `
 .mn-danger:hover{background:rgba(255,107,107,.24)}
 .mn-danger:focus-visible{outline:3px solid var(--info);outline-offset:2px}
 .mn-ok{color:var(--good);font-size:13px;font-weight:800}
+
+/* ---------- volume ---------- */
+/* DIRECTION: the slider inherits the document direction and is NOT pinned to
+   LTR. Under RTL Chrome mirrors a range input — the maximum sits at the inline
+   START (the right), ArrowLeft raises the value, ArrowRight lowers it — which is
+   the same way every other filled bar in this game already runs (see .rtl .bar>i
+   in ui/style.js, whose gradient is mirrored for exactly this reason). "More"
+   grows in the direction the child reads. The keycaps above are the deliberate
+   opposite case: those are a picture of a physical keyboard, and hardware does
+   not mirror. A control does. */
+.mn-vol{display:flex;align-items:center;gap:12px}
+.mn-vol input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;
+  width:clamp(130px,22vw,190px);height:34px;cursor:pointer;margin:0}
+.mn-vol input[type=range]::-webkit-slider-runnable-track{height:10px;border-radius:var(--r-pill);
+  border:1px solid var(--stroke);background:var(--fill)}
+.mn-vol input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:26px;height:26px;margin-block-start:-9px;border-radius:50%;border:0;
+  background:linear-gradient(180deg,var(--gold-1),var(--gold-2) 55%,var(--gold-3));
+  box-shadow:0 3px 0 #a4620a,0 4px 12px rgba(0,0,0,.55),0 1px 0 rgba(255,255,255,.6) inset}
+.mn-vol input[type=range]::-moz-range-track{height:10px;border-radius:var(--r-pill);
+  border:1px solid var(--stroke);background:var(--fill)}
+.mn-vol input[type=range]::-moz-range-thumb{width:26px;height:26px;border-radius:50%;border:0;
+  background:linear-gradient(180deg,var(--gold-1),var(--gold-3));box-shadow:0 3px 0 #a4620a}
+.mn-vol input[type=range]:focus-visible{outline:3px solid rgba(255,255,255,.92);outline-offset:4px;
+  border-radius:var(--r-pill)}
+.mn-volval{min-width:52px;font-size:15px;font-weight:900;color:var(--gold-1);text-align:center;
+  font-variant-numeric:tabular-nums;direction:ltr;unicode-bidi:isolate}
+
+/* ---------- destructive confirms ---------- */
+/* Two of them, and they erase different things. Everything below exists to make
+   them impossible to mistake for each other at a glance: a scope chip in its own
+   colour, the erase list, and — only on the championship one — a green line
+   naming what SURVIVES. */
+.mn-dialog.confirm{width:min(500px,100%);text-align:center}
+.mn-cscope{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:900;
+  letter-spacing:.06em;padding:5px 14px;border-radius:var(--r-pill);margin-block-end:10px}
+.rtl .mn-cscope{letter-spacing:0}
+.mn-cscope::before{content:"";width:9px;height:9px;border-radius:50%;background:currentColor}
+.mn-cscope.part{color:#ffd08a;background:rgba(255,194,71,.16);border:1px solid rgba(255,194,71,.45)}
+.mn-cscope.all{color:#ffb3b3;background:rgba(255,107,107,.16);border:1px solid rgba(255,107,107,.5)}
+.mn-dialog.confirm h2{margin-block-end:8px}
+.mn-cwhat{margin:0;font-size:14.5px;line-height:1.55;color:rgba(244,241,234,.88);
+  max-width:40ch;margin-inline:auto}
+.mn-ckeep{display:flex;align-items:center;gap:9px;justify-content:center;text-align:start;
+  margin-block-start:14px;padding:10px 14px;border-radius:var(--r-m);font-size:14px;font-weight:800;
+  color:#c9f0c6;background:rgba(126,224,129,.12);border:1px solid rgba(126,224,129,.38)}
+.mn-ckeep svg{width:20px;height:20px;flex:none;color:var(--good)}
 .mn-acts{display:flex;gap:10px;justify-content:center;margin-block-start:18px;flex-wrap:wrap}
 .mn-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-block-start:14px}
 .mn-hcard{position:relative;padding:16px 14px;border-radius:var(--r-m);
@@ -1065,22 +1220,83 @@ export function backdropScene(engine, opts = {}) {
 
 const ARROW = { left: '←', right: '→', up: '↑', down: '↓' };
 
+/**
+ * One key hint: the caps, then the label.
+ *
+ * The caps live in their own `.mn-caps` box pinned to LTR. Under RTL the row
+ * used to inherit the document direction and lay the caps out right-to-left, so
+ * the steering hint printed "→  ←" — arrows pointing at each other rather than
+ * outward the way they sit on a keyboard. See the .mn-caps note in the CSS.
+ *
+ * A string entry is a cap; the literal '/' is rendered as a separator instead,
+ * so "Shift / Space" reads as either-or rather than as a chord.
+ */
 function keyHint(keys, labelKey) {
   return h('div.mn-key', null,
-    ...keys.map(k => h('span.mn-kbd', null, k)),
+    h('span.mn-caps', null,
+      ...keys.map(k => (k === '/' ? h('span.or', null, '/') : h('span.mn-kbd', null, k)))),
     h('b', null, t(labelKey)));
 }
 
+/**
+ * THE key legend. Built once and reused everywhere a legend appears — the title
+ * screen's strip and the how-to-play overlay — so the two can never drift apart
+ * again (they had already drifted: how-to-play's drift card said "Space", the
+ * strip said "Space" and "Shift" as two separate caps, and neither matched the
+ * other's story about what to press).
+ */
 function controlHints() {
   return h('div.mn-keys', null,
+    // Outward, like the keyboard: ←  →. Not mirrored under RTL.
     keyHint([ARROW.left, ARROW.right], 'menu.key.steer'),
     keyHint([ARROW.up], 'menu.key.gas'),
     // Space AND Shift are both drift (see core/input.js KEYS.drift). This row
     // used to advertise Shift as "שיגור" / "Item" — a control that does not
     // exist in Wave 1, so a child pressing it got nothing and concluded the
-    // game was broken. It is one binding, so it is one hint.
-    keyHint(['Space', 'Shift'], 'menu.key.drift'),
+    // game was broken. It is one binding, so it is one hint — and the slash
+    // says "either of these", where two bare caps said "press both at once".
+    keyHint(['Shift', '/', 'Space'], 'menu.key.drift'),
     keyHint(['Esc'], 'menu.key.pause'));
+}
+
+/* ── corner icons ────────────────────────────────────────────────────────── */
+// Drawn as inline SVG paths, never emoji: an emoji glyph is a different picture
+// on every platform (and a tofu box where the system font has no colour glyph),
+// which is not a thing to bet the only two chrome controls on. Pure geometry,
+// currentColor, so hover/focus recolour them for free.
+function iconSVG(kind) {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  s.setAttribute('viewBox', '0 0 24 24');
+  s.setAttribute('aria-hidden', 'true');
+  s.setAttribute('focusable', 'false');
+  if (kind === 'gear') {
+    // Eight teeth around a ring. The ring is one evenodd path so the hole is a
+    // real hole — nothing has to match the button's background colour.
+    const teeth = [0, 45, 90, 135, 180, 225, 270, 315].map(a =>
+      `<rect x="10.75" y="1.2" width="2.5" height="4.6" rx="1.2" fill="currentColor"
+         transform="rotate(${a} 12 12)"/>`).join('');
+    s.innerHTML = `${teeth}<path fill="currentColor" fill-rule="evenodd" d="M12 4.6a7.4 7.4 0 1 0 0 14.8
+      a7.4 7.4 0 0 0 0-14.8Zm0 4.2a3.2 3.2 0 1 1 0 6.4a3.2 3.2 0 0 1 0-6.4Z"/>`;
+  } else {
+    // Info: a ring, a dot and a stem. Shapes, not the letter "i" in a font —
+    // Hebrew system faces are not asked to render a Latin glyph here.
+    s.innerHTML = `<path fill="currentColor" fill-rule="evenodd" d="M12 1.8a10.2 10.2 0 1 0 0 20.4
+        a10.2 10.2 0 0 0 0-20.4Zm0 2.6a7.6 7.6 0 1 1 0 15.2a7.6 7.6 0 0 1 0-15.2Z"/>
+      <circle cx="12" cy="7.7" r="1.55" fill="currentColor"/>
+      <rect x="10.65" y="10.4" width="2.7" height="7.1" rx="1.35" fill="currentColor"/>`;
+  }
+  return s;
+}
+
+/**
+ * A round corner control. The label is a real text node inside the button, so it
+ * IS the accessible name and it is what hover/focus reveal — one string, one
+ * source of truth, and anything looking the button up by its words still finds
+ * it.
+ */
+function iconButton(kind, label, onclick) {
+  return h('button.mn-icon.on', { type: 'button', onclick, 'aria-label': label },
+    iconSVG(kind), h('span.mn-iconlab', null, label));
 }
 
 function coinSVG(size = 42) {
@@ -1176,17 +1392,26 @@ export function titleScene(engine, opts = {}) {
       const hero = h('div.mn-hero.fade-in', null,
         h('div.mn-burst'), h('div.mn-ribbon'), h('div.mn-ribbon.two'), h('div.mn-swoosh'), logo);
 
-      const startNew = () => { resetChampionship(); api.go('select', { fresh: true }); };
+      // Starting a fresh championship ERASES one, so it always asks first — from
+      // the button, and from Enter (see the key handler below), because the two
+      // must mean the same thing.
+      const startNew = () => confirmNewChampionship(() => api.go('select', { fresh: true }));
 
       const primary = h('button.btn.mn-btn-xl.pop-in', {
         onclick: () => (finished ? startNew() : api.go('select')),
         style: { animationDelay: '.08s' },
       }, t(finished ? 'menu.newChamp' : inProgress ? 'menu.continue' : 'menu.start'));
 
+      // THE CENTRE COLUMN IS ONLY THE THINGS A CHILD CAME HERE TO DO.
+      // It used to carry six buttons — the four below plus Settings and "how was
+      // this game built" — and a stack of six equal pills under a logo reads as a
+      // form, not as a game. The two that are not play moved to the corners as
+      // icons; what is left is the championship, the garage, the rules and the
+      // collection. (Plus, only when the ledger calls for it, the two
+      // championship-state buttons: abandon one in progress, or re-open the
+      // podium of one that is over, which the primary CTA would otherwise erase
+      // out of reach.)
       const secondary = h('div.mn-btn-row.pop-in', { style: { animationDelay: '.14s' } },
-        // Mid-championship: a way to abandon it. Finished: the podium (and with
-        // it the certificate) stays reachable, since the primary CTA has become
-        // "new championship" and would otherwise erase it out of reach.
         inProgress ? h('button.btn.ghost', { onclick: startNew }, t('menu.newChamp')) : null,
         finished ? h('button.btn.ghost', { onclick: () => api.go('podium') }, t('menu.viewPodium')) : null,
         // Free play: the garage with no race attached and no token pressure, so a
@@ -1196,10 +1421,20 @@ export function titleScene(engine, opts = {}) {
         // the same.
         h('button.btn.ghost', { onclick: () => api.go('freeplay', { freePlay: true }) }, t('menu.freePlay')),
         h('button.btn.ghost', { onclick: () => howToPlayOverlay() }, t('menu.howto')),
-        h('button.btn.ghost', { onclick: () => howBuiltOverlay() }, t('learn.built.title')),
-        h('button.btn.ghost', { onclick: () => settingsOverlay({ engine }) }, t('menu.settings')));
+        // האוסף שלי lives in ui/collection.js, which this module deliberately does
+        // NOT import: menus.js has to keep rendering standalone under
+        // tools/preview.mjs, and an import here would drag the whole collection
+        // module (and whatever it imports) into every menu preview — the same
+        // reason racer select asks for its karts through a mounter. It is reached
+        // the way every other screen is reached, by name through the registry;
+        // the lead registers 'collection' in scenes.js.
+        h('button.btn.ghost', { onclick: () => api.go('collection') }, t('menu.collection')));
 
       appendAll(api.stage,
+        h('div.mn-corner.tl', null,
+          iconButton('gear', t('menu.settings'), () => settingsOverlay({ engine }))),
+        h('div.mn-corner.tr', null,
+          iconButton('info', t('learn.built.title'), () => howBuiltOverlay())),
         h('div.mn-center', null,
           hero,
           h('div.mn-tagline.fade-in', { style: { animationDelay: '.1s' } }, t('menu.tagline')),
@@ -1218,7 +1453,9 @@ export function titleScene(engine, opts = {}) {
       // including "start a fresh championship" once the last one is finished.
       if (e.key === 'Enter') {
         e.preventDefault();
-        if (champFinished()) { resetChampionship(); api.go('select', { fresh: true }); }
+        // Same confirmation the button gets: Enter must not be a shortcut past
+        // the one question the child is owed before a championship is erased.
+        if (champFinished()) confirmNewChampionship(() => api.go('select', { fresh: true }));
         else api.go('select');
       } else if (e.key === 'h' || e.key === '?') howToPlayOverlay();
       else if (e.key === 'b') howBuiltOverlay();
@@ -2254,11 +2491,169 @@ function segmented(options, current, onPick) {
   return wrap;
 }
 
+/* ──────────────────────────────────────────────────────── destructive confirms ═ */
+/**
+ * The shared "are you sure" panel. There are exactly two callers and they erase
+ * DIFFERENT THINGS, which is the whole design problem: a child who has learned
+ * that the scary red screen means "start over" must not tap through the other
+ * one out of habit and lose a collection they have been filling for a week.
+ *
+ * So the panel is built to be read in one glance, and the three parts that
+ * differ are the three parts a glance lands on:
+ *   • a SCOPE chip — gold "האליפות בלבד" vs red "הכול";
+ *   • the erase sentence, which names the actual keys in child words;
+ *   • a green KEEP line, present only on the championship one, saying the badges
+ *     and the glossary stay. The reassuring half is what makes them different.
+ * The safe answer is the primary (gold) button and the first focus stop, so
+ * Enter on arrival never destroys anything.
+ *
+ * It registers with the modal registry (see the policy block in ui/style.js).
+ * Settings is reachable from the pause menu mid-race, so this panel can be open
+ * over a frozen race: while it is up, a quiz beacon must not fire a question
+ * underneath it and the audio must duck like it does for every other panel.
+ *
+ * @param {object}   cfg
+ * @param {'part'|'all'} cfg.scope   which chip
+ * @param {string}   cfg.scopeKey    i18n key for the chip text
+ * @param {string}   cfg.askKey      headline
+ * @param {string}   cfg.whatKey     what is erased
+ * @param {string}   [cfg.keepKey]   what survives (championship only)
+ * @param {string}   cfg.yesKey      destructive answer
+ * @param {string}   cfg.noKey       safe answer
+ * @param {Function} cfg.onConfirm   runs after the panel closes
+ */
+function confirmDialog(cfg) {
+  const o = overlayRoot('confirm');
+  let confirmed = false;
+
+  const build = () => {
+    o.dialog.replaceChildren();
+    const tick = () => {
+      const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      s.setAttribute('viewBox', '0 0 24 24');
+      s.setAttribute('aria-hidden', 'true');
+      s.innerHTML = `<path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="3.2"
+        stroke-linecap="round" stroke-linejoin="round"/>`;
+      return s;
+    };
+    appendAll(o.dialog,
+      h('div', null, h('span.mn-cscope.' + cfg.scope, null, t(cfg.scopeKey))),
+      h('h2.display-white', { id: o.titleId }, t(cfg.askKey)),
+      h('p.mn-cwhat', null, t(cfg.whatKey)),
+      cfg.keepKey ? h('div.mn-ckeep', null, tick(), h('span', null, t(cfg.keepKey))) : null,
+      h('div.mn-acts', null,
+        // Safe first, and focused first.
+        h('button.btn', { onclick: () => o.close() }, t(cfg.noKey)),
+        h('button.mn-danger', {
+          onclick: () => { confirmed = true; o.close(); },
+        }, t(cfg.yesKey))));
+    o.focusFirst();
+  };
+
+  build();
+  o.watchLang(build);
+  const off = pushModal('confirm');
+  o.onClose = () => {
+    off();
+    // The action runs AFTER teardown, so a caller that navigates away is not
+    // pulling the DOM out from under an overlay that is still closing itself.
+    if (confirmed) cfg.onConfirm?.();
+  };
+  return o;
+}
+
+/**
+ * "אליפות חדשה" — scope: the championship ledger ONLY. Clears results, the
+ * current race, tokens, parts and bestPrompt (resetChampionship); badges,
+ * glossary and stats are untouched, and the panel says so.
+ * The reset happens on confirm and NOT before: nothing is written while the
+ * question is on screen.
+ */
+export function confirmNewChampionship(onDone) {
+  return confirmDialog({
+    scope: 'part',
+    scopeKey: 'menu.confirm.scopeChamp',
+    askKey: 'menu.newChamp.ask',
+    whatKey: 'menu.newChamp.what',
+    keepKey: 'menu.newChamp.keep',
+    yesKey: 'menu.newChamp.yes',
+    noKey: 'menu.newChamp.no',
+    onConfirm: () => { resetChampionship(); onDone?.(); },
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────── volume ══ */
+
+/**
+ * Push a master volume (0..1) at the mixer and keep the UI honest if it is not
+ * there yet. `audio.setMasterVolume` landed in the same wave as this slider, so
+ * the optional call is not politeness: a build taken between the two lands would
+ * otherwise throw inside an input handler and leave the slider dead. The bus
+ * fallback is audio.js's own long-standing 'audio:volume' → setVolume({master}).
+ */
+function applyVolume(v) {
+  const clamped = Math.max(0, Math.min(1, Number(v)));
+  const val = Number.isFinite(clamped) ? clamped : 0.75;
+  try {
+    if (typeof audio?.setMasterVolume === 'function') audio.setMasterVolume(val);
+    else bus.emit('audio:masterVolume:set', val);
+  } catch (e) { console.error('setMasterVolume failed', e); }
+  return val;
+}
+
+/** Current master volume, preferring what the mixer actually has. */
+function readVolume() {
+  const fromAudio = typeof audio?.getMasterVolume === 'function' ? audio.getMasterVolume() : undefined;
+  const v = Number.isFinite(fromAudio) ? fromAudio : Number(save.read('volume'));
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.75;
+}
+
+/**
+ * The master volume row. A native <input type=range>, so the arrow keys, Home,
+ * End and PageUp/Down all work for free — this is the one control on the screen
+ * a keyboard-only child can be expected to want, and reimplementing it with
+ * <div>s would have thrown all of that away. Big thumb (26px) and a live
+ * percentage readout, because "which end is loud" is not obvious to an
+ * eight-year-old from a bare track.
+ *
+ * Step 5, not 1: a child holding an arrow key wants to hear the change, and 20
+ * stops from silence to full is plenty.
+ */
+function volumeRow() {
+  const label = t('menu.set.volume');
+  const input = h('input', {
+    type: 'range', min: '0', max: '100', step: '5',
+    value: String(Math.round(readVolume() * 100)),
+    'aria-label': label,
+  });
+  const readout = h('span.mn-volval', { 'aria-hidden': 'true' });
+
+  const paint = () => {
+    const pct = Math.round(Number(input.value));
+    readout.textContent = `${pct}%`;
+    input.setAttribute('aria-valuetext', `${pct}%`);
+    // The track fill is a physical gradient, so it is the one thing the mirrored
+    // range does NOT flip for us: start it from the inline start by hand.
+    input.style.setProperty('--fill',
+      `linear-gradient(to ${isRTL() ? 'left' : 'right'},var(--gold-2) ${pct}%,rgba(255,255,255,.10) ${pct}%)`);
+  };
+  input.addEventListener('input', () => {
+    const v = Math.round(Number(input.value)) / 100;
+    save.set({ volume: v });
+    applyVolume(v);
+    paint();
+  });
+  paint();
+
+  return h('div.mn-drow', null,
+    h('span', null, label),
+    h('div.mn-vol', null, input, readout));
+}
+
 /** Reusable settings overlay. settingsOverlay() works standalone; pass {engine} to be safe. */
 export function settingsOverlay(opts = {}) {
   const engine = opts.engine || _engine;
   const o = overlayRoot();
-  let confirming = false;
   let doneMsg = false;
 
   const build = () => {
@@ -2293,17 +2688,36 @@ export function settingsOverlay(opts = {}) {
           bus.emit('audio:mute', v === 'off');
           build();
         })),
+      // Master volume, ALONGSIDE the on/off toggle rather than instead of it:
+      // "off" is the thing a child (or a parent walking past) needs to be able to
+      // hit in one move, and a slider dragged to zero is not that. Persisted, so
+      // the setting survives the next boot.
+      volumeRow(),
       h('div.mn-drow', { style: { borderBlockEnd: 'none' } },
-        h('span', null, t('menu.set.reset')),
+        h('span', null, t('menu.set.progress')),
         doneMsg ? h('span.mn-ok', null, t('menu.set.resetDone'))
-          : confirming
-            ? h('div.row', null,
-              h('button.mn-danger', {
-                onclick: () => { save.reset(); bus.emit('save:reset'); confirming = false; doneMsg = true; build(); },
-              }, t('menu.set.resetYes')),
-              h('button.btn.ghost', { onclick: () => { confirming = false; build(); } }, t('menu.set.resetNo')))
-            : h('button.mn-danger', { onclick: () => { confirming = true; build(); } }, t('menu.set.reset'))),
-      confirming ? h('div.mn-hint', { style: { color: '#ffb3b3' } }, t('menu.set.resetAsk')) : null,
+          // The FULL wipe — the only thing in the game that empties האוסף שלי.
+          // Its confirmation is a real modal that says so, deliberately not the
+          // in-row yes/no this used to be: a two-button row inside a settings
+          // panel had no space to explain the difference between this and the
+          // championship reset, and the two are not the same question.
+          : h('button.mn-danger', {
+            onclick: () => confirmDialog({
+              scope: 'all',
+              scopeKey: 'menu.confirm.scopeAll',
+              askKey: 'menu.set.wipeAsk',
+              whatKey: 'menu.set.wipeWhat',
+              yesKey: 'menu.set.wipeYes',
+              noKey: 'menu.set.wipeNo',
+              onConfirm: () => {
+                save.reset();
+                bus.emit('save:reset');
+                applyVolume(save.read('volume'));   // back to the default, audibly
+                doneMsg = true;
+                build();
+              },
+            }),
+          }, t('menu.set.reset'))),
       h('div.mn-acts', null, h('button.btn', { onclick: () => o.close() }, t('menu.set.close'))));
     o.focusFirst();
   };
@@ -2384,6 +2798,23 @@ export const previewPodium = (engine, opts = {}) => podiumScene(engine, {
 export const previewSettings = (engine, opts = {}) => {
   const s = titleScene(engine, { ...opts, instant: true });
   settingsOverlay({ engine });
+  const dispose = s.dispose;
+  s.dispose = () => { document.querySelectorAll('.mn-ov').forEach(n => n.remove()); dispose(); };
+  return s;
+};
+// The two destructive confirms, side by side in the shot list, because "can a
+// child tell these apart at a glance" is a question only a picture answers.
+export const previewNewChamp = (engine, opts = {}) => {
+  const s = titleScene(engine, { ...opts, instant: true });
+  confirmNewChampionship(() => {});
+  const dispose = s.dispose;
+  s.dispose = () => { document.querySelectorAll('.mn-ov').forEach(n => n.remove()); dispose(); };
+  return s;
+};
+export const previewWipe = (engine, opts = {}) => {
+  const s = titleScene(engine, { ...opts, instant: true });
+  const set = settingsOverlay({ engine });
+  set.dialog.querySelector('.mn-danger')?.click();
   const dispose = s.dispose;
   s.dispose = () => { document.querySelectorAll('.mn-ov').forEach(n => n.remove()); dispose(); };
   return s;

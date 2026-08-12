@@ -109,7 +109,7 @@ landscape flavour.
 1. `oasis` — **נווה הנתונים** (Data Oasis). Desert canyon at golden hour: red/ochre
    sandstone cliffs, palm clusters, turquoise spring pools, sand dunes, striped fabric
    shade canopies over the crowd. Warm, inviting, easy layout.
-2. `circuit` — **עיר המעגלים** (Circuit City). Night neon tech-city, rain-slick
+2. `circuit` — **עיר הנוירונים** (Circuit City). Night neon tech-city, rain-slick
    reflective asphalt, holographic Hebrew billboards, cool blue/magenta. Medium.
 3. `cloud` — **פסגת הענן** (Cloud Peak). Dawn above the clouds, floating stone-and-light
    islands, waterfalls of light, long jumps. Hard.

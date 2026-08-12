@@ -180,22 +180,83 @@ export function injectStyles() {
 //     rather than assuming pause is the only thing that can hold the world.
 // Pinned by tools/modaltest.mjs.
 // ─────────────────────────────────────────────────────────────────────────────
-const _modals = new Set();
+// A COUNT per id, not a bare Set. `pushModal('x')` twice followed by one
+// `popModal('x')` used to release the screen while the second owner still
+// believed it held it — and since Wave 4 that also un-ducks the audio, so the
+// engine comes back up underneath a panel the child is still reading. No call
+// site nests a duplicate id today (quiz.js's two pushes are sequential, not
+// nested), so this is a latent trap rather than a live bug; it is fixed here
+// because "push your id, pop your id" reads as obviously safe and was not.
+// `modalOpen`/`modalHas` still see exactly the set of ids with a count above 0,
+// so every existing caller is unaffected.
+const _modals = new Map();
+
+// ── SUBSCRIPTION (Wave 4) ───────────────────────────────────────────────────
+// Anything that must react to "a panel owns the screen" now subscribes here
+// instead of being wired modal-by-modal. Added for audio ducking: the engine
+// and the world must go silent while ANY modal is up, and doing that at each
+// of the five call sites guarantees the sixth modal someone adds next wave
+// forgets. Subscribers are called with the current boolean whenever the set
+// transitions between empty and non-empty, and once immediately on subscribe.
+//
+// Deliberately still dependency-free: a Set, a Set of callbacks, no imports.
+const _modalSubs = new Set();
+let _lastAnyOpen = false;
+
+function _notifyModalChange() {
+  const any = _modals.size > 0;
+  if (any === _lastAnyOpen) return;
+  _lastAnyOpen = any;
+  for (const fn of _modalSubs) {
+    try { fn(any); } catch (e) { console.error(e); }
+  }
+}
+
+/**
+ * Subscribe to "is any modal open". Called immediately with the current value,
+ * then on every empty↔non-empty transition. Returns an unsubscribe function.
+ */
+export function onModalChange(fn) {
+  if (typeof fn !== 'function') return () => {};
+  _modalSubs.add(fn);
+  try { fn(_modals.size > 0); } catch (e) { console.error(e); }
+  return () => { _modalSubs.delete(fn); };
+}
 
 export function pushModal(id) {
-  _modals.add(id);
-  return () => popModal(id);
+  _modals.set(id, (_modals.get(id) || 0) + 1);
+  _notifyModalChange();
+  let released = false;                 // the returned closer is idempotent, so a
+  return () => {                        // double-call cannot pop somebody else's push
+    if (released) return;
+    released = true;
+    popModal(id);
+  };
 }
-export function popModal(id) { _modals.delete(id); }
+export function popModal(id) {
+  const n = _modals.get(id) || 0;
+  if (n <= 1) _modals.delete(id); else _modals.set(id, n - 1);
+  _notifyModalChange();
+}
 /** @param {string} [except] ignore this id — pass your own to ask about others. */
 export function modalOpen(except) {
-  for (const m of _modals) if (m !== except) return true;
+  for (const m of _modals.keys()) if (m !== except) return true;
   return false;
 }
 /** Is this specific panel open? */
 export function modalHas(id) { return _modals.has(id); }
-/** Teardown safety valve: a disposed scene must not leave a phantom modal. */
-export function clearModals() { _modals.clear(); }
+/**
+ * Teardown safety valve: a disposed scene must not leave a phantom modal.
+ *
+ * Wired to `engine.goto()` since Wave 4 and NOT optional any more. Before the
+ * audio ducking of D31/D34, a leaked modal id was merely untidy — nothing read
+ * the registry once its owner was gone. Now a phantom id means the engine and
+ * the world stay muted for the rest of the session, with no panel on screen to
+ * explain why and no way for the child to recover. A scene change is the one
+ * moment where every panel is provably gone, so it is where the registry is
+ * truthfully empty.
+ */
+export function clearModals() { _modals.clear(); _notifyModalChange(); }
 
 // Small helper used across UI modules: h('div.panel.row', {onclick}, ...children)
 export function h(sel, props, ...kids) {
