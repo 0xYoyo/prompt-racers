@@ -775,3 +775,65 @@ And a process note that explains how a 7 px sign passed review: **every existing
 was a static pose that happened to stand near a board.** There is now a chase-camera
 preview framed on the nearest board ≥20 m away, so "can a child read this?" is answerable
 by looking rather than by trusting a comment.
+
+## D39 — The economy, measured at last, was 3× out; and two percentage traps
+D29 recorded that the token-yield gate was **blind to quiz rewards** — its driver held a
+throttle key down the racing line and had never once triggered a beacon, so
+`tokensFromQuiz` printed 0 on every run in the project's history, and the band passed
+precisely because the term that breaks it was absent. It declined to retune, on the
+grounds that tuning against a gate that cannot see the work is tuning blind. This entry
+is that measurement, finally taken.
+
+**Why it stayed invisible for three waves, mechanically:** the quiz shuffles its options
+per showing, so no automated driver could answer *correctly* — it could only answer at
+random. The fix was to expose `correctSlot`, after which a driver can play the game the
+way an engaged child does. A term is not unmeasured because nobody tried; it is
+unmeasured because nothing in the harness could reach it.
+
+Measured on the built game, tokens banked per race (pickups + quiz + finish), 3 tracks ×
+3 seeds:
+
+| player | before | after | vs the 21-token max ask |
+|---|---|---|---|
+| winning + engaged | **35–53** | **12–18** | margin 3–9 |
+| half-right | 31 | 10–14 | |
+| ignores every box | 16–20 | 8–9 | still ≥ the cheapest complete ask (4) |
+
+D29's "~51 for an engaged child" is confirmed (the gate re-measured 53 against the pre-fix
+build). The garage's central lesson is true again for the child it is aimed at.
+
+Four constants moved, all **at source** per D17, and two of them are the same trap in
+different clothes:
+
+- **`REWARD_TOKENS` 3/4/5 → flat 1/1/1.** The invisible term was also the biggest: 5–9
+  boxes a race at 3–5 each paid 15–35 by itself. Flat rather than tiered because a tier-3
+  double is worth *nothing* to the child (race 3 is followed by the podium, not a garage),
+  so the tier only ever mattered as a way to put a 21-token race back on the board —
+  defended by a routing detail in a different file.
+- **Pickup thinning is now whole authored rows, not a fraction of a list.**
+  `TOKEN_KEEP = 0.42` meant a different economy on every track — the same setting gave 3
+  pickups on race 1 and 9 on race 2 — and it cut *across* the artist's rows, leaving
+  orphan tokens at arbitrary offsets. **This is exactly D33b's percentage-floor trap:** a
+  proportion silently changes meaning when the thing it is a proportion of moves. Two
+  independent instances in one wave is a pattern worth naming.
+- **`FINISH_TOKENS` cut from the top only**, `[6,5,…]` → `[5,4,…]`, last place still 3.
+  The target is the child who wins; GAPS.md's standing instruction is to raise the floor
+  rather than lower it.
+- **`tokenReward` caps 8/12 → 4/7.** D17 capped the rebate "below the spend", but a cap is
+  only below the spend *relative to the economy around it* — at 8 it had quietly become
+  half a race's income, and it was what carried the wallet past 21 at garage visit 2
+  (16 + 8 = 24). A written invariant can rot without anyone editing the line it is written
+  on.
+
+Also fixed while measuring: a **menu backdrop race was overwriting `window.__LAST_RESULT__`**
+(backdrops finish too), so the economy gate could measure the title screen instead of the
+child's race. Same family as the Wave-3 lesson that a silence measurement taken on a screen
+secretly running the game is not measuring silence.
+
+**Residual, stated honestly because it is not closed:** the wallet carries between garage
+visits, so the richest measured race (18) plus the largest guided rebate (4) reaches **22**
+at visit 2 — one over the maximum ask. Closing it at source needs a race paying less than a
+complete ask; the only other lever is capping the garage's view of the wallet, which D17
+rejected because it makes the HUD counter, the results screen and the garage budget
+contradict each other in front of a child. The gate prints it every run. Watch it in
+playtest.

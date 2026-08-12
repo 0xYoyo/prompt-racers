@@ -236,15 +236,19 @@ const DISMISS_AFTER_S = 0.45;
 // than guessed. One token per correct answer also states the economy in a
 // sentence a child can hold: four right answers buy a part.
 //
-// Tier 3 keeps a double prize because it appears only on race 3 — difficulty 3
-// is the only one that draws it — and race 3 is the last race, with no garage
-// visit after it. So the gradient costs the budget nothing and the hardest
-// question in the game still visibly pays more.
+// FLAT across tiers, and that is a deliberate second decision. A tier-3 double
+// prize was measured first: it only appears on race 3, which is followed by the
+// podium rather than a garage, so it looked free. It is not free — it put a
+// 21-token race back on the board (exactly the maximum ask) whose only defence
+// was a routing detail two files away, and the day someone adds a garage visit
+// after race 3 the game's central economic invariant would break silently. One
+// token per correct answer holds on every race, needs no asterisk, and states
+// the rule in a sentence a child can hold: four right answers buy a part.
 //
 // EXPORTED because tests/badges.test.mjs derives its badge thresholds from these
 // numbers and previously scraped them out of this file with a regex, so a rename
 // failed at a parse assertion rather than at the calibration it invalidated.
-export const REWARD_TOKENS = { 1: 1, 2: 1, 3: 2 };
+export const REWARD_TOKENS = { 1: 1, 2: 1, 3: 1 };
 const BOOST = { strength: 1.3, duration: 2.4, impulse: 6 };
 
 /* ═════════════════════════════════════════════════ beacon placement (Wave 3) ══

@@ -121,15 +121,54 @@ export function toVisualParts(parts = {}) {
 // at a parse assertion instead of at the thing that actually broke.
 export const FINISH_TOKENS = [5, 4, 4, 3, 3, 3, 3, 3];
 
-// How many of the track's authored token spots actually get placed. See the
-// block in raceScene() where it is applied for why the thinning is done HERE
-// and not downstream. Exported for the same reason FINISH_TOKENS is.
+// How many pickup CLUSTERS a lap offers, out of the eight trackbuild authors.
+// A cluster is one row of 3–4 tokens laid across the road just before an apex or
+// down a straight; a player driving through it takes the one or two nearest
+// their line. Thinning is done HERE, at the source, and not downstream — see the
+// block in raceScene() where it is applied. Exported so gates can import it.
 //
-// 0.42 → 0.12 in Wave 4. Not a second guess at D17's number: D17 tuned it
-// against a measurement in which the quiz paid nothing, because the gate that
-// took the measurement could not see quiz rewards (D29). With the quiz counted,
-// pickups were still the second-biggest term in a wallet 2× too big.
-export const TOKEN_KEEP = 0.12;
+// This REPLACES D17's `TOKEN_KEEP = 0.42`, a fraction of each track's authored
+// spot list, and the reason is the same one D33 hit with its percentage pace
+// floor: **a fraction of a list means a different thing on every track.** The
+// filter cut across the authored rows rather than between them, so at the same
+// setting the three tracks paid completely differently — measured on the built
+// game with an engaged driver, race 2 banked 9 pickups where race 1 banked 3,
+// and the leftovers were isolated single tokens at whatever lateral offset
+// happened to survive the arithmetic. Keeping whole rows, and counting the rows,
+// makes the density an absolute quantity: one row a lap, every track, and the
+// row still reads as the row the artist laid down.
+//
+// ONE row a lap, because the quiz term the economy gate could not see (D29)
+// turned out to be the biggest one in the wallet: with it counted, a winning
+// engaged child banked 35–54 tokens against a 21-token maximum ask. A row is
+// worth ~2 tokens to a player driving through it, so one row a lap is ~6 tokens
+// a race on every track — measured, and now the same measurement on all three
+// rather than 3 on race 1 against 9 on race 2.
+export const TOKEN_CLUSTERS_PER_LAP = 1;
+
+/**
+ * Keep `keep` evenly-spaced clusters of the authored spots, whole.
+ * The authored list runs cluster by cluster around the lap, so a gap far larger
+ * than a road is a cluster boundary — that is the only structure this needs, and
+ * it does not care how many tokens the artist put in a row.
+ * Exported for the economy gates; pure, so it can be tested without a track.
+ */
+export function thinTokenSpots(all, keep = TOKEN_CLUSTERS_PER_LAP) {
+  if (!all?.length || keep <= 0) return [];
+  const CLUSTER_GAP_M = 25;                 // rows are metres apart, clusters ~100m
+  const clusters = [[all[0]]];
+  for (let i = 1; i < all.length; i++) {
+    const prev = all[i - 1], p = all[i];
+    const d = Math.hypot(p.x - prev.x, p.y - prev.y, p.z - prev.z);
+    if (d > CLUSTER_GAP_M) clusters.push([]);
+    clusters[clusters.length - 1].push(p);
+  }
+  if (clusters.length <= keep) return all.slice();
+  const step = clusters.length / keep;
+  const out = [];
+  for (let k = 0; k < keep; k++) out.push(...clusters[Math.floor(k * step)]);
+  return out;
+}
 
 const COUNTDOWN_S = 3.4;      // 3 · 2 · 1 · GO
 const TOKEN_RADIUS = 2.6;     // generous — kids should not have to thread a needle
@@ -208,8 +247,9 @@ export function raceScene(engine, opts = {}) {
   // the three on-screen numbers honest with each other: fewer tokens visible on track,
   // fewer collected in the HUD, a smaller wallet in the garage. Capping downstream
   // would have made one of them contradict the others in front of a child.
-  // TOKEN_KEEP is now module-level (and exported) — see its comment up top.
-  const spots = (track.tokenSpots || []).filter((_, i) => (i * TOKEN_KEEP) % 1 < TOKEN_KEEP);
+  // The thinning is TOKEN_CLUSTERS_PER_LAP whole rows — see its comment up top
+  // for why counting rows beats keeping a fraction of the authored list.
+  const spots = thinTokenSpots(track.tokenSpots || []);
   const tokens = buildTokens(spots, engine, rng);
   if (tokens) scene.add(tokens.group);
 
@@ -567,7 +607,12 @@ export function raceScene(engine, opts = {}) {
       finishBonus,
       standings,
     };
-    if (typeof window !== 'undefined') window.__LAST_RESULT__ = result;   // read by the economy gate
+    // Read by the economy gate. NOT written by a backdrop race: the title,
+    // results and garage screens each run a live autopilot race behind their UI,
+    // those races finish too, and one of them silently overwrote the player's
+    // own result — the gate then measured a menu backdrop (0 pickups, nobody
+    // answering questions) and called it the child's race.
+    if (!backdrop && typeof window !== 'undefined') window.__LAST_RESULT__ = result;
     setTimeout(() => {
       bus.emit('race:complete', result);
       opts.onComplete?.(result);
