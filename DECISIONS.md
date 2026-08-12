@@ -875,3 +875,47 @@ the right shape for a badge about writing a *good* prompt: it should take a coup
 It is now the hardest badge not marked `hard`, and it would go unreachable before any token
 threshold if the economy is ever thinned again. That is in GAPS.md as the first thing to
 check after a future retune.
+
+## D41 — The smoothing pass, and one plural that was the wrong kind of plural
+Three calls from the Wave-4 smoothing pass are worth keeping, because each is a rule rather
+than a string.
+
+**`אלופי העונה` → `אלוף/ת העונה`.** The builder defended the masculine plural by pointing at
+D27's house voice (`בוחרים`, `סיימתם`). That misreads D27: its plural is a plural **of
+address** — "you [pl.] do X" — adopted so a verb can be gender-neutral. It is not a claim
+that the player is several people, and a badge *name* names the one child holding it. Two
+sibling badges already used the slashed form, and D30 settled the same question for the
+certificate's title picker, whose chips render inches away on the same screen. The rule:
+**gender-neutrality by plural address does not license a masculine plural noun.**
+`menu.podium.champ` had the same defect in the opposite direction — `אלוף האליפות!`,
+masculine *singular*, on the most triumphant screen in the game — and `אלופ/ת האליפות` reads
+badly in display type, so it became **`זכיתם באליפות!`**: plural address, no gendered noun
+at all.
+
+**`המדליות` → `התגים`.** The collection tab, the toast, the certificate and the glossary
+hints all said `תגים`; only the two reset modals said `מדליות`. English said "badges" in
+both, so the split was Hebrew-only and invisible to anyone reading the English build. This
+is D27's vocabulary-split failure exactly, and it appeared because the reset modals and the
+collection screen were written by two agents who could not see each other. Fixed in the two
+strings *and* in the two `tools/hometest.mjs` regexes that pinned the old word — a gate
+pinning the wrong vocabulary is how a split becomes permanent.
+
+**`גללו` was the last imperative in the game's own voice.** A Hebrew plural imperative *is*
+the masculine form, which is the precise thing D27 exists to exclude; it became `גוללים`.
+Same pass: `הידעת?` → `הידעתם?` (the new intro card's chip already said the latter), and the
+two twin confirm modals — designed to be read side by side — were disagreeing on their safe
+button (`משאירים` vs `להשאיר`).
+
+Four signage lines were also rewritten for an eight-year-old rather than for an adult:
+`איכות קודמת` reads as "the *previous* quality" as readily as "quality first"; `שדה לכל נתון`
+uses שדה in its database sense, which to a child is a field with grass in it; `סף הפעלה` is
+the right concept in unreadable jargon; and `משאב לפי מידה` was procurement Hebrew *and* the
+third `…לפי…` board on one track.
+
+Deliberately NOT changed, with reasons, so nobody re-opens them: the first-quiz-box
+explainer stays cyan rather than gold — the documented rule is that a card wears the colour
+of the thing it explains (the token popup is gold because a token is gold; the beacon is
+cyan), and it is one screen seen once. The four home-screen pills stay equal weight —
+giving `האוסף שלי` gold would put a second gold competitor beside `מתחילים אליפות`, which is
+the one thing that screen must not do. And the in-world gantry and roadside Hebrew stays
+Hebrew in the English build: that is world art, not untranslated UI.

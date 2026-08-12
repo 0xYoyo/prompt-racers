@@ -285,7 +285,7 @@ await boot(SEEDED);
   ok('…and it opens a confirmation rather than resetting', (await overlays()) === 1);
   ok('…whose scope chip says "האליפות בלבד"', /האליפות בלבד/.test(txt), txt.slice(0, 40));
   ok('…which names what it erases', /תוצאות|התוצאות/.test(txt) && /טוקנים/.test(txt) && /חלקים/.test(txt));
-  ok('…and says the badges and glossary STAY', /המדליות והמילון/.test(txt) && /נשארים/.test(txt));
+  ok('…and says the badges and glossary STAY', /התגים והמילון/.test(txt) && /נשארים/.test(txt));
   ok('…and does not carry the full-wipe wording', !/אין דרך חזרה/.test(txt));
 
   const during = await readSave();
@@ -330,7 +330,7 @@ await boot(SEEDED);
   ok('…the reset button opens a confirmation of its own', (await overlays()) === 2);
   ok('…whose scope chip says "הכול"', /הכול/.test(txt), txt.slice(0, 30));
   ok('…which says the badges and glossary go too',
-    /מדליות/.test(txt) && /מילון/.test(txt) && /אין דרך חזרה/.test(txt));
+    /תגים/.test(txt) && /מילון/.test(txt) && /אין דרך חזרה/.test(txt));
   ok('…and is NOT the championship wording', !/נשארים/.test(txt));
   const during = await readSave();
   ok('nothing is written while THIS question is on screen',

@@ -134,7 +134,7 @@ registerStrings({
     'quiz.topic.vibe': 'וייב־קודינג',
     // ── the one-time "what is a quiz box" explainer ──────────────────────────
     // Two sentences, and both of them are checked against the code: a correct
-    // answer really does call applyBoost() and pay REWARD_TOKENS (3/4/5 by
+    // answer really does call applyBoost() and pay REWARD_TOKENS (a flat 1 per
     // tier), and a wrong answer really does pay 0 with nothing subtracted
     // anywhere. House voice: impersonal plural, no gendered imperative (D27).
     'quiz.intro.kicker': 'חדש על המסלול',
@@ -230,7 +230,7 @@ const DISMISS_AFTER_S = 0.45;
 
 // Tokens for a correct answer, by question tier.
 //
-// 3/4/5 → 1/1/2 in Wave 4, and this is the single number that mattered most.
+// 3/4/5 → a flat 1 in Wave 4, and this is the single number that mattered most.
 // An engaged child meets 5–9 question boxes in a race (measured on the built
 // game, three tracks × three seeds), so at 3–5 tokens each the quiz alone paid
 // 15–35 against a 21-token maximum garage ask — three times the pickups and the
@@ -1104,7 +1104,7 @@ export function createQuizSystem(engine, opts = {}) {
       correct: good,
       chosen: shown.answered == null ? null : shown.order[shown.answered],
       correctIndex: d.correct,
-      tokens: good ? (REWARD_TOKENS[d.tier] || 3) : 0,
+      tokens: good ? (REWARD_TOKENS[d.tier] ?? 1) : 0,
       timedOut: !!timedOut,
     };
     lastResult = payload;

@@ -197,7 +197,7 @@ registerStrings({
     'menu.results.youPlaced': 'סיימתם במקום ה{p}',
     'menu.results.tokenHint': 'טוקנים הם הדלק של המוסך — קונים איתם שדרוגים',
 
-    'menu.podium.champ': 'אלוף האליפות!',
+    'menu.podium.champ': 'זכיתם באליפות!',
     'menu.podium.done': 'סוף האליפות',
     'menu.podium.congratsWin': 'כל הכבוד, {name}! לקחתם את גביע מרוץ הפרומפטים.',
     'menu.podium.congrats': 'סיימתם את האליפות במקום ה{p}, {name}. מרוץ יפה!',
@@ -233,11 +233,11 @@ registerStrings({
     'menu.confirm.scopeAll': 'הכול',
     'menu.newChamp.ask': 'להתחיל אליפות חדשה?',
     'menu.newChamp.what': 'מוחקים את האליפות הנוכחית: התוצאות, הטוקנים, החלקים שבנינו במוסך, והפרומפט הכי טוב שלכם.',
-    'menu.newChamp.keep': 'המדליות והמילון שבאוסף שלכם נשארים.',
+    'menu.newChamp.keep': 'התגים והמילון שבאוסף שלכם נשארים.',
     'menu.newChamp.yes': 'כן, אליפות חדשה',
     'menu.newChamp.no': 'לא, משאירים',
     'menu.set.wipeAsk': 'למחוק את כל ההתקדמות?',
-    'menu.set.wipeWhat': 'מוחקים הכול: האליפות, הטוקנים והחלקים — וגם המדליות והמילון שבאוסף שלכם. אין דרך חזרה.',
+    'menu.set.wipeWhat': 'מוחקים הכול: האליפות, הטוקנים והחלקים — וגם התגים והמילון שבאוסף שלכם. אין דרך חזרה.',
     'menu.set.wipeYes': 'כן, למחוק הכול',
     // Same words as the twin confirm's 'menu.newChamp.no' — the two modals are
     // deliberately read side by side, and the safe button was an infinitive on
