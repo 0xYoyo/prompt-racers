@@ -22946,7 +22946,9 @@ void main() {
       leadOct: 12,
       colour: "#ffc247"
     },
-    // Circuit City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+    // Neuron City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+    // (The theme id and the track id both stay `circuit`; only the display name
+    // changed this wave — עיר המעגלים → עיר הנוירונים.)
     circuit: {
       bpm: 124,
       root: 45,
@@ -24724,7 +24726,7 @@ void main() {
       "audio.s.music.race": "\u05DE\u05E8\u05D5\u05E5",
       "audio.s.music.garage": "\u05DE\u05D5\u05E1\u05DA",
       "audio.s.music.race.oasis": "\u05DE\u05E8\u05D5\u05E5 \u2014 \u05E0\u05D5\u05D5\u05D4 \u05D4\u05E0\u05EA\u05D5\u05E0\u05D9\u05DD",
-      "audio.s.music.race.circuit": "\u05DE\u05E8\u05D5\u05E5 \u2014 \u05E2\u05D9\u05E8 \u05D4\u05DE\u05E2\u05D2\u05DC\u05D9\u05DD",
+      "audio.s.music.race.circuit": "\u05DE\u05E8\u05D5\u05E5 \u2014 \u05E2\u05D9\u05E8 \u05D4\u05E0\u05D5\u05D9\u05E8\u05D5\u05E0\u05D9\u05DD",
       "audio.s.music.race.cloud": "\u05DE\u05E8\u05D5\u05E5 \u2014 \u05E4\u05E1\u05D2\u05EA \u05D4\u05E2\u05E0\u05DF"
     },
     en: {
@@ -24748,7 +24750,14 @@ void main() {
       "audio.group.garage": "Garage",
       "audio.group.engine": "Engine",
       "audio.group.quiz": "Quiz",
-      "audio.group.music": "Music"
+      "audio.group.music": "Music",
+      // The three race themes by TRACK NAME, not by theme id. Without these the
+      // English preview falls back to the registry label ("Music: race — circuit"),
+      // which leaks the internal id — and the id deliberately stayed `circuit`
+      // when the track was renamed Circuit City → Neuron City this wave.
+      "audio.s.music.race.oasis": "Race \u2014 Data Oasis",
+      "audio.s.music.race.circuit": "Race \u2014 Neuron City",
+      "audio.s.music.race.cloud": "Race \u2014 Cloud Peak"
     }
   });
 
@@ -28047,6 +28056,7 @@ void main() {
         for (const c of scroller.children) ro.observe(c);
         scroller.__cueObserver = ro;
       }
+      st.syncCue = syncCue;
       requestAnimationFrame(() => {
         syncCue();
         requestAnimationFrame(syncCue);
@@ -28152,6 +28162,7 @@ void main() {
         time += dt;
         layoutKart();
         kartApi?.update?.(dt, time);
+        if (st.phase === "reveal") st.syncCue?.();
         if (st.phase === "building") {
           st.buildTimer += dt;
           if (st.buildTimer >= 1.1) finishBuild();

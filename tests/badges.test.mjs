@@ -27,12 +27,15 @@ import * as THREE from 'three';
 import { bus } from '../src/core/bus.js';
 import { save } from '../src/core/save.js';
 import { getTrack, gridSlots } from '../src/track/trackdef.js';
-import { KartBody, DRIFT_TIERS } from '../src/kart/kartphysics.js';
+import { KartBody, autopilotInput } from '../src/kart/kartphysics.js';
 import {
   BADGES, BADGE_IDS, GLOSSARY, GLOSSARY_IDS, ICONS, HARD_BADGE_IDS,
   BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS,
   startBadgeTracker, getStats, evaluate, NEEDED_EVENTS,
 } from '../src/core/badges.js';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const read = p => readFileSync(resolve(root, p), 'utf8');
 
 let failed = 0;
 const ok = (name, cond, detail = '') => {
@@ -90,11 +93,46 @@ const FINISH_TOKENS = (finishMatch?.[1] || '').split(',').map(s => +s.trim()).fi
 const keepMatch = raceSrc.match(/const TOKEN_KEEP = ([\d.]+)/);
 const TOKEN_KEEP = +(keepMatch?.[1] ?? NaN);
 
+// ── which `drift:boost` contract is in the tree RIGHT NOW ───────────────────
+// Wave 4 is replacing it with `{ tier: 1-3 | 0, source: 'drift' | 'external' }`
+// fired off a boostSeq counter. Until that lands, race.js emits
+// `{ tier: player.driftTier }` on a rising edge — and that tier is ALWAYS 0.
+// The gate reads the tree instead of assuming either, so it tells the truth in
+// both states and cannot go on testing a contract that has been replaced.
+const boostEmitSrc = (raceSrc.match(/bus\.emit\('drift:boost',\s*\{[^}]*\}/) || [''])[0];
+const CONTRACT_LANDED = /source/.test(boostEmitSrc);
+
+/** The payload the game really puts on the bus, in whichever state it is in. */
+function DRIFT_BOOST_PAYLOAD(peakTier, source = 'drift') {
+  if (!CONTRACT_LANDED) return { tier: 0 };            // the measured legacy lie
+  return { tier: source === 'drift' ? peakTier : 0, source };
+}
+const LEGACY_PAYLOAD_TIER = CONTRACT_LANDED;
+
 const QUESTIONS = [10, 8, 7];
 const TIER_OF_RACE = [1, 2, 3];
 const PICKUPS_PER_RACE = 15;
 const BOOSTS_PER_RACE = 12;
 const TOPICS = ['whatai', 'prompt', 'tokens', 'iterate', 'mistakes', 'vibe'];
+
+/* ── the drift event sequence, as the REAL game produces it ────────────────── */
+// This helper exists because the first version of this gate hand-emitted
+// `drift:boost { tier: 3 }` — a payload NO code path in the game produces, since
+// kartphysics `_releaseDrift()` zeroes `driftTier` before race.js reads it. The
+// gate was green and the badge was unearnable. Section 6 drives the real
+// KartBody and asserts that THIS helper emits the same sequence the real
+// physics does, so the fast simulated stream can never drift from reality again.
+function emitDriftRelease(peakTier) {
+  bus.emit('drift:start', { tier: 0 });
+  for (let t = 1; t <= peakTier; t++) bus.emit('drift:tier', { tier: t });
+  bus.emit('drift:end', { tier: LEGACY_PAYLOAD_TIER ? peakTier : 0 });
+  bus.emit('drift:boost', DRIFT_BOOST_PAYLOAD(peakTier));
+}
+
+/** An external boost — what quiz.js's applyBoost() on a correct answer raises. */
+function emitExternalBoost() {
+  bus.emit('drift:boost', DRIFT_BOOST_PAYLOAD(0, 'external'));
+}
 
 /**
  * Drive one race over the bus, exactly as race.js and quiz.js would.
@@ -112,15 +150,11 @@ function playRace(o = {}) {
       { id: `q${i}-${q}`, tier, topic, correct, tokens: correct ? REWARD[tier] : 0 });
   }
   for (let p = 0; p < (o.pickups ?? PICKUPS_PER_RACE); p++) bus.emit('token:pickup', { tokens: p + 1, combo: 1 });
-  for (let d = 0; d < (o.boosts ?? BOOSTS_PER_RACE); d++) {
-    const dtier = d % 4 === 0 ? 3 : (d % 2 === 0 ? 2 : 1);
-    bus.emit('drift:tier', { tier: dtier });
-    bus.emit('drift:boost', { tier: dtier });
-  }
+  for (let d = 0; d < (o.boosts ?? BOOSTS_PER_RACE); d++) emitDriftRelease(d % 4 === 0 ? 3 : (d % 2 === 0 ? 2 : 1));
   const place = o.place ?? 2;
   bus.emit('race:complete', {
     track: `t${i}`, trackIndex: i, place, timeMs: 120000,
-    tokensFinishBonus: [6, 5, 5, 4, 4, 3, 3, 3][place - 1] ?? 3,
+    tokensFinishBonus: FINISH_TOKENS[place - 1] ?? FINISH_TOKENS[FINISH_TOKENS.length - 1],
   });
 }
 
@@ -218,11 +252,19 @@ console.log('\n  2. a synthetic bus stream unlocks exactly the expected badges')
   bus.emit('token:pickup', {});
   ok('the first token unlocks the טוקן term', terms().includes('token'));
 
-  bus.emit('drift:boost', { tier: 1 });
+  emitDriftRelease(1);
   ok('a released drift earns drift-first', badges().includes('drift-first'));
   ok('…but NOT drift-top (tier 1 is not the top tier)', !badges().includes('drift-top'));
-  bus.emit('drift:boost', { tier: 3 });
+  emitDriftRelease(3);
   ok('a top-tier release earns drift-top', badges().includes('drift-top'));
+  // The bug that made drift-first a lie: quiz.js calls body.applyBoost() on
+  // every correct answer, which raises the same `boosting` edge race.js emits
+  // drift:boost from. ~17 of a championship's 25 "drifts" were quiz answers.
+  const driftsBefore = getStats().driftBoosts;
+  emitExternalBoost();
+  emitExternalBoost();
+  ok('a quiz turbo does NOT count as a drift', getStats().driftBoosts === driftsBefore,
+    `${driftsBefore} -> ${getStats().driftBoosts}`);
 
   const before = [...badges()];
   const correctBefore = getStats().quizCorrect;
@@ -361,6 +403,25 @@ console.log('\n  3. the collection survives a new championship, dies with a full
 console.log('\n  4. calibration — 2–3 championships earns most badges, hard ones hold');
 
 {
+  // The calibration is only as honest as the economy it is measured against, so
+  // the constants are read from their owners and the read is asserted. A rename
+  // or a rebalance fails HERE, loudly, instead of silently shifting every token
+  // threshold under a green tick (D29).
+  ok('quiz REWARD_TOKENS read from src/race/quiz.js',
+    REWARD[1] > 0 && REWARD[2] > 0 && REWARD[3] > 0, JSON.stringify(REWARD));
+  ok('FINISH_TOKENS read from src/race/race.js',
+    FINISH_TOKENS.length === 8, `[${FINISH_TOKENS.join(', ')}]`);
+  ok('PINNED: TOKEN_KEEP still 0.42 — if this moves, RE-MEASURE PICKUPS_PER_RACE',
+    TOKEN_KEEP === 0.42, `TOKEN_KEEP=${TOKEN_KEEP}, assuming ${PICKUPS_PER_RACE} pickups/race`);
+
+  const perChamp = QUESTIONS.reduce((a, n, i) => a + n * 0.7 * REWARD[TIER_OF_RACE[i]], 0)
+    + PICKUPS_PER_RACE * 3 + FINISH_TOKENS[1] * 3;
+  console.log(`     \x1b[2mderived from the live economy: ~${Math.round(perChamp)} tokens per championship`
+    + ` (quiz ${REWARD[1]}/${REWARD[2]}/${REWARD[3]}, ${PICKUPS_PER_RACE} pickups/race,`
+    + ` ${FINISH_TOKENS[1]} finish bonus) — thresholds 50 / 200\x1b[0m`);
+}
+
+{
   // A plausible child: answers ~70% of questions right, finishes 2nd/3rd/2nd,
   // 1st once in the third season, drifts a fair amount, writes middling prompts
   // in the garage (one per race — the game's own flow) and never opens expert
@@ -418,9 +479,187 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
   ok('…and the 40-answer badge is nowhere near', !oneRace.includes('quiz-40'));
 }
 
-/* ═══════════════════════════════ 5. the seam the lead must close ══════════ */
+/* ═══════════════════════════ 5. the toast is not a modal ═════════════════ */
+// The three properties the brief cares most about were correct by inspection and
+// pinned by nothing, so a refactor that quietly moved the toast into the modal
+// registry would have passed every other check in this file. Asserted against
+// the source text because the toast has no headless behaviour to drive — the
+// same technique tests/economy.test.mjs uses on the economy constants.
 
-console.log('\n  5. events this tracker needs that the game does not emit yet');
+console.log('\n  5. the unlock toast cannot own the screen');
+
+{
+  const src = read('src/core/badges.js');
+  ok('the tracker never imports the modal registry', !/from '\.\.\/ui\/style\.js'/.test(src));
+  ok('…and never calls pushModal / popModal', !/\b(pushModal|popModal|modalOpen|clearModals)\s*\(/.test(src));
+  ok('the toast installs no key handler (Escape stays with pause)',
+    !/addEventListener\(\s*['"]key(down|up|press)['"]/.test(src));
+  ok('…and steals no focus', !/\.focus\s*\(/.test(src));
+  // engine.goto() calls ui.replaceChildren(), so a toast on engine.ui would be
+  // erased mid-flight by the very scene change a race-end badge coincides with.
+  // Comments are stripped first: this file DISCUSSES engine.ui at length in its
+  // header, and an assertion that cannot tell prose from code asserts nothing.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n')
+    .map(l => l.replace(/(^|[^:'"`])\/\/.*$/, '$1')).join('\n');
+  ok('the toast host is document.body, not engine.ui',
+    /document\.body\.appendChild\(host\)/.test(code) && !/\bengine\b/.test(code),
+    'engine.goto() wipes engine.ui, which would erase a race-end toast mid-flight');
+  ok('the toast layer is pointer-events:none',
+    /#pr-badge-toasts\{[^}]*pointer-events:none/.test(src)
+    && /#pr-badge-toasts \*\{pointer-events:none\}/.test(src));
+  ok('the toast is aria-live polite, never a dialog',
+    /aria-live'?,?\s*'polite'/.test(src) && !/role['"],\s*['"]dialog/.test(src));
+  ok('the toast removes itself (no permanent DOM in a race)',
+    /setTimeout\(kill,/.test(src) && /animationName === 'prToastOut'/.test(src));
+}
+
+/* ══════════════ 6. the drift contract, driven through the REAL physics ═════ */
+// THE ASSERTION THIS FILE EXISTS FOR.
+//
+// Round 1 of this gate hand-emitted `drift:boost { tier: 3 }` and passed. No code
+// path in the game produces that payload: `_releaseDrift()` calls applyBoost()
+// and zeroes `driftTier` in the same call, so race.js — which reads the body
+// AFTER update() — has emitted `tier: 0` on every drift in the game's history.
+// `drift-top` was unearnable and the gate said it was fine. A gate that
+// exercises a payload no player can produce is worth less than no gate.
+//
+// So this section drives a real KartBody around a real track with the game's own
+// autopilot, mirrors race.js's emit block over the observed body state, and
+// feeds the result to the real tracker.
+
+console.log('\n  6. drift badges, driven through the real KartBody');
+
+{
+  // The mirror below reproduces race.js's emit block. If race.js changes shape,
+  // the mirror is a lie — so pin the lines being mirrored.
+  ok('race.js still emits drift:start/end from player.drifting',
+    /bus\.emit\(player\.drifting \? 'drift:start' : 'drift:end'/.test(raceSrc));
+  ok('race.js still emits drift:tier on a rising tier',
+    /player\.driftTier > prev\.tier && player\.driftTier > 0\) bus\.emit\('drift:tier'/.test(raceSrc));
+  ok('race.js still emits drift:boost when boosting turns on',
+    /if \(player\.boosting\) \{ bus\.emit\('drift:boost'/.test(raceSrc));
+
+  /** race.js lines 566-580, applied to a body this test drives itself. */
+  function raceEmitMirror() {
+    const prev = { drifting: false, tier: 0, boosting: false };
+    let peak = 0;
+    return body => {
+      if (body.drifting !== prev.drifting) {
+        prev.drifting = body.drifting;
+        bus.emit(body.drifting ? 'drift:start' : 'drift:end', { tier: body.driftTier });
+      }
+      if (body.driftTier !== prev.tier) {
+        if (body.driftTier > prev.tier && body.driftTier > 0) {
+          bus.emit('drift:tier', { tier: body.driftTier });
+          peak = Math.max(peak, body.driftTier);
+        }
+        prev.tier = body.driftTier;
+      }
+      if (body.boosting !== prev.boosting) {
+        prev.boosting = body.boosting;
+        if (body.boosting) {
+          const payload = CONTRACT_LANDED
+            ? { tier: peak, source: 'drift' }        // what the new contract will carry
+            : { tier: body.driftTier };              // what the tree carries today
+          observed.push({ ...payload, peakSeen: peak });
+          bus.emit('drift:boost', payload);
+          peak = 0;
+        }
+      }
+    };
+  }
+
+  const observed = [];
+  const { def, spline } = getTrack('cloud');
+  const slots = gridSlots(spline, def, 8);
+  // A quick, well-handling kart on the track with the longest corners, held in
+  // drift by the game's own autopilot. These are the settings under which the
+  // top tier is actually reachable — measured, in .tmp/w4-driftprobe.mjs.
+  const body = new KartBody({
+    spline, stats: { speed: 5, accel: 5, handling: 5, weight: 1 },
+    startSlot: slots[0], surface: def.surface,
+  });
+
+  freshTracker();
+  const emit = raceEmitMirror();
+  for (let i = 0; i < 60 * 90; i++) {
+    body.update(1 / 60, autopilotInput(body, spline, { drift: true, look: 22 }));
+    emit(body);
+  }
+
+  const topSeen = observed.filter(o => o.peakSeen >= 3).length;
+  const s = getStats();
+  console.log(`     \x1b[2m90s of real autopilot on "cloud": ${observed.length} boosts, `
+    + `${topSeen} of them released at the top tier · tracker counted `
+    + `${s.driftBoosts} drifts / ${s.driftBoostsTop} top\x1b[0m`);
+
+  ok('the real physics produce drift releases at all', observed.length >= 20, `${observed.length}`);
+  ok('the real physics reach the TOP drift tier', topSeen >= 1,
+    `${topSeen} — if this is 0 the badge is unearnable by a real player`);
+
+  // The measurement that round 1 got wrong. Kept as a characterisation: it
+  // FAILS the day the physics/race contract is fixed, which forces whoever
+  // fixes it back here to update the expectation rather than leaving a gate
+  // that silently tests the old world.
+  if (!CONTRACT_LANDED) {
+    ok('CHARACTERISATION: every legacy drift:boost carries tier 0',
+      observed.every(o => o.tier === 0),
+      'kartphysics zeroes driftTier inside _releaseDrift — fix this and this line flips');
+  } else {
+    ok('the landed contract carries the real released tier',
+      observed.filter(o => o.peakSeen >= 1).every(o => o.tier === o.peakSeen));
+    ok('…and marks the source', observed.every(o => o.source === 'drift'));
+  }
+
+  // THE POINT: whatever the payload says, the tracker must count real drifts.
+  ok('the tracker counts every real drift release', s.driftBoosts === observed.length,
+    `tracker ${s.driftBoosts} vs real ${observed.length}`);
+  ok('the tracker counts the top-tier releases', s.driftBoostsTop === topSeen,
+    `tracker ${s.driftBoostsTop} vs real ${topSeen}`);
+  ok('drift-first is earned by REAL driving', badges().includes('drift-first'));
+  ok('drift-25 is earned by REAL driving', badges().includes('drift-25'), `${s.driftBoosts} releases`);
+  ok('drift-top is earned by REAL driving (round 1 shipped this unearnable)',
+    badges().includes('drift-top'));
+
+  // …and a quiz turbo, applied through the same real body, must pay nothing.
+  const quizBoostSrc = quizSrc.match(/const BOOST = \{([^}]*)\}/);
+  ok('quiz.js BOOST constants are readable', !!quizBoostSrc);
+  const BOOST = {};
+  for (const [, k, v] of (quizBoostSrc?.[1] || '').matchAll(/(\w+):\s*([\d.]+)/g)) BOOST[k] = +v;
+
+  freshTracker();
+  const emit2 = raceEmitMirror();
+  // Straight-line driving, no drift input, with a correct-answer turbo every
+  // 3 seconds — exactly what a child who answers well and never drifts sees.
+  const b2 = new KartBody({
+    spline, stats: { speed: 3, accel: 3, handling: 3, weight: 3 },
+    startSlot: slots[1], surface: def.surface,
+  });
+  let turbos = 0;
+  for (let i = 0; i < 60 * 60; i++) {
+    if (i % 180 === 0) { b2.applyBoost(BOOST.strength, BOOST.duration, BOOST.impulse); turbos++; }
+    b2.update(1 / 60, autopilotInput(b2, spline, { drift: false, look: 22 }));
+    emit2(b2);
+  }
+  ok('a child who only answers quizzes triggers real boosts', turbos >= 5, `${turbos} turbos`);
+  ok('…and earns NO drift badges from them',
+    !badges().includes('drift-first') && getStats().driftBoosts === 0,
+    `driftBoosts ${getStats().driftBoosts}`);
+
+  // Finally: the fast helper used by the calibration must emit what reality does.
+  freshTracker();
+  emitDriftRelease(3);
+  ok('emitDriftRelease() mirrors the real sequence (1 drift, 1 top)',
+    getStats().driftBoosts === 1 && getStats().driftBoostsTop === 1);
+  freshTracker();
+  emitExternalBoost();
+  ok('emitExternalBoost() mirrors a quiz turbo (counts nothing)',
+    getStats().driftBoosts === 0);
+}
+
+/* ═══════════════════════════════ 7. the seam the lead must close ══════════ */
+
+console.log('\n  7. events this tracker needs that the game does not emit yet');
 
 {
   ok('NEEDED_EVENTS is declared for the lead', NEEDED_EVENTS.length >= 1);

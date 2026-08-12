@@ -58,3 +58,26 @@
 
   6. no repeats across the championship
   [32m✓[0m a race draws distinct questions                            mistakes-private-info, iterate-stop-point, tokens-not-words…
+  [32m✓[0m the same seed draws the same questions without askedIds    
+  [32m✓[0m askedIds are never drawn again                             no overlap
+  [32m✓[0m …and the pool is still healthy                             28 questions eligible
+
+  7. the one-time explainers
+  [32m✓[0m the token explainer fires during a race                    1 explainer samples
+  [32m✓[0m quiz panels were actually sampled                          4 quiz samples
+  [32m✓[0m …and the explainer never lands on a live quiz              4 quiz samples, 0 stacked
+
+  8. Escape belongs to the topmost panel
+  [32m✓[0m the token explainer is up                                  
+  [32m✓[0m Escape closes the token explainer                          
+  [32m✓[0m …and does not open the pause menu over it                  
+  [32m✓[0m the race is running again afterwards                       +1.00s
+
+  9. pointer parity: click and tap take the keyboard's path
+  [32m✓[0m all three runs actually reached a question                 question mistakes-private-info
+  [32m✓[0m each run really used the input it claims                   key / pointer / pointer
+  [32m✓[0m a real mouse click answers, and lands on the same state as 1/2/3 identical
+  [32m✓[0m a real finger tap does too                                 identical
+  [31m✗[0m …including the freeze and the reward                       scale 0, tokens 3
+  [32m✓[0m the continue BUTTON resumes exactly as Space does          resume / resume / resume
+  [32m✓[0m answer targets are big enough for a child's finger         643×47px

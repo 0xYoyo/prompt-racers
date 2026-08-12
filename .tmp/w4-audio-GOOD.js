@@ -152,7 +152,9 @@ const THEMES = {
     lead: 'pluck', bassWave: 'triangle', padWave: 'triangle',
     perc: 'hand', padCut: 1500, leadOct: 12, colour: '#ffc247',
   },
-  // Circuit City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+  // Neuron City — neon synthwave: saw bass, resonant lead, four-on-the-floor.
+  // (The theme id and the track id both stay `circuit`; only the display name
+  // changed this wave — עיר המעגלים → עיר הנוירונים.)
   circuit: {
     bpm: 124, root: 45 /* A2 */, scale: SCALES.minor, seed: 55019,
     prog: [{ r: 0, c: [0, 3, 7, 10] }, { r: 7, c: [0, 3, 7, 10] },
@@ -1800,7 +1802,7 @@ registerStrings({
     'audio.s.music.race': 'מרוץ',
     'audio.s.music.garage': 'מוסך',
     'audio.s.music.race.oasis': 'מרוץ — נווה הנתונים',
-    'audio.s.music.race.circuit': 'מרוץ — עיר המעגלים',
+    'audio.s.music.race.circuit': 'מרוץ — עיר הנוירונים',
     'audio.s.music.race.cloud': 'מרוץ — פסגת הענן',
   },
   en: {
@@ -1825,6 +1827,13 @@ registerStrings({
     'audio.group.engine': 'Engine',
     'audio.group.quiz': 'Quiz',
     'audio.group.music': 'Music',
+    // The three race themes by TRACK NAME, not by theme id. Without these the
+    // English preview falls back to the registry label ("Music: race — circuit"),
+    // which leaks the internal id — and the id deliberately stayed `circuit`
+    // when the track was renamed Circuit City → Neuron City this wave.
+    'audio.s.music.race.oasis': 'Race — Data Oasis',
+    'audio.s.music.race.circuit': 'Race — Neuron City',
+    'audio.s.music.race.cloud': 'Race — Cloud Peak',
   },
 });
 

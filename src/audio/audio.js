@@ -1827,6 +1827,13 @@ registerStrings({
     'audio.group.engine': 'Engine',
     'audio.group.quiz': 'Quiz',
     'audio.group.music': 'Music',
+    // The three race themes by TRACK NAME, not by theme id. Without these the
+    // English preview falls back to the registry label ("Music: race — circuit"),
+    // which leaks the internal id — and the id deliberately stayed `circuit`
+    // when the track was renamed Circuit City → Neuron City this wave.
+    'audio.s.music.race.oasis': 'Race — Data Oasis',
+    'audio.s.music.race.circuit': 'Race — Neuron City',
+    'audio.s.music.race.cloud': 'Race — Cloud Peak',
   },
 });
 

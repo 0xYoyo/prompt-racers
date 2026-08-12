@@ -116,18 +116,22 @@ function tr(key, lang, vars) {
   return s;
 }
 
-// Per-theme accent. The card is the first thing a child sees each race, so it
-// should already smell of the track behind it: warm gold for the oasis, neon
-// cyan for the city, cool sky for the peak. Gold stays the house accent (the
-// button, the rule) — this only tints the glow and the chip.
-const ACCENT = {
-  oasis: '#ffc247',
-  circuit: '#6fe8ff',
-  cloud: '#a9d8ff',
-};
+// Per-theme accent, carried as a CLASS and defined in CSS below — never as an
+// inline custom property. `h()` applies inline styles with Object.assign, and
+// Object.assign CANNOT set a CSS custom property on a CSSStyleDeclaration (only
+// setProperty can): the first version of this file passed `--ic-accent` inline
+// and every track silently fell back to gold. Caught in the screenshots.
+const ACCENT_CLASS = { oasis: 'ic-oasis', circuit: 'ic-circuit', cloud: 'ic-cloud' };
 
 const INTRO_CSS = `
 .ic-root{position:absolute;inset:0;z-index:40}
+/* The card is the first thing a child sees each race, so it should already
+   smell of the track behind it: warm gold at the oasis, neon cyan in the city,
+   cool sky at the peak. Gold stays the house accent — the button, the rule and
+   the chip never change — so this only tints the halo and the kicker. */
+.ic-oasis{--ic-accent:#ffc247}
+.ic-circuit{--ic-accent:#6fe8ff}
+.ic-cloud{--ic-accent:#a9d8ff}
 .ic-scrim{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
   padding:clamp(16px,4vh,40px);font-family:var(--font);
   background:radial-gradient(120% 90% at 50% 42%,rgba(10,8,22,.52),rgba(4,4,12,.88));
@@ -215,7 +219,7 @@ export function introContent(def, lang = null) {
     // Falls back to the oasis line rather than printing a raw key if a track is
     // ever added without one — a missing fact must not look like a bug on screen.
     fact: tr(factKey, lang) === factKey ? tr('intro.fact.oasis', lang) : tr(factKey, lang),
-    accent: ACCENT[def?.theme] || ACCENT.oasis,
+    accentClass: ACCENT_CLASS[def?.theme] || ACCENT_CLASS.oasis,
     go: tr('intro.go', lang),
     hint: tr('intro.hint', lang),
   };
@@ -230,11 +234,25 @@ export function introContent(def, lang = null) {
  *   • backdrop  — the title screen's live race behind the menu. Chrome-less by
  *                 definition (race.js's `if (!backdrop)` discipline).
  *   • autopilot — flowtest, modaltest, the AI measurement harness.
- *   • headless  — `engine._headless` is set by core/harness.js's `__DEBUG.goto`
- *                 and by nothing else, so EVERY tool (shot.mjs, layoutcheck,
- *                 flowtest's non-autopilot drivers, modaltest's "real driver"
- *                 case) opts out without any of them having to know this file
- *                 exists. This is the only reason race.js reads that flag.
+ *   • headless  — `engine._headless`, set by core/harness.js's `__DEBUG.goto`
+ *                 and by nothing else. Covers shot.mjs, layoutcheck, modaltest
+ *                 and flowtest's P0 gates, all of which jump straight into a
+ *                 race, without any of them having to know this file exists.
+ *   • webdriver — an automated browser is driving the page. This one is not
+ *                 belt-and-braces, it is load-bearing: flowtest's PLAYABILITY
+ *                 slice reaches a race by CLICKING the real menu buttons, so it
+ *                 never calls `__DEBUG.goto` and `_headless` is still false —
+ *                 the card blocked it at "countdown completed, kart is moving,
+ *                 phase=intro" and took thirteen downstream checks with it. A
+ *                 tool that drives the real UI is indistinguishable from a child
+ *                 by every in-game signal there is; `navigator.webdriver` is the
+ *                 one honest difference, and it is not `window.__DEBUG` (which
+ *                 D3 forbids game code from reading).
+ *                 FOR THE LEAD: the durable version of this is one line in
+ *                 flowtest's playability slice — either `introCard:false` on the
+ *                 race it starts, or a Space press after "reaches race scene",
+ *                 which would also let that slice gate the card on the real
+ *                 player path. When that lands, this clause can be deleted.
  * An explicit `opts.introCard` boolean overrides all of it in both directions,
  * which is how the gate drives the real built game through the real card.
  */
@@ -242,6 +260,7 @@ export function introCardEnabled(opts = {}, engine = null) {
   if (typeof opts.introCard === 'boolean') return opts.introCard;
   if (opts.backdrop || opts.autopilot) return false;
   if (engine && engine._headless) return false;
+  if (typeof navigator !== 'undefined' && navigator.webdriver) return false;
   return true;
 }
 
@@ -294,7 +313,7 @@ export function createIntroCard(o = {}) {
   // scrim swallows taps instead of letting them fall through to the world. Here
   // a stray tap SHOULD dismiss — the brief asks for click/tap to skip, and this
   // is a welcome rather than a teaching card that must be acknowledged.
-  const card = h('div.ic-card.pop-in', { style: { '--ic-accent': c.accent } },
+  const card = h(`div.ic-card.pop-in.${c.accentClass}`, null,
     h('div.ic-glow'),
     h('div.ic-kicker', null, c.kicker),
     h('div.ic-welcome', null, c.welcome),
@@ -366,7 +385,7 @@ export function previewAll(engine) {
   });
   for (const def of TRACKS) {
     const c = introContent(def);
-    row.appendChild(h('div.ic-card', { style: { '--ic-accent': c.accent, inlineSize: '33%' } },
+    row.appendChild(h(`div.ic-card.${c.accentClass}`, { style: { inlineSize: '33%' } },
       h('div.ic-glow'),
       h('div.ic-kicker', null, c.kicker),
       h('div.ic-welcome', null, c.welcome),

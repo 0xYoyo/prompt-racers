@@ -98,6 +98,20 @@ const COL_CSS = `
    one still shrinks and scrolls. */
 .col-scroll{position:relative;inline-size:min(1120px,100%);min-block-size:0;flex:0 1 auto;
   overflow-y:auto;overflow-x:hidden;padding:2px 4px 8px;scrollbar-width:thin}
+/* At 1024x640 the last row is cut with only a thin scrollbar to say so, which a
+   child does not read as "there is more". `.more` is toggled by JS when the
+   content actually overflows: the bottom edge fades out, which reads as
+   continuation rather than as an end. Nothing is hidden when everything fits. */
+.col-scroll.more{
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 34px),transparent);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 34px),transparent)}
+.col-more{position:absolute;inset-block-end:2px;inset-inline:0;margin-inline:auto;
+  inline-size:fit-content;display:none;align-items:center;gap:6px;pointer-events:none;
+  font-size:11.5px;font-weight:900;color:var(--gold-1);opacity:.9;
+  text-shadow:0 2px 8px rgba(0,0,0,.9)}
+.col-root.has-more .col-more{display:flex}
+.col-more i{display:block;inline-size:8px;block-size:8px;border-inline-end:2px solid var(--gold-2);
+  border-block-end:2px solid var(--gold-2);rotate:45deg;margin-block-end:3px}
 .col-grid{display:grid;gap:clamp(8px,1.2vw,12px);
   grid-template-columns:repeat(auto-fill,minmax(224px,1fr))}
 .col-grid.wide{grid-template-columns:repeat(auto-fill,minmax(272px,1fr))}
@@ -273,6 +287,10 @@ export function collectionScene(engine, opts = {}) {
 
     const empty = tab === 'badges' ? gotB === 0 : gotG === 0;
 
+    const scroll = h('div.col-scroll', null,
+      empty ? h('p.col-empty', null, t(tab === 'badges' ? 'col.empty.badges' : 'col.empty.glossary')) : null,
+      list);
+
     root.append(
       h('div.col-scrim', { 'aria-hidden': 'true' }),
       h('div.col-head', null,
@@ -281,10 +299,26 @@ export function collectionScene(engine, opts = {}) {
       h('div.col-tabs', { role: 'tablist' },
         tabBtn('badges', 'col.tab.badges', gotB, BADGES.length),
         tabBtn('glossary', 'col.tab.glossary', gotG, GLOSSARY.length)),
-      h('div.col-scroll', null,
-        empty ? h('p.col-empty', null, t(tab === 'badges' ? 'col.empty.badges' : 'col.empty.glossary')) : null,
-        list));
+      scroll,
+      h('div.col-more', { 'aria-hidden': 'true' }, h('i'), t('col.more')));
+
+    markOverflow(scroll);
   };
+
+  // "There is more below" — only when there actually is. Measured rather than
+  // assumed, because at 1440x900 everything fits and a permanent fade would be
+  // lying about content that is not there.
+  function markOverflow(scroll) {
+    const check = () => {
+      const more = scroll.scrollHeight - scroll.clientHeight > 8
+        && scroll.scrollTop + scroll.clientHeight < scroll.scrollHeight - 8;
+      root.classList.toggle('has-more', more);
+      scroll.classList.toggle('more', more);
+    };
+    scroll.addEventListener('scroll', check, { passive: true });
+    check();
+    requestAnimationFrame(check);   // after layout settles
+  }
 
   build();
 

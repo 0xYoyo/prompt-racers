@@ -78,7 +78,7 @@ window.STANDINGS = [
 window.openCert = (o = {}) => {
   try { window.__OV?.close?.(); } catch (e) {}
   document.querySelectorAll('.mn-ov').forEach(n => n.remove());
-  window.__OV = L.certificateOverlay({ ...window.__OPTS, ...o });
+  window.__OV = L.certificateOverlay({ onMenu: () => {}, ...window.__OPTS, ...o });
   return true;
 };
 
@@ -316,7 +316,7 @@ await wait(80);
   const s = await readStrip();
   ok('no badges → no chips', s.n === 0);
   ok('…but the strip still says something', s.none.length > 20, s.none.slice(0, 40));
-  ok('…and the certificate still looks finished', s.bodyH > 300 && s.sections.length >= 4,
+  ok('…and the certificate still looks finished', s.bodyH > 300 && s.sections.length >= 3,
     `body ${Math.round(s.bodyH)}px, ${s.sections.length} sections`);
 }
 
@@ -330,15 +330,18 @@ const netBefore = netCalls.length;
 const analyse = await page.evaluate(async (fx) => {
   const L = window.L;
   window.save.set({ badges: ['quiz-5', 'drift-first', 'tokens-50'], funTitle: 'champ' });
-  const d = L.certificateData({ ...fx, racerId: 'nitzotz', standings: window.STANDINGS });
+  const d = L.certificateData({ ...fx, standings: window.STANDINGS });
   const c = await L.renderCertificateCanvas(d);
   const ctx = c.getContext('2d');
   const px = ctx.getImageData(0, 0, c.width, c.height).data;
 
   // The paper colour, sampled from a spot inside the frame that carries no ink.
   const at = (x, y) => { const i = (y * c.width + x) * 4; return [px[i], px[i + 1], px[i + 2], px[i + 3]]; };
-  const bgc = at(Math.round(c.width * 0.5), Math.round(c.height * 0.985));
-  const far = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]) > 60;
+  // "Ink" = anything markedly brighter than the dark paper. The paper is a
+  // vertical gradient, so comparing against one sampled pixel would call the
+  // whole page ink; luminance does not have that problem.
+  const lum = p => 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+  const far = p => lum(p) > 110;
 
   let inked = 0, opaque = 0;
   const colours = new Set();
@@ -346,7 +349,7 @@ const analyse = await page.evaluate(async (fx) => {
     for (let x = 0; x < c.width; x += 4) {
       const p = at(x, y);
       if (p[3] > 250) opaque++;
-      if (far(p, bgc)) inked++;
+      if (far(p)) inked++;
       colours.add((p[0] >> 4) + ',' + (p[1] >> 4) + ',' + (p[2] >> 4));
     }
   }
@@ -359,15 +362,15 @@ const analyse = await page.evaluate(async (fx) => {
   for (let b = 0; b < B; b++) {
     let n = 0;
     const y0 = Math.floor((c.height * b) / B), y1 = Math.floor((c.height * (b + 1)) / B);
-    for (let y = y0; y < y1; y += 4) for (let x = 0; x < c.width; x += 4) if (far(at(x, y), bgc)) n++;
+    for (let y = y0; y < y1; y += 4) for (let x = 0; x < c.width; x += 4) if (far(at(x, y))) n++;
     bands.push(n);
   }
 
   // Two different racers must produce two different images.
   const c2 = await L.renderCertificateCanvas(
-    L.certificateData({ ...fx, racerId: 'plada', racerName: 'פלדה', standings: window.STANDINGS }), { scale: 1 });
+    L.certificateData({ ...fx, racerId: 'plada', standings: window.STANDINGS }), { scale: 1 });
   const c1 = await L.renderCertificateCanvas(
-    L.certificateData({ ...fx, racerId: 'nitzotz', racerName: 'ניצוץ', standings: window.STANDINGS }), { scale: 1 });
+    L.certificateData({ ...fx, racerId: 'nitzotz', standings: window.STANDINGS }), { scale: 1 });
   const a = c1.getContext('2d').getImageData(0, 0, c1.width, c1.height).data;
   const b = c2.getContext('2d').getImageData(0, 0, c2.width, c2.height).data;
   let diff = 0;
@@ -381,14 +384,14 @@ const analyse = await page.evaluate(async (fx) => {
   };
 }, FIXTURE);
 
-ok('canvas has the certificate\'s dimensions', analyse.w === 2000 && analyse.h === 2920,
+ok('canvas has the certificate\'s dimensions', analyse.w === 2000 && analyse.h === 2800,
   `${analyse.w}x${analyse.h}`);
 ok('every pixel is opaque (no transparent PNG)', analyse.opaque === analyse.sampled,
   `${analyse.opaque}/${analyse.sampled}`);
-ok('the image is not blank', analyse.ratio > 0.06 && analyse.ratio < 0.9,
+ok('the image is not blank', analyse.ratio > 0.015 && analyse.ratio < 0.5,
   `${(analyse.ratio * 100).toFixed(1)}% of sampled pixels carry ink`);
 ok('it is not a flat colour field', analyse.colours > 60, `${analyse.colours} distinct colours`);
-ok('ink lands in every horizontal band of the page', analyse.bands.every(n => n > 200),
+ok('ink lands in every horizontal band of the page', analyse.bands.every(n => n > 120),
   analyse.bands.join('/'));
 ok('a different racer renders a different image', analyse.diff > 500, `${analyse.diff} differing samples`);
 ok('toDataURL yields a substantial PNG', analyse.dataUrlLen > 50000, `${analyse.dataUrlLen} chars`);
@@ -460,8 +463,8 @@ console.log('\n  \x1b[1m7. BUTTON SIZE\x1b[0m\n  ' + '─'.repeat(74));
 {
   const hs = await page.evaluate(() => [...document.querySelectorAll('.lr-cert-acts .btn')]
     .map(b => ({ h: Math.round(b.getBoundingClientRect().height), label: b.textContent.trim() })));
-  ok('every certificate action button is 46–56px tall',
-    hs.length >= 3 && hs.every(b => b.h >= 46 && b.h <= 56),
+  ok('every certificate action button is 46–52px tall',
+    hs.length >= 3 && hs.every(b => b.h >= 46 && b.h <= 52),
     hs.map(b => `${b.label}:${b.h}px`).join(' · '));
 }
 

@@ -2003,6 +2003,7 @@ export function garageScene(engine, opts = {}) {
       // it watches; a bare local would be the only reference to it.
       scroller.__cueObserver = ro;
     }
+    st.syncCue = syncCue;      // …and once a frame, from update(), see below
     // Two frames: the first lands after layout, the second after the kart
     // canvases have taken their final size. Answering one frame early is how a
     // "there is more below" cue ends up describing the wrong height.
@@ -2102,6 +2103,12 @@ export function garageScene(engine, opts = {}) {
       time += dt;
       layoutKart();
       kartApi?.update?.(dt, time);
+      // The "more below" cue is re-derived every frame while the debrief is
+      // open. Events alone were not enough: the scroll event and the
+      // ResizeObserver both fire on the browser's schedule, and a cue that is
+      // one beat stale is a cue that lies about whether the child has read the
+      // end of the lesson. Two cheap reads on a static modal.
+      if (st.phase === 'reveal') st.syncCue?.();
       if (st.phase === 'building') {
         st.buildTimer += dt;
         if (st.buildTimer >= 1.1) finishBuild();

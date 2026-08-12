@@ -93,6 +93,8 @@ ok('introCard:true forces it on (this is how the gate drives it)',
 ok('an explicit false beats a live engine', introCardEnabled({ introCard: false, autopilot: false }, live) === false);
 
 /* ── A5. the registry ids, read out of the source ─────────────────────────── */
+ok('the opt-out also covers a tool that drives the real UI by clicking',
+  /navigator\.webdriver/.test(code));
 ok("the card registers with the modal registry as 'intro'", /pushModal\(['"]intro['"]\)/.test(code));
 ok('…and releases it on skip', /release\(\)/.test(code) && /const release = pushModal/.test(code));
 ok('e.repeat is guarded in the key handler', /e\.repeat/.test(code));
@@ -139,6 +141,10 @@ const openRace = (o) => evalp(x => window.__DEBUG.goto('race', x), o);
 // is exactly the child-holding-drift case this card has to survive.
 
 /* ── B1. every track, every language: the card, before the countdown ─────── */
+// Each track's halo colour. A per-track accent that silently falls back to the
+// same gold on all three is invisible in review and was the actual first bug
+// here (an inline CSS custom property, which Object.assign cannot set).
+const accents = [];
 for (let i = 0; i < TRACKS.length; i++) {
   for (const lang of ['he', 'en']) {
     await openRace({ track: i, lang, introCard: true });
@@ -152,8 +158,14 @@ for (let i = 0; i < TRACKS.length; i++) {
     ok(`[${TRACKS[i].id}/${lang}] a הידעת line is on screen`,
       (await evalp(() => document.querySelector('.ic-fact')?.textContent.trim().length || 0)) > 40);
     ok(`[${TRACKS[i].id}/${lang}] phase is 'intro', before the countdown`, st.phase === 'intro', st.phase);
+    if (lang === 'he') {
+      accents.push(await evalp(() => getComputedStyle(document.querySelector('.ic-card'))
+        .getPropertyValue('--ic-accent').trim()));
+    }
   }
 }
+ok('each track has its own accent colour, resolved by CSS',
+  new Set(accents).size === TRACKS.length && accents.every(a => /^#|rgb/.test(a)), accents.join(' '));
 
 // The same track in both languages must print DIFFERENT copy — an English
 // toggle that leaves the Hebrew fact on screen is the classic half-translation.
@@ -256,6 +268,13 @@ ok('…and races', (await snap()).raceTime > 0);
 
 await openRace({ track: 0, autopilot: true, introCard: undefined });
 ok('an autopilot race shows no card', await count('.ic-card') === 0);
+
+// The click-driven half of flowtest never calls __DEBUG.goto, so `_headless` is
+// false there and `navigator.webdriver` is the only thing keeping the card out
+// of its way. If a future puppeteer stops setting it, THIS is the line that says
+// so — otherwise flowtest would simply hang on a card it cannot see.
+ok('the automated-browser signal the opt-out rests on is present',
+  await evalp(() => navigator.webdriver === true));
 
 // The title screen's backdrop is a real raceScene with backdrop:true.
 await evalp(() => window.__DEBUG.goto('menu', {}));

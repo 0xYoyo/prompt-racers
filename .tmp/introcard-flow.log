@@ -50,3 +50,80 @@
   [32m✓[0m C#5 new championship lands on racer select, not a black screen [2mscene=select, 8 cards, 5 buttons[0m
   [32m✓[0m C#5 championshipsDone counted exactly once     [2mchampionshipsDone=1[0m
   [32m✓[0m C#6 finished championship offers no "continue" [2mהגדרות | איך נבנה המשחק הזה? | אליפות חדשה[0m
+  [32m✓[0m C#7 no save → the sandbox garage               [2m{"garage":true,"sandbox":true,"real":false,"podium":false}[0m
+  [32m✓[0m C#7 championship in progress → the REAL garage [2m{"garage":true,"sandbox":false,"real":true,"podium":false}[0m
+  [32m✓[0m C#7 championship finished → still the podium   [2m{"garage":false,"sandbox":false,"real":false,"podium":true}[0m
+  ──────────────────────────────────────────────────────────────────────
+  CROSS-MODULE SEAMS (crowd clock · quiz memory)
+  [32m✓[0m S#1 crowd instances found in the built race    [2m2 instanced meshes[0m
+  [32m✓[0m S#1 no spectator launches across the countdown→raceTime clock reset [2mduring 1.322m · after reset 1.322m · settled 1.322m · non-finite 0[0m
+  [32m✓[0m S#2 race.js exposes its quiz to the gates      [2m11 ids drawn, pool 75[0m
+  [32m✓[0m S#2 questions already asked this championship are excluded from the next race [2mexcluded 5 · redrew 11 · leaked none[0m
+  [32m✓[0m S#2 excluding shrinks the eligible pool (the ledger really reaches the quiz) [2mpool 75 → 70, expected 70[0m
+  ──────────────────────────────────────────────────────────────────────
+  NAVIGATION WALK — every screen has a visible way home
+  [32m✓[0m N: main menu — scene is "menu"                 [2mscene=menu[0m
+  [32m✓[0m N: main menu — renders a real screen (text + controls) [2m167 chars, 9 buttons[0m
+  [32m✓[0m N: main menu — Escape stays home and focuses the primary CTA [2m{"scene":"menu","overlays":0,"focus":"מתחילים אליפות"}[0m
+  [32m✓[0m N: racer select — scene is "select"            [2mscene=select[0m
+  [32m✓[0m N: racer select — visible route home, inside the viewport, not covered [2m"→למסך הבית" 1228,15,123,37 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: racer select — Escape goes home             [2m{"scene":"menu","overlays":0,"focus":"מתחילים אליפות"}[0m
+  [32m✓[0m N: racer select — the back button lands on the main menu [2mmenu[0m
+  [32m✓[0m N: how-to-play — opens from the main menu      [2moverlays=1[0m
+  [32m✓[0m N: how-to-play — visible route home, inside the viewport, not covered [2m"הבנתי, קדימה!" 603,549,159,46 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: how-to-play — its own button closes it back to the menu [2moverlays=0, scene=menu[0m
+  [32m✓[0m N: how-to-play — Escape closes the overlay and leaves the menu standing [2m{"scene":"menu","overlays":0,"focus":"מתחילים אליפות"}[0m
+  [32m✓[0m N: about (how it was built) — opens from the main menu [2moverlays=1[0m
+  [32m✓[0m N: about (how it was built) — visible route home, inside the viewport, not covered [2m"מגניב, קדימה" 602,562,162,49 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: about (how it was built) — its own button closes it back to the menu [2moverlays=0, scene=menu[0m
+  [32m✓[0m N: about (how it was built) — Escape closes the overlay and leaves the menu standing [2m{"scene":"menu","overlays":0,"focus":"מתחילים אליפות"}[0m
+  [32m✓[0m N: settings — opens from the main menu         [2moverlays=1[0m
+  [32m✓[0m N: settings — visible route home, inside the viewport, not covered [2m"סגירה" 628,547,110,49 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: settings — its own button closes it back to the menu [2moverlays=0, scene=menu[0m
+  [32m✓[0m N: settings — Escape closes the overlay and leaves the menu standing [2m{"scene":"menu","overlays":0,"focus":"מתחילים אליפות"}[0m
+  [32m✓[0m N: free play — scene is "freeplay"             [2mscene=freeplay[0m
+  [32m✓[0m N: free play — renders a real screen (text + controls) [2m927 chars, 12 buttons[0m
+  [32m✓[0m N: free play — visible route home, inside the viewport, not covered [2m"→למסך הבית" 1225,18,123,37 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: free play — Escape goes home                [2m{"scene":"menu","overlays":0,"focus":"מתחילים אליפות"}[0m
+  [32m✓[0m N: free play — the back button lands on the main menu [2mmenu[0m
+  [32m✓[0m N: garage (championship) — scene is "garage"   [2mscene=garage[0m
+  [32m✓[0m N: garage (championship) — renders a real screen (text + controls) [2m924 chars, 12 buttons[0m
+  [32m✓[0m N: garage (championship) — is the real garage, not the sandbox 
+  [32m✓[0m N: garage (championship) — visible route home, inside the viewport, not covered [2m"→למסך הבית" 1225,18,123,37 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: garage (championship) — the back button lands on the main menu [2mmenu[0m
+  [32m✓[0m N: garage (championship) — Escape goes home    [2m{"scene":"menu","overlays":0,"focus":"ממשיכים באליפות"}[0m
+  [32m✓[0m N: race — scene is "race"                      [2mscene=race[0m
+  [32m✓[0m N: race — visible route home, inside the viewport, not covered [2m"❚❚הפסקה" 1250,84,98,37 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: race — the visible control opens the pause menu and freezes the race [2m{"overlays":1,"isPause":true,"frozen":true}[0m
+  [32m✓[0m N: pause — visible route home, inside the viewport, not covered [2m"יציאה למסך הבית" 504,465,358,51 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: pause — quitting asks before it throws the race away [2m{"scene":"race","confirming":true}[0m
+  [32m✓[0m N: pause — Escape in the confirmation steps back to the pause menu, not out of the race [2m{"scene":"race","overlays":1,"focus":"ממשיכים"} pauseMenu=true[0m
+  [32m✓[0m N: race — Escape opens/closes the pause menu and never quits by itself [2m{"scene":"race","overlays":0,"focus":"❚❚הפסקה"} running=true[0m
+  [32m✓[0m N: pause — confirmed quit lands on the main menu with the engine running [2m{"scene":"menu","paused":false,"overlays":0}[0m
+  [32m✓[0m N: main menu after quitting a race — renders a real screen (text + controls) [2m167 chars, 9 buttons[0m
+  [31m✗[0m N: race with a quiz on screen — the quiz is really open [2mquiz=false[0m
+  [32m✓[0m N: race under an open quiz — visible route home, inside the viewport, not covered [2m"❚❚הפסקה" 1250,84,98,37 inView=true tapTarget=true hitTest=true[0m
+  [31m✗[0m N: race under an open quiz — pause opens on top, the quiz stays put (D20) [2m{"pause":true,"quizStillThere":false}[0m
+  [32m✓[0m N: results — scene is "results"                [2mscene=results[0m
+  [32m✓[0m N: results — renders a real screen (text + controls) [2m410 chars, 5 buttons[0m
+  [32m✓[0m N: results — visible route home, inside the viewport, not covered [2m"למסך הבית" 523,686,149,51 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: results — Escape goes home                  [2m{"scene":"menu","overlays":0,"focus":"מתחילים אליפות"}[0m
+  [32m✓[0m N: results — the menu button lands on the main menu [2mmenu[0m
+  [32m✓[0m N: podium — scene is "podium"                  [2mscene=podium[0m
+  [32m✓[0m N: podium — renders a real screen (text + controls) [2m241 chars, 6 buttons[0m
+  [32m✓[0m N: podium — visible route home, inside the viewport, not covered [2m"למסך הבית" 574,685,149,52 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: certificate — opens from the podium         [2moverlays=1[0m
+  [32m✓[0m N: certificate — visible route home, inside the viewport, not covered [2m"למסך הבית" 475,640,131,49 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: certificate — also has a visible way back to the podium [2m"סגירה" hitTest=true[0m
+  [32m✓[0m N: certificate — Escape returns to the podium it was opened from [2m{"scene":"podium","overlays":0,"focus":"123סוף האליפותסיימתם את "}[0m
+  [32m✓[0m N: podium — Escape goes home                   [2m{"scene":"menu","overlays":0,"focus":"אליפות חדשה"}[0m
+  [32m✓[0m N: certificate — its home button lands on the main menu, overlay gone [2m{"scene":"menu","overlays":0}[0m
+  [32m✓[0m N: main menu after the certificate — renders a real screen (text + controls) [2m178 chars, 10 buttons[0m
+  [32m✓[0m N: garage after the final race — reroutes to the podium, not a black screen [2mscene=garage {"podium":true,"garage":false}[0m
+  [32m✓[0m N: garage → podium — visible route home, inside the viewport, not covered [2m"למסך הבית" 574,685,149,52 inView=true tapTarget=true hitTest=true[0m
+  [32m✓[0m N: no page errors during the whole navigation walk 
+  [32m✓[0m no page errors during whole flow               
+  ──────────────────────────────────────────────────────────────────────
+  100/114 passed
+
+flow exit=1

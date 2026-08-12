@@ -449,3 +449,93 @@ Track 2 became **עיר הנוירונים** / Neuron City in the same pass. The
 sky and prop sets, so renaming either would have been a save migration in exchange for
 nothing. Display names flow from `trackdef` through `scenes.js:trackNameOf`, so every
 screen followed for free.
+
+## D33 — The game was too easy because the AI's pace fraction, not its rubber band
+A passive player won 15 races out of 15. The instinct is to blame the catch-up band; the
+measurement blamed the opponents' raw speed. The AI's own flat-out lap was already slower
+than a clean driver (oasis 48.08s against a 46.95s reference), and `paceForDifficulty`
+then took a further 3.5–18.5% off that. So the field was never racing the child in the
+first place, and no band setting could have hidden it.
+
+Three changes, each measured rather than reasoned:
+
+1. **`AI_PACE` is flat 1.00**, with a new per-track calibration `TRACK_PACE`
+   (`oasis 1.03 / circuit 0.96 / cloud 1.00`) because ref-autopilot versus AI flat-out
+   differs by **+2.4% / −5.2% / +4.7%** on the three geometries. One global pace lands the
+   field in a different place on every track, which is why the old ladder read as three
+   unrelated difficulties.
+2. **The opponents buy garage parts too** (`aiPartTier` → 0/1/2 for races 1/2/3), through
+   the same `PART_TIERS` the child buys. This is the only lever that raises the AI's top
+   speed — above about 1.05, pace buys nothing on oasis/cloud except time spent off-track —
+   and it makes the garage legible: the rivals visibly upgrade alongside you.
+3. **`BAND_CATCH` (+7.5%) is untouched.** The ceiling is the fairness argument and widening
+   it to manufacture tension would be the punishing kind of difficulty this audience must
+   not meet.
+
+**The never-lapped fix, and why it was subtle.** GAPS.md carried "at 70% pace the player is
+lapped on race 3" for two waves. The floor was written as **−17% of base pace**, and a
+percentage floor silently changes meaning when base pace moves: it was 0.677 effective on
+race 1 but 0.801 on race 3. It is now an absolute effective-pace floor
+(`BAND_FLOOR_PACE = 0.62`), identical on all three races. Measured in the built game, race
+3 at 70% pace went from **1.04 laps down (lapped, alone) to 0.19**.
+
+**Measured finish distribution**, seeds 3/11/19/41/57, real `KartBody` player on the game's
+own `autopilotInput`, 7 real opponents, collisions on, 3 laps, race N → track N:
+
+| pace | race 1 before → after | race 2 before → after | race 3 before → after |
+|---|---|---|---|
+| 100% | 1st ×5 → **mean 2.2** | 1st ×5 → **mean 3.8** | 1st ×5 → **mean 3.8** |
+| 85% | 4th → 6th | 2nd–5th → 6th | 6th–8th → 6th–7th |
+| 70% | 8th, 0.24 back → 0.17 | 8th, 0.25 → 0.15 | 8th, **0.61 → 0.20** |
+
+Garage axis at 100% pace (mean place): stock 2.2 / 3.8 / 3.8 → tier 2 **1.0 / 1.6 / 1.0**.
+So an upgrade is worth +1.2 places on race 1 and +2.2–2.8 on races 2–3 — which is the
+brief's "winning races 2–3 requires a decent prompt", now true rather than asserted.
+
+**One target-feel claim was measured false and is recorded as such:** a correct quiz
+answer's turbo was worth ~0.15s, about **0.1 of a place**, so "a couple of quiz boosts wins
+race 1" was not true at any engagement level (0/2/4/6 correct → 2.2/2.2/2.0/1.8). The quiz's
+real contribution was always its tokens feeding the garage. The boost itself was retuned in
+`quiz.js` rather than left to be contradicted by item 11's explainer, which tells the child
+in as many words that grabbing boxes is worth it.
+
+The gate's old budget was slack enough that the **broken** code passed it (0.72 laps), so it
+was tightened to 0.35 and made two-sided: clean no-engagement driving must not win race 1
+*and* must not be punished either, and a tier-2 kart must win it back so a future rebalance
+cannot make the championship unwinnable.
+
+## D34 — The engine was distorted, not merely loud; and music ducks rather than stops
+"Too loud and grating" turned out to be three faults, and fixing only the level would have
+left it grating at a lower volume. The voice was two detuned saws plus a square through
+`driveCurve(6)` — a tanh with slope ~6 near zero, which is a ~15 dB distortion stage rather
+than the warm saturator its name suggests. And it barely moved: idle and flat-out measured
+**0.98 dB apart**, so the thing a child heard was a constant buzz in the literal sense.
+
+Now: two detuned triangles as the body, one quiet saw purely as harmonic food for the
+filter, the square reduced to a strain-only trace, `driveCurve(2)`, and the lowpass ceiling
+pulled 12 kHz → 5.2 kHz with Q 2.2–6.5 → 1.2–3.2, so the rpm-tracked resonant sweep carries
+the revving instead of the distortion. Output now scales with rpm as well as load.
+
+| rpm | before (rms/peak) | after |
+|---|---|---|
+| 0.15 | 0.0801 / 0.1135 | 0.0074 / 0.0190 |
+| 1.00 | 0.1012 / 0.1349 | 0.0256 / 0.0629 |
+| full ÷ idle | **×1.26** | **×3.47** |
+
+**Ducking is one subscription, not a list.** `onModalChange` (D31) is subscribed once and
+never inspects ids, so a modal invented next wave ducks with no wiring. That property is
+what the gate actually tests: replacing the subscription with a hardcoded
+`['quiz','pause','token','meet']` still passes the `pause` probe and fails only the
+unknown-id probe — the decisive proof, since a list is exactly what a future maintainer
+would write.
+
+Two judgement calls inside it. **Music ducks to −9.4 dB rather than stopping**: a quiz card
+is a beat inside the race, not a scene change, and cutting the music dead reads as "the game
+broke", with the restart on close more jarring than the duck. **The SFX bus stays fully
+open**, because the quiz stingers and the buttons the child is about to press live there.
+Engine and world go to true zero over 120 ms via `linearRampToValueAtTime` —
+`setTargetAtTime` only approaches zero asymptotically, which would have left an audible
+floor. A new `worldBus` separates world ambience from SFX so the world can be silenced
+without muting the buttons, and all three group buses are now written from one place
+(`_applyBuses`), because the old code applied duck and volume from two places and a volume
+change mid-duck silently undid the duck.

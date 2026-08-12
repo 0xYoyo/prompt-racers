@@ -307,7 +307,7 @@ const LEARN_CSS = `
    one screen that is meant to feel like an award, and visibly lighter than the
    podium buttons it sits over. 17px type over 15px block padding measures ~48px,
    mid-range for the game. Pinned in tests/certificate.test.mjs. */
-.lr-cert-acts .btn{font-size:17px;padding:15px 26px;min-height:48px;
+.lr-cert-acts .btn{font-size:17px;padding:13px 26px;min-height:48px;
   display:inline-flex;align-items:center;gap:8px}
 .lr-cert-acts .btn svg{width:17px;height:17px;flex:none}
 
@@ -527,7 +527,12 @@ export function certificateData(opts = {}) {
 
   const racerId = opts.racerId || me?.racerId || save.read('racerId') || ROSTER[0].id;
   const racer = racerById(racerId);
-  const name = opts.racerName || me?.name || (he ? racer.nameHe : racer.nameEn);
+  // The name must belong to the character being drawn. The standings row is only
+  // allowed to name it when it IS that row's racer — otherwise a caller passing
+  // an explicit racerId would print one racer's name over another's portrait.
+  const name = opts.racerName
+    || (me && me.racerId === racerId ? me.name : null)
+    || (he ? racer.nameHe : racer.nameEn);
 
   const champN = Number(opts.championship) || (Number(save.read('championshipsDone')) || 0) + 1;
   const races = Number.isFinite(opts.races)
@@ -709,7 +714,7 @@ function portraitEl(racer, cssPx = 104) {
 // line, direction set to the line's own base direction, numbers left as plain
 // digits (never the num() isolates, which are invisible controls on a canvas).
 
-const CERT_W = 1000, CERT_H = 1460;
+const CERT_W = 1000, CERT_H = 1400;
 const GOLD = '#ffc247', GOLD_HI = '#ffe9a8', INK = '#f7f2e6', DIM = 'rgba(247,242,230,.72)';
 
 function setFont(ctx, weight, size, rtl) {
@@ -836,8 +841,8 @@ function paintCertificate(ctx, d, icons) {
   ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
   // the same engine-turned weave the on-screen panel draws in CSS gradients
   ctx.save();
-  ctx.globalAlpha = 0.05; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
-  for (let i = -H; i < W + H; i += 14) {
+  ctx.globalAlpha = 0.04; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+  for (let i = -H; i < W + H; i += 26) {
     ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + H, H); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i - H, H); ctx.stroke();
   }
@@ -907,6 +912,9 @@ function paintCertificate(ctx, d, icons) {
   chips.push(d.he ? `${d.races} מרוצים` : `${d.races} races`);
   if (d.points != null) chips.push(d.he ? `${d.points} נק׳` : `${d.points} pts`);
   if (d.place != null) chips.push(d.he ? `מקום ${d.place}` : `#${d.place}`);
+  // Canvas has no flexbox to mirror the row for us: under RTL the chips are laid
+  // down in reverse so they READ right-to-left, same as the DOM version.
+  if (d.he) chips.reverse();
   setFont(ctx, '800', 19, rtl);
   const widths = chips.map(c => ctx.measureText(c).width + 36);
   const gap = 12;
@@ -951,6 +959,7 @@ function paintCertificate(ctx, d, icons) {
   y += 30;
   if (d.badges.length) {
     const shown = d.badges.slice(0, 6);
+    if (d.he) shown.reverse();          // right-to-left, like the DOM strip
     const cols = Math.min(shown.length, 6);
     const cellW = Math.min(150, (W - 200) / cols);
     let bx = cx - (cols * cellW) / 2 + cellW / 2;
@@ -992,13 +1001,15 @@ function paintCertificate(ctx, d, icons) {
   }
 
   /* ---- what was learned ---- */
-  y = Math.max(y + 14, H - 250);
+  y = Math.max(y + 14, H - 300);
   sectionRule(ctx, t('learn.cert.learned'), y, rtl);
   y += 40;
   const learned = [1, 2, 3, 4].map(i => [t(`learn.cert.l${i}.t`), t(`learn.cert.l${i}.b`)]);
   const colW = (W - 200) / 2;
   learned.forEach(([tt, bb], i) => {
-    const lx = cx + (i % 2 === 0 ? -colW / 2 : colW / 2);
+    // First item on the reading side: right under RTL, left under LTR.
+    const first = d.he ? 1 : -1;
+    const lx = cx + (i % 2 === 0 ? first : -first) * colW / 2;
     const ly = y + Math.floor(i / 2) * 52;
     setFont(ctx, '900', 20, rtl);
     ctx.fillStyle = GOLD;
@@ -1010,19 +1021,20 @@ function paintCertificate(ctx, d, icons) {
   y += 118;
 
   /* ---- seal + footer ---- */
-  drawSeal(ctx, 150, H - 118, 52);
+  const sealY = H - 126;
+  drawSeal(ctx, d.he ? W - 150 : 150, sealY, 50);
   setFont(ctx, '900', 24, rtl);
   ctx.fillStyle = GOLD;
   ctx.textAlign = d.he ? 'right' : 'left';
-  const sx = d.he ? W - 230 : 230;
-  ctx.fillText(t('learn.cert.seal'), sx, H - 132);
+  const sx = d.he ? W - 226 : 226;
+  ctx.fillText(t('learn.cert.seal'), sx, sealY - 14);
   setFont(ctx, '800', 18, rtl);
   ctx.fillStyle = '#e0b978';
-  ctx.fillText(t('learn.cert.champ', { n: d.champN }), sx, H - 104);
+  ctx.fillText(t('learn.cert.champ', { n: d.champN }), sx, sealY + 16);
   ctx.textAlign = 'center';
   setFont(ctx, '700', 16, rtl);
   ctx.fillStyle = 'rgba(247,242,230,.55)';
-  ctx.fillText(t('learn.cert.foot'), cx, H - 62);
+  ctx.fillText(t('learn.cert.foot'), cx, H - 70);
 }
 
 /**
@@ -1315,8 +1327,11 @@ export const previewCertificate = (engine, opts = {}) => {
 /** The empty case: no badges, no best prompt, no title. Must still look finished. */
 export const previewCertificateBare = (engine, opts = {}) => {
   save.set({ badges: [], funTitle: null });
+  const standings = SAMPLE_STANDINGS.map((s, i) => ({
+    ...s, racerId: i === 0 ? 'plada' : s.racerId, name: i === 0 ? 'פלדה' : s.name,
+  }));
   return overBackdrop(engine, opts, () => certificateOverlay({
-    standings: SAMPLE_STANDINGS, racerId: 'plada',
+    standings, racerId: 'plada',
     championship: 1, races: 3, funTitle: null,
     onMenu: () => {},
     ...opts,

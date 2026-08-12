@@ -811,8 +811,12 @@ console.log('\n  GARAGE — THE REVEAL FITS, OR SCROLLS AND SAYS SO\n  ' + '─'
           // Measured against the LIVE numbers, not against "we asked it to
           // scroll": the debrief's kart canvases can still be settling, and a cue
           // that is on while content genuinely remains is telling the truth.
+          // (Only asked of a scroll a child would actually perform: at a
+          // hairline overflow of a dozen pixels, clientHeight/scrollHeight
+          // rounding makes "am I at the bottom" a coin toss for the gate and for
+          // the page alike, and the answer does not matter — nothing is hidden.)
           const leftAtEnd = end.sh - end.ch - end.scrollTop;
-          if (end.hasMore && leftAtEnd <= 8) issues.push(`still says "more below" at the bottom (top ${Math.round(end.scrollTop)} of ${end.sh - end.ch}, opacity ${end.cueOpacity})`);
+          if (end.hasMore && leftAtEnd <= 8 && overflow > 24) issues.push(`still says "more below" at the bottom (top ${Math.round(end.scrollTop)} of ${end.sh - end.ch}, opacity ${end.cueOpacity})`);
         }
         ok(`${tag}: the explanation is readable (${mode})`, issues.length === 0, issues.join(' · ') || `${m.sh}px of content in ${m.ch}px`);
         ok(`${tag}: the explanation is keyboard-reachable, before the buttons`,
