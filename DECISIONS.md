@@ -532,9 +532,15 @@ the revving instead of the distortion. Output now scales with rpm as well as loa
 
 | rpm | before (rms/peak) | after |
 |---|---|---|
-| 0.15 | 0.0801 / 0.1135 | 0.0074 / 0.0190 |
-| 1.00 | 0.1012 / 0.1349 | 0.0256 / 0.0629 |
-| full ÷ idle | **×1.26** | **×3.47** |
+| 0.15 | 0.0801 / 0.1135 | 0.0113 / 0.0253 |
+| 1.00 | 0.1012 / 0.1349 | 0.0271 / 0.0643 |
+| full ÷ idle | **×1.26** | **×2.39** |
+
+(The builder first recorded 0.0074 and ×3.47 here. An independent critic measured
+0.0113 and ×2.39 on the shipped build, and the project's own gate prints ×2.60–3.15
+on three consecutive runs — so the builder's figures were wrong, not the build.
+Corrected because a wrong number in DECISIONS is worse than none: the next reader
+would "regress" a build that is behaving.)
 
 **Ducking is one subscription, not a list.** `onModalChange` (D31) is subscribed once and
 never inspects ids, so a modal invented next wave ducks with no wiring. That property is

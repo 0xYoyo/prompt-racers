@@ -4,6 +4,10 @@
 import * as THREE from 'three';
 import { bus } from './bus.js';
 import { save } from './save.js';
+// style.js is deliberately dependency-free (see the modal-registry header in
+// it), so core may import it without creating a cycle. This is the only thing
+// engine.js takes from the UI layer.
+import { clearModals } from '../ui/style.js';
 
 // Quality tiers. `auto` picks on first boot from a quick device probe; the player
 // can override in settings. Builders MUST read engine.q.* rather than hardcoding
@@ -134,6 +138,13 @@ class Engine {
     if (this.active) {
       try { this.active.exit?.(); this.active.dispose?.(); } catch (e) { console.error('scene dispose failed', e); }
       this.ui.replaceChildren();
+      // Every panel is provably gone — its DOM was just wiped — so the modal
+      // registry must say so. A leaked id used to be merely untidy; since the
+      // audio ducks on the registry (D31/D34) a phantom id mutes the engine and
+      // the world for the rest of the session, with nothing on screen to
+      // explain it. Note `dispose()` above runs in a try/catch precisely
+      // because it may throw halfway through its own popModal calls.
+      clearModals();
     }
     bus.emit('scene:leaving', this.activeName);
     this.active = await factory(this, opts);

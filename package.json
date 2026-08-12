@@ -22,9 +22,10 @@
     "layout:podium": "node tools/layoutcheck.mjs --dist --scene podium",
     "flow": "node tools/flowtest.mjs",
     "modal": "node tools/modaltest.mjs",
+    "home": "node tools/hometest.mjs",
     "garage": "node tools/garagetest.mjs",
     "select": "node tools/selecttest.mjs",
-    "gate": "npm run build && npm test && node tools/verify.mjs && node tests/audio.test.mjs && npm run layout && node tools/flowtest.mjs && node tools/modaltest.mjs && node tools/garagetest.mjs && node tools/selecttest.mjs"
+    "gate": "npm run build && npm test && node tools/verify.mjs && node tests/audio.test.mjs && npm run layout && node tools/flowtest.mjs && node tools/modaltest.mjs && node tools/hometest.mjs && node tools/garagetest.mjs && node tools/selecttest.mjs"
   },
   "keywords": [],
   "author": "",
