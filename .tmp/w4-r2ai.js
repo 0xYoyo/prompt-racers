@@ -823,7 +823,10 @@ export class AIDriver {
   applyBand(dt, gapSeconds, packGapSeconds = 0) {
     if (!this.banded) { this.band = 1; return 1; }
     // Aim for our slot, not for the player's exact bumper.
-    const rp = Math.tanh((gapSeconds + this.slotAhead * (1 - 0.35 * this.d01)) / BAND_TAU);
+    const ST0=E('W4_ST0',1.0);
+    const POW=E('W4_STPOW',1); const k=Math.pow(1-this.d01,POW);
+    const stretch = this.slotAhead < 0 ? (1 + (ST0 - 1) * k) : 1;
+    const rp = Math.tanh((gapSeconds + this.slotAhead * stretch * (1 - 0.35 * this.d01)) / BAND_TAU);
     const rk = Math.tanh(packGapSeconds / PACK_TAU);
     // Catch-up (rp > 0, we are behind the human) is difficulty-scaled; hold-back
     // (rp < 0, we are up the road and the human is struggling) is not. See the

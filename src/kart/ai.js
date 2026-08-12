@@ -413,6 +413,31 @@ const PACK_TAU = 2.5;
 // win, not for fourth. Scaled down as the championship escalates.
 const SLOT_AHEAD = [2.5, 1, -0.5, -2, -3.5, -5, -6.5];
 
+// THIS TABLE, NOT PACE, IS WHAT DECIDES A STRUGGLING CHILD'S FINISHING PLACE.
+// -------------------------------------------------------------------------
+// Once a player drops below the field's own speed the hold-back floor gathers
+// everybody around them, and the order is then settled by how many opponents
+// are AIMING to sit behind the player — two of them, at every difficulty, which
+// is why Wave 4 shipped a championship that read 6th -> 6th -> 6th to an
+// 85%-pace child. Measured: dropping the race-1 catch-up ceiling to zero moved
+// that 6.0 by nothing at all, and widening the field's internal pace spread by
+// 3x moved it to 5.6. The slot table moved it to 4.0.
+//
+// So the backward half of the table is STRETCHED at low difficulty: on race 1
+// four or five opponents are racing for the places behind the player, and by
+// race 3 only the original two are. The forward slots (+2.5s, +1s) are left
+// alone at every difficulty — they are what keeps a clean 100% driver fighting
+// for the win rather than handed it.
+//
+//   mean place, autopilot player, 11 seeds      race 1   race 2   race 3
+//   100% pace   before / after                  2.2/2.5  3.8/3.1  3.8/3.8
+//    85% pace   before / after                  6.0/4.1  6.0/5.0  6.2/6.1
+//
+// The falloff is squared so race 2 keeps most of the escalation: the stretch is
+// 1.8x at d01 = 0, 1.2x at d01 = 0.5 and 1.0x (i.e. Wave-1 behaviour) at d01 = 1.
+const SLOT_STRETCH_EASY = 1.8;
+const slotStretch = d01 => 1 + (SLOT_STRETCH_EASY - 1) * (1 - d01) * (1 - d01);
+
 // ===========================================================================
 // 4. AIDriver
 // ===========================================================================
@@ -818,7 +843,11 @@ export class AIDriver {
   applyBand(dt, gapSeconds, packGapSeconds = 0) {
     if (!this.banded) { this.band = 1; return 1; }
     // Aim for our slot, not for the player's exact bumper.
-    const rp = Math.tanh((gapSeconds + this.slotAhead * (1 - 0.35 * this.d01)) / BAND_TAU);
+    // Opponents that aim BEHIND the player have their slot stretched on the
+    // gentle races (see SLOT_STRETCH_EASY) — that stretch is the championship's
+    // whole gradient for anyone driving below the field's own pace.
+    const slot = this.slotAhead * (this.slotAhead < 0 ? slotStretch(this.d01) : 1);
+    const rp = Math.tanh((gapSeconds + slot * (1 - 0.35 * this.d01)) / BAND_TAU);
     const rk = Math.tanh(packGapSeconds / PACK_TAU);
     // Catch-up (rp > 0, we are behind the human) is difficulty-scaled; hold-back
     // (rp < 0, we are up the road and the human is struggling) is not. See the

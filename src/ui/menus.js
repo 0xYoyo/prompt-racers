@@ -217,6 +217,9 @@ registerStrings({
     'menu.set.on': 'דולק',
     'menu.set.off': 'כבוי',
     'menu.set.volume': 'עוצמת קול',
+    // The row label names the THING, the button names the ACTION — the row used
+    // to print "איפוס התקדמות" twice, once as a label and once on the button.
+    'menu.set.progress': 'ההתקדמות שלכם',
     'menu.set.reset': 'איפוס התקדמות',
     'menu.set.resetDone': 'הכול אופס. מתחילים מחדש!',
     'menu.set.close': 'סגירה',
@@ -317,6 +320,7 @@ registerStrings({
     'menu.set.on': 'On',
     'menu.set.off': 'Off',
     'menu.set.volume': 'Volume',
+    'menu.set.progress': 'Your progress',
     'menu.set.reset': 'Reset progress',
     'menu.set.resetDone': 'All reset. Fresh start!',
     'menu.set.close': 'Close',
@@ -2687,7 +2691,7 @@ export function settingsOverlay(opts = {}) {
       // the setting survives the next boot.
       volumeRow(),
       h('div.mn-drow', { style: { borderBlockEnd: 'none' } },
-        h('span', null, t('menu.set.reset')),
+        h('span', null, t('menu.set.progress')),
         doneMsg ? h('span.mn-ok', null, t('menu.set.resetDone'))
           // The FULL wipe — the only thing in the game that empties האוסף שלי.
           // Its confirmation is a real modal that says so, deliberately not the

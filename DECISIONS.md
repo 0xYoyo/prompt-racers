@@ -553,3 +553,59 @@ floor. A new `worldBus` separates world ambience from SFX so the world can be si
 without muting the buttons, and all three group buses are now written from one place
 (`_applyBuses`), because the old code applied duck and volume from two places and a volume
 change mid-duck silently undid the duck.
+
+## D33b — What actually pinned a struggling child at 6th was the slot table, not pace
+The first rebalance hit every literal target at 100% pace and quietly made race 1 as harsh
+as race 3 for everyone else: an 85%-pace child finished **6th on all three races**, where
+Wave 1 gave them 3rd → 6th → 8th. Race 1 is the onboarding race, runs at the AI's own floor,
+and the garage comes *after* it — so that child had no lever available and had not yet been
+taught that prompts buy speed. That is the version of "earned" that reads to an eight-year-old
+as *this game doesn't want me*.
+
+Both obvious fixes were measured first, and **both did nothing**:
+
+| intervention at race 1 | 85% mean place |
+|---|---|
+| as shipped | 6.0 |
+| widen the field's internal pace spread 1.5× / 2× / 2.5× / 3× | 6.0 / 5.6 / 5.8 / 5.6 |
+| cut the race-1 catch-up ceiling to 0.5× / 0.25× / **0×** of `BAND_CATCH` | 5.8 / 6.0 / **6.0** |
+| **stretch the backward slots 1.8× at d01 = 0** | **4.0** |
+
+Removing race 1's catch-up *entirely* moved the outcome by nothing. The cause was never speed.
+Once a player drops below the field's pace, the hold-back floor gathers the pack around them
+and finishing order is decided by **how many opponents are aiming to sit behind the player** —
+and `SLOT_AHEAD` has exactly two negative-enough entries at every difficulty. The answer was
+therefore "6th", on all three races, structurally.
+
+The fix stretches only the **backward** half of the slot table, and only on the gentle races
+(`slotStretch(d01) = 1 + 0.8·(1−d01)²`): race 1 has four or five rivals racing for the places
+behind you, race 3 keeps the original two. The forward slots (+2.5s, +1s) are untouched at
+every difficulty, which is what keeps a clean 100% driver fighting for the win rather than
+being handed it. `BAND_CATCH`, `BAND_HOLD`, `BAND_FLOOR_PACE`, `AI_PACE`, `TRACK_PACE` and
+`aiPartTier` are all unchanged.
+
+Measured in the **built game**, the championship a struggling child plays is now
+**4th → 5th → 6th**:
+
+| pace | race 1 | race 2 | race 3 |
+|---|---|---|---|
+| 100% | 2.2 → 3.0 [2.45 over 11 seeds] | 3.8 → 3.0 | 3.8 → 3.8 |
+| 85% | **6.0 → 4.0** | 6.0 → 5.0 | 6.2 → 6.1 |
+| 70% | 8.0 → **6.0** | 7.4 → 6.8 | 8.0 → 8.0 |
+
+Never-lapped is bit-for-bit untouched (0.17 / 0.15 / 0.20), and a 70%-pace child now finishes
+**6th of 8 on race 1 rather than last** — something the brief has wanted since Wave 1.
+
+**The gate now measures shape, not just bounds.** The previous one asserted three things about
+a struggling player — not lapped, not alone, place ≤ 7 — and nothing about the curve, so it
+passed a 6/6/6 championship as readily as a 3/6/8 one. It now asserts that race 3 minus race 1
+at 85% is **≥ 1.5 places**, that race 2 sits between them, and that race 1 at 85% is **≥ 3.0**
+so the correction cannot be overshot into a free win either. Against the round-1 code it fails
+exactly twice, both new assertions; against the critic's `aiPartTier → 2` mutant — previously
+invisible at 6.0/5.6/6.2 — it now fails eight times.
+
+Honest caveat: at 100% pace race 1 means 2.45 over eleven seeds but spreads 1st–3rd, so a
+machine-perfect line will still occasionally win race 1 outright. Tightening it costs the
+gradient that matters more (`SLOT_STRETCH_EASY = 1.7` buys 2.27 at 100% but slides 85% back to
+4.8 and collapses the race1/race2 ladder). The struggling child's gradient was chosen over the
+last tenth of a place at the top.

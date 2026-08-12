@@ -1,0 +1,6 @@
+0 d1 pace 0.85 seed 3 parts stock -> pos 4  lapsBehind 0.09  finished true  simT 166s  (54s wall)
+0 d1 pace 0.85 seed 11 parts stock -> pos 4  lapsBehind 0.09  finished true  simT 165s  (49s wall)
+1 d2 pace 0.85 seed 3 parts stock -> pos 5  lapsBehind 0.08  finished true  simT 181s  (57s wall)
+2 d3 pace 0.85 seed 3 parts stock -> pos 6  lapsBehind 0.09  finished true  simT 172s  (48s wall)
+0 d1 pace 1 seed 3 parts stock -> pos 3  lapsBehind 0.03  finished true  simT 141s  (52s wall)
+2 d3 pace 0.7 seed 3 parts stock -> pos 8  lapsBehind 0.19  finished true  simT 209s  (55s wall)

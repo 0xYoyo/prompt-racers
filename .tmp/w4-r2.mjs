@@ -33,12 +33,12 @@ export function race({track,difficulty,pace=1,seed=3,laps=3,parts=null}){
 const RACES=[{n:1,track:'oasis',difficulty:1},{n:2,track:'circuit',difficulty:2},{n:3,track:'cloud',difficulty:3}];
 const SEEDS=(process.env.W4_SEEDS||'3,11,19,41,57').split(',').map(Number);
 const PACES=(process.env.W4_PACES||'1.0,0.85,0.70').split(',').map(Number);
-console.log('pace  '+RACES.map(R=>`race ${R.n}`.padStart(30)).join(''));
+console.log('pace  '+RACES.map(R=>`race ${R.n}`.padStart(34)).join(''));
 for(const pace of PACES){
   const cells=RACES.map(R=>{
     const rs=SEEDS.map(s=>race({track:R.track,difficulty:R.difficulty,pace,seed:s}));
     const p=rs.map(r=>r.pos);
-    return `${Math.min(...p)}-${Math.max(...p)} m${f(mean(p),1)} lb${f(Math.max(...rs.map(r=>r.lapsBehind)))} sp${f(mean(rs.map(r=>r.spreadS)),1)}s`.padStart(30);
+    return `${Math.min(...p)}-${Math.max(...p)} m${f(mean(p),1)} lb${f(Math.max(...rs.map(r=>r.lapsBehind)))} ln${f(Math.max(...rs.map(r=>r.lonely)))} sp${f(mean(rs.map(r=>r.spreadS)),0)}s`.padStart(34);
   });
   console.log((f(pace*100,0)+'%').padStart(5)+' '+cells.join(''));
 }

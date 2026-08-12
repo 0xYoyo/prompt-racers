@@ -1,0 +1,10 @@
+import puppeteer from 'puppeteer-core';
+const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const b = await puppeteer.launch({executablePath:CHROME,headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+const p = await b.newPage();
+p.on('pageerror',e=>console.log('PAGEERROR',e.message));
+p.on('console',m=>console.log('CONSOLE',m.type(),m.text().slice(0,200)));
+await p.goto('file://'+process.cwd()+'/.tmp/critic/distcheck.html',{waitUntil:'load'});
+await new Promise(r=>setTimeout(r,8000));
+console.log('DEBUG', await p.evaluate(()=>({d:!!window.__DEBUG, ready: window.__DEBUG&&window.__DEBUG.ready, a:!!window.__AUDIO})));
+await b.close();
