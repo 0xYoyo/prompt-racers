@@ -60,6 +60,10 @@ const MUSIC_HEADROOM = 20;    // music may use this many voices beyond the sfx c
 const ENGINE_BUS = 0.21;
 const ENGINE_LEVEL = 0.34;    // player engine voice level inside that bus
 const AI_ENGINE_LEVEL = 0.075; // per-AI-kart voice at closest range
+// Idle presence. The engine's level at rpm 0, as a fraction of its flat-out
+// level — NOT a tuning fudge but the thing that stops "quieter" turning into
+// "inaudible on the grid". See EngineVoice._levelFor.
+const IDLE_FLOOR = 0.46;
 
 // Modal ducking. The engine and the world go to TRUE zero (a linear ramp, so it
 // is a fade and not a click); music only steps back.
@@ -370,10 +374,16 @@ class EngineVoice {
     // there is nothing left but the harsh top of the saw, which is exactly the
     // part that made the old voice grate. Coasting shuts it down fast, which is
     // what makes lifting off audibly *relax*.
+    // `strain` peaks at LOW rpm under full throttle (it is throttle minus speed),
+    // so anything it boosts makes the bottom of the rev range louder. Kept small
+    // deliberately: it is a lugging *colour*, and when it was strong enough to
+    // matter it could make pulling away quieter as it faded — the level going
+    // BACKWARDS as the kart speeds up. Monotonicity is gated; this is the term
+    // that would break it.
     sq(this.lp.frequency, clamp((300 + Math.pow(rpm, 1.25) * 2350 * (boost ? 1.35 : 1) * (0.75 + 0.4 * load)
-      + 420 * strain) * lerp(1, 0.55, coast), 140, 5200));
-    sq(this.lp.Q, (boost ? 3.2 : lerp(1.2, 2.4, rpm)) + 0.9 * strain);
-    sq(this.drive.gain, (lerp(0.32, 0.52, load) + 0.14 * strain) * (boost ? 1.12 : 1) * lerp(1, 0.75, coast));
+      + 120 * strain) * lerp(1, 0.55, coast), 140, 5200));
+    sq(this.lp.Q, (boost ? 3.2 : lerp(1.2, 2.4, rpm)) + 0.4 * strain);
+    sq(this.drive.gain, lerp(0.32, 0.52, load) * (boost ? 1.12 : 1) * lerp(1, 0.75, coast));
     // the square layer IS the strain: buzzy odd harmonics when it is working hard,
     // and essentially absent the rest of the time
     sq(this.sqr.g.gain, clamp(0.018 + 0.055 * strain - 0.012 * coast, 0, 0.09));
@@ -398,12 +408,23 @@ class EngineVoice {
     if (this.enabled) sq(this.out.gain, this.level * this._levelFor(rpm, load, coast));
   }
 
-  // Loudness as a function of speed. The old voice scaled with LOAD alone, so
-  // idling and flat-out measured within 1 dB of each other and the engine read as
-  // a constant buzz. ~2.4x (7.6 dB) across the rev range is the difference
-  // between "a noise is happening" and "I am accelerating".
+  // Loudness as a function of speed. Two failure modes, one on each side:
+  //
+  //  * TOO FLAT. The Wave-3 voice scaled with LOAD alone, so idling and flat-out
+  //    measured within 1 dB of each other and it read as a constant buzz.
+  //  * TOO STEEP. The obvious overcorrection is a curve that starts near zero, and
+  //    an engine you cannot hear on the grid is not "quiet", it is broken — a
+  //    child pulling away, or restarting after a crash, hears nothing. The first
+  //    version of this curve started at 0.30 and metered rms 0.005 at rpm 0,
+  //    barely 2 dB over the test's own silence floor and ~15 dB under the music.
+  //
+  // So the constant term is a real IDLE FLOOR, not a fudge: the engine is always
+  // present, and the rev range adds ~2.3x (7 dB) on top. Pitch and the filter
+  // sweep carry the rest of the acceleration sensation — level alone never had
+  // to, and leaning on level alone is what pushed the idle to silence.
+  // tests/audio.test.mjs pins BOTH ends: a low-rpm floor and monotonicity.
   _levelFor(rpm, load, coast) {
-    return (0.30 + 0.72 * Math.pow(rpm, 0.85)) * lerp(0.80, 1, load) * lerp(1, 0.55, coast);
+    return (IDLE_FLOOR + 0.60 * Math.pow(rpm, 0.85)) * lerp(0.80, 1, load) * lerp(1, 0.55, coast);
   }
 
   enable(time, fade = 0.25) {
@@ -655,7 +676,8 @@ class AudioSystem {
     // A duck may already be in force when the graph is (re)built — e.g. the game
     // was reloaded straight into a scene that opens a modal, or dispose()/init()
     // cycled the context while a panel was up. Apply it, do not assume open.
-    this._applyBuses(0);
+    // `force` because init() has not set this.ok yet — see _applyBuses.
+    this._applyBuses(0, true);
   }
 
   // ── autoplay unlock ────────────────────────────────────────────────────────
@@ -802,9 +824,16 @@ class AudioSystem {
    * here, so they can never disagree. That mattered: the old code applied the
    * duck and the volumes from two places, and a volume change mid-duck undid it.
    */
-  _applyBuses(fade = 0.08) {
-    if (!this.ready) return;
-    const t = this.now;
+  _applyBuses(fade = 0.08, force = false) {
+    // `force` exists for _build(), which runs BEFORE init() sets this.ok — so the
+    // `ready` guard was permanently true there and the duck-recovery call at the
+    // end of _build() was dead code. Measured: dispose() + init() with a modal
+    // open left _modalDucked true and engineBus wide open at 0.21. Not reachable
+    // today (main.js inits once at boot, nothing calls dispose()), but it is a
+    // guard that silently did nothing, which is worse than no guard at all.
+    if (!force && !this.ready) return;
+    if (!this.musicBus) return;                       // graph not built yet
+    const t = this.ctx ? this.ctx.currentTime : 0;    // not `this.now` — same reason
     const ramp = (node, v) => {
       if (!node) return;
       const g = node.gain;

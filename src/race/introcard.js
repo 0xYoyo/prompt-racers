@@ -156,7 +156,9 @@ const INTRO_CSS = `
 .ic-glow{position:absolute;inset-block-start:-58%;inset-inline:0;block-size:100%;
   background:radial-gradient(50% 50% at 50% 50%,var(--ic-accent,var(--gold)),transparent 70%);
   opacity:.28;pointer-events:none}
-.ic-kicker{position:relative;font-size:clamp(10px,1.35vh,12px);font-weight:900;letter-spacing:.10em;
+/* 12px floor: layoutcheck flags anything smaller as tiny-text at 1024x640, and
+   this line carries "which race is this" — a child should not have to lean in. */
+.ic-kicker{position:relative;font-size:clamp(12px,1.35vh,13px);font-weight:900;letter-spacing:.10em;
   color:var(--ic-accent,var(--gold));text-transform:uppercase}
 .rtl .ic-kicker{letter-spacing:.03em}
 .ic-welcome{position:relative;font-size:clamp(15px,2.1vh,20px);font-weight:800;color:var(--txt-dim)}
