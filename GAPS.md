@@ -107,6 +107,16 @@ Tier-3 "hero" parts use emissive materials, but without a bloom pass emissive re
 lighter-coloured plastic rather than as glow. The hero tier compensates with geometry
 (chrome swan-necks) instead. A bloom pass is a renderer-level change for Wave 2.
 
+### Cloud Peak physically cannot carry a mid-ground depth rung (Wave 4 finding)
+Probed in Wave 4 while placing signage: the plateau is solid to only ~16–17 m past the
+barrier and then falls away 20 m. So the mid-ground prop band that works on oasis and
+circuit has **no ground to stand on** here — this is a fact about the track, not an
+oversight, and anyone planning to "fix the depth rung on all three tracks" should read it
+first. What Wave 4 did instead: pushed the outward cap 12 → 17 m with a ground-searched
+walk (depth spread 1.4 → 8.8 m), raised the boards to 4.2 m at the plateau edge, and
+inverted their skin to dark-on-light so they read as a shape against a white plateau under
+a pale sky. That gives the frame an anchor; it does not solve the entry below.
+
 ### Cloud Peak does not read as "above the clouds" from the driver's seat
 The championship finale's whole concept — floating stone islands over a cloud sea — lands
 in the aerial view and on the wide corners, but not from the seated chase camera, because

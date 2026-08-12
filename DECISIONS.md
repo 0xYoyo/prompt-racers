@@ -698,3 +698,59 @@ of a class you have already been bitten by twice are not rare, they are pending.
 boost since the last call with its own provenance, oldest first. It returns a shared
 frozen empty array when there is nothing to report, because the common case is every
 frame and the per-frame-allocation ban applies.
+
+## D32b — The central sweep was corrupting the one board D32 called correct
+Bringing the finish gantry into `TEXT_MESHES` (it had been created with no `.name`, so it
+sat outside both the fix and the gate — a coverage hole shared by fix and gate, which is
+the failure CLAUDE.md warns about) immediately exposed two real bugs inside
+`enforceSignOrientation` itself:
+
+1. **It swept per MESH, but geometry can be shared.** The gantry hangs one
+   `PlaneGeometry` off two meshes, so the sweep rewrote that uv buffer twice, taking its
+   own first-pass output as the second pass's "original". It thereby *corrupted* the one
+   board D32 singles out as correct-by-construction — two vertices left with identical
+   UVs and one triangle collapsed to degenerate. Now swept once per geometry.
+2. **It decided "which side of the track" from triangle centroids.** On a 35 m gantry
+   those sit ~17 m off the centreline, and the 16 m pairing radius then failed silently
+   for any board wider than ~11 m. The decision is now made from **quad centres**, and a
+   centred panel skips only the winding repair, never the U check.
+
+The sweep is now a verified no-op on all three tracks — which is what a guard against a
+bug already fixed at source should be, and was not.
+
+## D38 — Legibility is metres of board per character, and nothing else
+The Wave-4 signage shipped 24 original, correctly-themed, factually true Hebrew lines
+rendered at **7 px of cap height** — 0% of a lap with a legible sign on two of three
+tracks. The curriculum was written and then drawn too small to teach.
+
+The governing identity, found by measurement and now written into the code: while a line
+is width-limited, **capMetres ≈ 0.4 × boardWidth / characters** — the tile aspect cancels
+out entirely. So legibility is bought with metres of board per character and by nothing
+else; a bigger font had no room to grow into, and more boards would have traded ambience
+for nothing. The fix was therefore short copy on wide boards: 48 new lines, all 2–3 words
+and ≤14 characters, on boards widened 7→13 m (mid) and 3.6→6.8 m (near).
+
+Two second-order causes, both worth keeping:
+- **The depth band was fighting the field of view.** Round 1 pushed boards to ~45 m off
+  the centreline, where a board leaves a 62° frame before it ever grows — peak 12 px. Cap
+  height is `547 × capMetres / Y`, so the band moved to Y ≈ 23–33 m: still unmistakably
+  mid-ground, now legible all the way in. Density is unchanged at ~1 board on screen.
+- **The size was decided inside a draw callback**, where no gate could see it. It is now
+  an analytic `signLayout()` computed with no canvas, with `measureText` demoted to a
+  clamp that may shrink and never grow. That is why it could shrink to 0.13 em unnoticed.
+
+| track | median best-in-frame | max on lap | % of lap ≥14 px |
+|---|---|---|---|
+| oasis | 4.3 → **10.6 px** | 13.2 → **25.2** | 0% → **27%** |
+| circuit | 3.7 → **9.5 px** | 10.2 → **25.7** | 0% → **25%** |
+| cloud | 5.6 → **10.4 px** | 15.3 → **23.3** | 1% → **26%** |
+
+Also fixed here: signage now builds **after** dressing and ray-tests each candidate from
+the two distances it is actually read from, against props that are tall and cheap —
+deliberately name-free rather than coupled to props.js's mesh names. Occluded candidates
+walk inward rather than being dropped, so no board is lost.
+
+And a process note that explains how a 7 px sign passed review: **every existing preview
+was a static pose that happened to stand near a board.** There is now a chase-camera
+preview framed on the nearest board ≥20 m away, so "can a child read this?" is answerable
+by looking rather than by trusting a comment.

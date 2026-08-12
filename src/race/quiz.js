@@ -1219,6 +1219,15 @@ export function createQuizSystem(engine, opts = {}) {
     get phase() { return phase; },
     /** The id of the question currently on screen, or null. */
     get currentId() { return phase === 'idle' ? null : (shown?.data?.id ?? null); },
+    /** The tier of the question currently on screen, or null. */
+    get currentTier() { return phase === 'idle' ? null : (shown?.data?.tier ?? null); },
+    /** Which of the three buttons is the right one — the option ORDER is shuffled
+     *  per showing, so a gate that wants to play as a child who ANSWERS WELL
+     *  cannot work it out from the question bank alone. Exists for the token
+     *  economy gate: without it no automated driver can produce the quiz term
+     *  that dominates the wallet, which is precisely how that term went
+     *  unmeasured for three waves (D29). */
+    get correctSlot() { return phase === 'idle' ? null : (shown?.correctSlot ?? null); },
     /** Every id this race has shown, in order — the same ids `quiz:open` carries. */
     get askedIds() { return asked.slice(); },
     /** How many questions are eligible after the championship exclusion. */

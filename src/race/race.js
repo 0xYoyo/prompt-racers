@@ -596,7 +596,23 @@ export function raceScene(engine, opts = {}) {
     //   • an edge on `boosting` cannot see a release that lands while a
     //     previous boost is still running — chained corners, i.e. exactly the
     //     skill the drift reward exists to celebrate, emitted nothing.
-    if (player.boostSeq !== prev.boostSeq) {
+    //   • and the `last*` fields alone still lose a boost: they record only the
+    //     MOST RECENT one, so a quiz turbo (applied from quiz.update()) landing
+    //     in the same 16ms frame as a drift release (applied inside simulate())
+    //     overwrites the release's provenance and the drift is reported as
+    //     'external'. Forced same-frame: 19 real releases, 0 counted. So drain
+    //     the body's boost log — every boost of the frame, oldest first, each
+    //     with its own tier/source — rather than polling one counter.
+    const boosts = player.drainBoosts?.();
+    if (boosts && boosts.length) {
+      for (const b of boosts) {
+        prev.boostSeq = b.seq;
+        bus.emit('drift:boost', { tier: b.tier, source: b.source });
+      }
+      chase.shake(0.35, 0.25);   // ONE shake per frame, however many boosts drained
+    } else if (player.boostSeq !== prev.boostSeq) {
+      // Safety net for a body that has no log (stubs, older mocks, the AI
+      // bodies a future gate might hand in): the pre-drain behaviour exactly.
       prev.boostSeq = player.boostSeq;
       bus.emit('drift:boost', { tier: player.lastBoostTier, source: player.lastBoostSource });
       chase.shake(0.35, 0.25);

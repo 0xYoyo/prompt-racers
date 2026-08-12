@@ -405,7 +405,7 @@ class EngineVoice {
     sq(this.rlp.frequency, surf === 'sand' ? 420 : 240);
     sq(this.rzg.gain, rum * lerp(0.35, 1, rpm));
 
-    if (this.enabled) sq(this.out.gain, this.level * this._levelFor(rpm, load, coast, strain));
+    if (this.enabled) sq(this.out.gain, this.level * this._levelFor(rpm, load, coast));
   }
 
   // Loudness as a function of speed. Two failure modes, one on each side:
@@ -423,8 +423,8 @@ class EngineVoice {
   // sweep carry the rest of the acceleration sensation — level alone never had
   // to, and leaning on level alone is what pushed the idle to silence.
   // tests/audio.test.mjs pins BOTH ends: a low-rpm floor and monotonicity.
-  _levelFor(rpm, load, coast, strain = 0) {
-    return (IDLE_FLOOR + 0.60 * Math.pow(rpm, 0.85) + 0.5 * strain) * lerp(0.80, 1, load) * lerp(1, 0.55, coast);
+  _levelFor(rpm, load, coast) {
+    return (IDLE_FLOOR + 0.60 * Math.pow(rpm, 0.85)) * lerp(0.80, 1, load) * lerp(1, 0.55, coast);
   }
 
   enable(time, fade = 0.25) {
