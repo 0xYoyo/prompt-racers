@@ -68,18 +68,27 @@ try {
     // full freeze whose feedback waits for Space with NO time limit, so a beat
     // that only ever presses a digit answers the question and then leaves the
     // explanation up forever with the sim stopped — the race can never finish.
-    // This gate passed anyway only because its straight-ahead driver happens to
-    // miss every beacon (which is also why tokensFromQuiz has always read 0);
-    // the day the driver improves, the run would deadlock instead of failing.
     if (visible(document.querySelector('.quiz-card.quiz-answered'))) {
       dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }));
       return 'quiz:dismiss';
     }
     // Then an ACTUALLY OPEN quiz question (not merely the container).
+    //
+    // ANSWER IT CORRECTLY. This beat used to press `1` blind, which is the whole
+    // reason the economy went unmeasured for three waves: a third of the answers
+    // landed by luck and the driver met few beacons anyway, so `tokensFromQuiz`
+    // printed 0 on every run in the project's history and the only assertion
+    // that looked at the wallet was blind to its largest term (D29). The correct
+    // slot is read from the race's own quiz (`scene.quiz.correctSlot`) because
+    // the three options are SHUFFLED per showing — nothing outside the panel can
+    // work it out — and it is pressed as the real digit key, so the answer goes
+    // through the same keyboard path a child's finger does.
     const q = document.querySelector('.quiz-q');
     if (visible(q)) {
-      dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit1', key: '1', bubbles: true }));
-      return 'quiz';
+      const slot = window.__DEBUG?.engine?.active?.quiz?.correctSlot;
+      const n = (typeof slot === 'number' && slot >= 0 && slot <= 2) ? slot + 1 : 1;
+      dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit' + n, key: String(n), bubbles: true }));
+      return 'quiz:answer' + n;
     }
     return null;
   });
@@ -181,25 +190,50 @@ try {
   await shot('flow-5-results.png');
 
   // ECONOMY GATE. The garage's whole lesson is "precision costs — choose where it
-  // is worth spending", against a budget of ~17 and a max spend of ~21. If one race
-  // banks far more than that, the budget never binds and the lesson evaporates.
+  // is worth spending", against a maximum ask of MAX_COST (21). If one race banks
+  // that much, the budget never binds and the lesson evaporates.
+  //
+  // This assertion replaces the one D29 renamed to say it could not see the quiz.
+  // The driver above now MEETS question boxes on the racing line and answers them
+  // correctly, so `tokensFromQuiz` is a real number and the total below is the
+  // whole wallet — pickups, quiz and finish bonus — for a player who is both
+  // winning and fully engaged, which is the exact player the target is about.
   const econ = await page.evaluate(() => window.__LAST_RESULT__ || null);
+  const qcount = await page.evaluate(() => window.__ECON_Q__ || { opens: 0, correct: 0 });
   if (econ) {
-    console.log(`        \x1b[2mtokens: ${econ.tokensFromPickups} pickups + ${econ.tokensFromQuiz} quiz + ${econ.tokensFinishBonus} finish = ${econ.tokens}\x1b[0m`);
-    // NAME WHAT THIS COVERS. This driver holds a throttle key and takes the
-    // straight-ahead line, so it collects pickups and finishes but has never in
-    // its life triggered a quiz beacon — `tokensFromQuiz` has printed 0 on every
-    // run since the assertion was written. The band below is therefore a claim
-    // about pickups and the finish bonus ONLY, and it passes because the term
-    // that breaks it is absent: a real child who answers well banks roughly
-    // twice this. Renamed rather than widened, so nobody reads a green tick here
-    // as "the economy is fine" — the measurement and the fix are in GAPS.md.
-    step('pickup + finish token yield stays near the garage budget (QUIZ NOT COVERED)',
-      econ.tokens >= 6 && econ.tokens <= 28,
-      `${econ.tokens} banked vs ~21 max garage spend · quiz term unmeasured (${econ.tokensFromQuiz})`);
-    step('the quiz term really is missing from the line above, not merely zero',
-      econ.tokensFromQuiz === 0,
-      'if this fails the driver now hits beacons — widen the band above to include them');
+    console.log(`        \x1b[2mtokens: ${econ.tokensFromPickups} pickups + ${econ.tokensFromQuiz} quiz + ${econ.tokensFinishBonus} finish`
+      + ` = ${econ.tokens}  ·  P${econ.place}, ${qcount.correct}/${qcount.opens} questions answered right`
+      + `  ·  max ask ${MAX_COST}, cheapest complete ask ${MIN_COMPLETE_COST}\x1b[0m`);
+
+    // THE ASSERTION THAT USED TO BE MISSING. It is the term, not the total, that
+    // has to be proved present: a band over a sum can pass because a summand is
+    // absent, which is precisely how the old one passed for three waves.
+    step('the gate can SEE the quiz term (the driver really meets boxes)',
+      econ.tokensFromQuiz > 0 && qcount.correct > 0,
+      `${qcount.correct}/${qcount.opens} answered right → ${econ.tokensFromQuiz} tokens`);
+
+    // THE TARGET, stated as the invariant rather than as a number: a winning,
+    // fully engaged player must still be unable to buy the most expensive ask,
+    // so choosing WHERE to be precise keeps mattering. Strictly less than, with
+    // the margin printed, because the wallet also carries over between visits.
+    step('a winning, engaged race still cannot buy the most expensive ask',
+      econ.tokens < MAX_COST,
+      `${econ.tokens} banked vs ${MAX_COST} max ask (margin ${MAX_COST - econ.tokens})`);
+
+    // …and the floor: the garage must never open with every card greyed out.
+    step('…and it still funds a complete ask at any finishing position',
+      econ.tokensFinishBonus >= MIN_COMPLETE_COST - 1 && econ.tokens >= MIN_COMPLETE_COST,
+      `finish bonus ${econ.tokensFinishBonus}, cheapest complete ask ${MIN_COMPLETE_COST}`);
+
+    // The band. Deliberately narrow, and it must FAIL rather than be widened: it
+    // is the thing that notices a constant moving underneath the invariant above
+    // (e.g. a pickup value or a finish table that drifts back up while the total
+    // still happens to clear 21 on this one seed).
+    step('token yield stays in the intended 8–20 band',
+      econ.tokens >= 8 && econ.tokens <= 20,
+      `${econ.tokens} banked = ${econ.tokensFromPickups}+${econ.tokensFromQuiz}+${econ.tokensFinishBonus}`);
+  } else {
+    step('economy: the race produced a result to measure', false, 'no __LAST_RESULT__');
   }
 
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('promptracers.v1') || '{}'));

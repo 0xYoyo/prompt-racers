@@ -530,17 +530,38 @@ filter, the square reduced to a strain-only trace, `driveCurve(2)`, and the lowp
 pulled 12 kHz → 5.2 kHz with Q 2.2–6.5 → 1.2–3.2, so the rpm-tracked resonant sweep carries
 the revving instead of the distortion. Output now scales with rpm as well as load.
 
-| rpm | before (rms/peak) | after |
-|---|---|---|
-| 0.15 | 0.0801 / 0.1135 | 0.0113 / 0.0253 |
-| 1.00 | 0.1012 / 0.1349 | 0.0271 / 0.0643 |
-| full ÷ idle | **×1.26** | **×2.39** |
+| rpm | 0 | 0.15 | 0.3 | 0.5 | 0.75 | 1.0 |
+|---|---|---|---|---|---|---|
+| after (rms) | 0.0084 | 0.0129 | 0.0152 | 0.0177 | 0.0214 | **0.0270** |
 
-(The builder first recorded 0.0074 and ×3.47 here. An independent critic measured
-0.0113 and ×2.39 on the shipped build, and the project's own gate prints ×2.60–3.15
-on three consecutive runs — so the builder's figures were wrong, not the build.
-Corrected because a wrong number in DECISIONS is worse than none: the next reader
-would "regress" a build that is behaving.)
+Before: 0.0801 at rpm 0.15 and 0.1012 at full, i.e. **×1.26** across the whole rev
+range. After: monotonic, peak 0.068, ratio **×2.1**.
+
+**Three parties measured this engine and got three different answers, and the meter was
+the reason.** The builder first recorded idle 0.0074 / ratio ×3.47; a critic measured
+0.0113 / ×2.39 and additionally reported a *non-monotonic dip* (rpm 0.15 louder than
+0.30) stable across three passes; the gate itself printed ×2.60–3.15 on consecutive runs.
+None of them were reading a different build.
+
+`triB` is detuned +0.4%, so against `triA` at a 55 Hz fundamental it beats with a
+**~4.5 second period**. Every one of those measurements used an analyser window of
+46 ms — a fraction of one beat — so each sampled a different point on the beat envelope.
+Repeated passes *within one page load* share the beat phase, which is exactly why the dip
+looked "stable across three passes": it measured the same artifact three times. At
+`fftSize 32768` (743 ms) over 2.5 s windows, cross-page reproducibility is ±2–4% and **no
+build shows a dip at all**, including one with the original strain terms restored.
+
+The builder had already "fixed" the phantom dip by cutting the lugging strain terms, and
+**reverted that on discovering the meter was lying** — removing designed character to
+chase a measurement artifact is the wrong trade. The real defect underneath was separate
+and did survive: idle sat at ~0.005, barely 2 dB above the test's own silence floor, so a
+child on the grid could not hear their kart. Fixed by raising `IDLE_FLOOR` and lowering
+the rpm coefficient — lifting the bottom without touching the top.
+
+The lesson generalises past audio: **a repeated measurement is not an independent
+measurement if the repeats share the thing that biases them.** Every engine number the
+gate prints now comes from one sweep on one long meter, rather than each assertion
+opening its own short window.
 
 **Ducking is one subscription, not a list.** `onModalChange` (D31) is subscribed once and
 never inspects ids, so a modal invented next wave ducks with no wiring. That property is

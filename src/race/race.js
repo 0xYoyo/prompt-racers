@@ -104,9 +104,32 @@ export function toVisualParts(parts = {}) {
 // precise one 21), so the garage is always playable and precision is always the
 // thing you have to choose between.
 // Finishing bonus, 1st→8th. Deliberately shallow: the spread between winning and
-// coming last is 3 tokens, because the garage budget is the game's teaching device
+// coming last is 2 tokens, because the garage budget is the game's teaching device
 // and a child who is losing must still be able to afford a specific prompt.
-const FINISH_TOKENS = [6, 5, 5, 4, 4, 3, 3, 3];
+//
+// Wave 4 re-measured the whole economy INCLUDING the quiz term that D29's gate
+// could not see, and this is one of the three numbers that came down. It came
+// down from the TOP only — [6,5,5,4,4,3,3,3] → [5,4,4,3,3,3,3,3] — because the
+// player the rebalance is aimed at is the one who WINS while answering well,
+// and GAPS' standing instruction for this economy is to raise the floor rather
+// than lower the ceiling for the child who is struggling. Last place still pays
+// 3, which with the thinned pickups keeps every finishing position above the
+// cheapest complete ask (4).
+//
+// EXPORTED because tests/badges.test.mjs derives its badge thresholds from this
+// table and had to scrape it out of this file with a regex — so a rename failed
+// at a parse assertion instead of at the thing that actually broke.
+export const FINISH_TOKENS = [5, 4, 4, 3, 3, 3, 3, 3];
+
+// How many of the track's authored token spots actually get placed. See the
+// block in raceScene() where it is applied for why the thinning is done HERE
+// and not downstream. Exported for the same reason FINISH_TOKENS is.
+//
+// 0.42 → 0.12 in Wave 4. Not a second guess at D17's number: D17 tuned it
+// against a measurement in which the quiz paid nothing, because the gate that
+// took the measurement could not see quiz rewards (D29). With the quiz counted,
+// pickups were still the second-biggest term in a wallet 2× too big.
+export const TOKEN_KEEP = 0.12;
 
 const COUNTDOWN_S = 3.4;      // 3 · 2 · 1 · GO
 const TOKEN_RADIUS = 2.6;     // generous — kids should not have to thread a needle
@@ -185,7 +208,7 @@ export function raceScene(engine, opts = {}) {
   // the three on-screen numbers honest with each other: fewer tokens visible on track,
   // fewer collected in the HUD, a smaller wallet in the garage. Capping downstream
   // would have made one of them contradict the others in front of a child.
-  const TOKEN_KEEP = 0.42;
+  // TOKEN_KEEP is now module-level (and exported) — see its comment up top.
   const spots = (track.tokenSpots || []).filter((_, i) => (i * TOKEN_KEEP) % 1 < TOKEN_KEEP);
   const tokens = buildTokens(spots, engine, rng);
   if (tokens) scene.add(tokens.group);

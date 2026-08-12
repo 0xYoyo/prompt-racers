@@ -99,6 +99,9 @@ registerStrings({
     'quiz.hint': 'בוחרים עם {k}',
     'quiz.correct': 'נכון!',
     'quiz.reward': 'טורבו ועוד {n} טוקנים',
+    // Singular form. A correct answer now pays ONE token on tiers 1–2 (see
+    // REWARD_TOKENS), and "ועוד 1 טוקנים" is not Hebrew.
+    'quiz.reward1': 'טורבו ועוד טוקן אחד',
     'quiz.timeUp': 'נגמר הזמן',
     'quiz.answerMarked': 'התשובה הנכונה מסומנת',
     'quiz.continue': 'ממשיכים לנסוע…',
@@ -141,6 +144,7 @@ registerStrings({
     'quiz.hint': 'Choose with {k}',
     'quiz.correct': 'Correct!',
     'quiz.reward': 'Boost and {n} tokens',
+    'quiz.reward1': 'Boost and 1 token',
     'quiz.timeUp': 'Time is up',
     'quiz.answerMarked': 'The right answer is marked',
     'quiz.continue': 'Back to racing…',
@@ -220,7 +224,27 @@ const TIME_LIMIT = { 1: 20, 2: 18, 3: 16 };
 // away before it had been read).
 const DISMISS_AFTER_S = 0.45;
 
-const REWARD_TOKENS = { 1: 3, 2: 4, 3: 5 };
+// Tokens for a correct answer, by question tier.
+//
+// 3/4/5 → 1/1/2 in Wave 4, and this is the single number that mattered most.
+// An engaged child meets 5–9 question boxes in a race (measured on the built
+// game, three tracks × three seeds), so at 3–5 tokens each the quiz alone paid
+// 15–35 against a 21-token maximum garage ask — three times the pickups and the
+// finish bonus put together. D29 measured that and deliberately did NOT retune,
+// because the end-to-end gate could not see the term; the gate can see it now
+// (tools/flowtest.mjs answers real questions), so the retune is measured rather
+// than guessed. One token per correct answer also states the economy in a
+// sentence a child can hold: four right answers buy a part.
+//
+// Tier 3 keeps a double prize because it appears only on race 3 — difficulty 3
+// is the only one that draws it — and race 3 is the last race, with no garage
+// visit after it. So the gradient costs the budget nothing and the hardest
+// question in the game still visibly pays more.
+//
+// EXPORTED because tests/badges.test.mjs derives its badge thresholds from these
+// numbers and previously scraped them out of this file with a regex, so a rename
+// failed at a parse assertion rather than at the calibration it invalidated.
+export const REWARD_TOKENS = { 1: 1, 2: 1, 3: 2 };
 const BOOST = { strength: 1.3, duration: 2.4, impulse: 6 };
 
 /* ═════════════════════════════════════════════════ beacon placement (Wave 3) ══
@@ -892,8 +916,9 @@ export function createQuizSystem(engine, opts = {}) {
     elResult.classList.toggle('soft', !good);
     elVerdictTxt.textContent = good ? t('quiz.correct')
       : (shown.timedOut ? t('quiz.timeUp') : t('quiz.answerMarked'));
+    const paid = REWARD_TOKENS[shown.data.tier] || 1;
     elSub.textContent = good
-      ? t('quiz.reward', { n: num(REWARD_TOKENS[shown.data.tier] || 3) })
+      ? (paid === 1 ? t('quiz.reward1') : t('quiz.reward', { n: num(paid) }))
       : t('quiz.noPenalty');
     elWarm.textContent = good ? '' : t(shown.warmKey);
     elWarm.style.display = good ? 'none' : '';
