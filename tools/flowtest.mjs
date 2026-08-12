@@ -477,6 +477,10 @@ try {
     // i18n.js ordinal(), Hebrew branch. The header quotes one of these words; the
     // gate's whole point is that it must be the word for the player's TABLE place.
     const HE_ORDINAL = ['', 'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שביעי', 'שמיני'];
+    // The NON-champion podium headline (menu.podium.done). Named once so the
+    // tie-break check below can say "crowned" without pinning the CHAMPION
+    // wording, which is copy and moves.
+    const LOSE_TITLE_HE = 'סוף האליפות';
     const REST = ['zamzum', 'tipa', 'kaftor', 'raash'];
     const BEST_PROMPT = { text: 'מנוע קליל שמאיץ מהר ביציאה מפנייה, בלי לאבד אחיזה', score: 84 };
 
@@ -632,9 +636,20 @@ try {
       const myPlace = Number(mine?.place || 0);
       // Winning replaces the ordinal sentence with the champion headline, so the
       // header agrees with the table when it names first place OR crowns them.
+      //
+      // Deliberately does NOT pin the champion headline's WORDING. It used to
+      // match /אלוף/, and Wave 4's smoothing pass rewrote that headline to
+      // `זכיתם באליפות!` — masculine singular on the game's proudest screen was
+      // exactly the D27 defect that pass existed to find — which turned this
+      // gate red for a copy IMPROVEMENT rather than for a bug. A gate that pins
+      // a string it does not own makes correct copy edits look like
+      // regressions, and that argument usually ends with the copy being
+      // reverted. What this check is for is that the header and the table agree
+      // about the player's place, so it tests exactly that.
+      const crowned = got.title !== LOSE_TITLE_HE && !/מקום ה/.test(got.congrats);
       const headerOK = myPlace === 1
-        ? /אלוף/.test(got.title) && !/מקום ה/.test(got.congrats)
-        : got.congrats.includes(HE_ORDINAL[myPlace]) && !/אלוף/.test(got.title);
+        ? crowned
+        : got.congrats.includes(HE_ORDINAL[myPlace]) && got.title === LOSE_TITLE_HE;
       step(`C#3 tie 24–24 (${label}): table follows the tie-break`, tableOK,
         got.rows.slice(0, 2).map(r => `${r.place}.${r.name} ${r.points}${r.isMe ? '*' : ''}`).join('  '));
       step(`C#3 tie 24–24 (${label}): header place === table place`, headerOK,

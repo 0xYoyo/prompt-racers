@@ -919,3 +919,27 @@ cyan), and it is one screen seen once. The four home-screen pills stay equal wei
 giving `האוסף שלי` gold would put a second gold competitor beside `מתחילים אליפות`, which is
 the one thing that screen must not do. And the in-world gantry and roadside Hebrew stays
 Hebrew in the English build: that is world art, not untranslated UI.
+
+## D42 — A gate that pins copy it does not own turns good edits into regressions
+The final Wave-4 gate went red on exactly one assertion, and not because anything broke.
+`tools/flowtest.mjs`'s tie-break check tested the podium header with `/אלוף/.test(title)`.
+The smoothing pass then rewrote that headline from `אלוף האליפות!` to `זכיתם באליפות!`
+— masculine singular on the proudest screen in the game was precisely the D27 defect the
+pass existed to find — and the gate reported a failure for a copy **improvement**.
+
+That is a worse failure mode than it looks. The assertion is not about the wording at all:
+what it exists to catch is D19's original bug, where the podium's header recomputed the
+player's position independently and disagreed with its own table. By pinning a word it did
+not own, it put a correct edit and a real regression in the same red state — and the way
+that argument usually ends is the copy getting reverted to keep the gate green.
+
+Rewritten to test the property instead: *crowned* means "not the losing headline, and no
+ordinal sentence"; any other place must name its own ordinal and must not be crowned. Only
+the **non**-champion headline is named as a constant, once, because the check needs one
+fixed point and that is the one nothing is likely to rewrite. It still fails if the header
+and the table disagree, which is the whole point of it.
+
+The general rule for this project, where copy is revised by a smoothing pass every wave:
+**gate the behaviour, and name at most one string as an anchor.** A gate is allowed to know
+that a headline changes when you win; it is not allowed to know which words that headline
+uses.
