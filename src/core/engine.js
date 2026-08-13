@@ -83,22 +83,24 @@ export function tierFromFrameTime(ms) {
   return 'low';
 }
 
-/**
- * True when the page is being driven by an automation harness.
- *
- * D35 rejected `navigator.webdriver` as a way to change what a gate SEES, and
- * that stands. This is the opposite use and the reason is the inverse: a probe
- * that reacted to measured frame time would hand every gate and every preview
- * whatever tier SwiftShader happened to be slow enough to earn that minute, and
- * a screenshot silently taken at a different tier reads as a rendering
- * regression in someone else's review. Gates must land on a FIXED tier. Nothing
- * about the game's content, flow or timing depends on this — only which of three
- * budget tables is in force, which every gate that cares already sets explicitly.
- * The probe's decision function, tierFromFrameTime(), is pure and IS gated.
- */
-export function automationDetected() {
-  return typeof navigator !== 'undefined' && navigator.webdriver === true;
-}
+// THE PROBE IS OPT-IN, AND THAT IS WHY THERE IS NO `navigator.webdriver` HERE.
+//
+// A probe that reacts to measured frame time would hand every gate and every
+// preview whatever tier SwiftShader happened to be slow enough to earn that
+// minute, and a screenshot silently taken at a different tier reads as a
+// rendering regression in someone else's review. So gates must land on a fixed
+// tier — but the way to get that is NOT to ask the page whether it is being
+// automated. D35 rejected `navigator.webdriver` for changing what a gate sees,
+// and the honest reading of that decision is about the MECHANISM, not only the
+// symptom: a build that behaves one way for a child and another for a gate is
+// the defect, whichever direction the difference runs.
+//
+// Inverted instead: nothing arms the probe unless someone explicitly asks. The
+// production entry point (main.js) calls `engine.enableQualityProbe()`; the
+// capture harness and every gate simply never call it, and get AUTO_TIER by
+// construction rather than by detection. The game and the gate then run the
+// same code, and the difference is one line the reader can see at the call
+// site instead of a sniff buried three files away.
 
 /**
  * What tier a boot starts at, given the saved `quality` key.
@@ -190,9 +192,19 @@ class Engine {
       this.hidden = !!document.hidden;
     }
 
-    if (this.autoTier && !automationDetected()) this._probe = { warm: PROBE.warmupFrames, samples: [] };
-
     this.resize();
+    return this;
+  }
+
+  /**
+   * Arm the measured quality probe. Called by main.js and by nothing else — see
+   * the note above `AUTO_TIER`. A no-op when the player has chosen a tier
+   * explicitly (their choice outranks any measurement, forever) and when the
+   * harness is driving the loop by hand, where there is no real frame time to
+   * measure in the first place.
+   */
+  enableQualityProbe() {
+    if (this.autoTier && !this._headless) this._probe = { warm: PROBE.warmupFrames, samples: [] };
     return this;
   }
 

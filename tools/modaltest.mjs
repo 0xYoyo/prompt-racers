@@ -695,7 +695,7 @@ async function bootFresh(opts) {
   await evalp(()=>{
     const D = window.__DEBUG, A = () => D.engine.active;
     window.__EV = []; window.__DEF = []; window.__PICK = []; window.__PHASE = [];
-    D.bus.on('quiz:deferred', e => window.__DEF.push({ t: window.__T, since: e.since }));
+    D.bus.on('quiz:deferred', e => window.__DEF.push({ t: window.__T, since: e.since, gap: e.gap }));
     D.bus.on('token:pickup', () => window.__PICK.push(window.__T));
     const st = {};
     window.__sample = () => {
@@ -764,7 +764,10 @@ const picks = await evalp(()=>window.__PICK);
 // quiz.phase === 'intro' — so it is printed but never counted twice.
 const cards = evAll.filter(e=>e.kind!=='qint').sort((a,b)=>a.open-b.open);
 const inWin = cards.filter(c=>c.open < WINDOW_S);
-const openers = evAll.filter(e=>e.kind!=='box' && e.open < WINDOW_S);
+// 'qint' is excluded here for the same reason it is excluded from `cards`: it is
+// a SUB-STATE of the box episode (quiz.phase === 'intro'), not a panel of its
+// own, so counting it would charge the child twice for one interruption.
+const openers = evAll.filter(e=>e.kind!=='box' && e.kind!=='qint' && e.open < WINDOW_S);
 const NAME = { ic:'intro card', tok:'first-token explainer', qint:'  ↳ first-box explainer', box:'question box' };
 console.log('     TIMELINE — synthetic wall seconds from the race opening:');
 for (const e of [...evAll].sort((a,b)=>a.open-b.open))
@@ -905,7 +908,10 @@ let warmed = 0;
 for (let i=0; i<160 && warmed===0; i++) {
   await drive(0.5);
   const st = await probe();
-  if (st.qint) { await drive(READ_S); await tap('Escape'); await wait(60); }
+  // The save is fresh here, so the first-token explainer fires on the first
+  // pickup and would otherwise hold the screen for the whole warm-up.
+  if (st.tok) { await drive(READ_S); await tap('Escape'); await wait(60); }
+  else if (st.qint) { await drive(READ_S); await tap('Escape'); await wait(60); }
   else if (st.box) { await drive(READ_S); await tap('Digit1'); await wait(60);
                      await drive(1); await tap('Space'); await wait(60); await drive(3); }
   warmed = await evalp(()=>window.__EV.filter(e=>e.kind==='box' && e.close!=null).length);
@@ -915,11 +921,6 @@ ok('[magnitude] a question box opened and closed first', warmed>0, `${warmed} bo
 // harness.js hands setTeachingClock) forward to put `since` exactly on the
 // probe point, then hold them there so it stays there for the whole drive.
 const jump = await evalp(t=>{
-  const closed = window.__EV.filter(e=>e.kind==='box' && e.close!=null).pop();
-  const since = window.__T - closed.close;
-  const d = t - since;
-  if (d > 0) { window.__T += d; window.__DEBUG.engine.time += d; }
-  window.__EV.length = 0; window.__DEF.length = 0;
   window.__driveHeld = (secs, stopOnDefer) => { const F=1/60, D=window.__DEBUG,
     t0=D.engine.time, T0=window.__T;
     for (let i=0,n=Math.round(secs/F); i<n; i++) {
@@ -927,6 +928,12 @@ const jump = await evalp(t=>{
       if (D.engine.active.quiz.phase!=='idle') break;
       if (stopOnDefer && window.__DEF.length>0) break;
     } };
+  const closed = window.__EV.filter(e=>e.kind==='box' && e.close!=null).pop();
+  if (!closed) return { since:null, moved:0, ok:false };
+  const since = window.__T - closed.close;
+  const d = t - since;
+  if (d > 0) { window.__T += d; window.__DEBUG.engine.time += d; }
+  window.__EV.length = 0; window.__DEF.length = 0;
   return { since:+since.toFixed(2), moved:+d.toFixed(2), ok:d>0 };
 }, PROBE_SINCE);
 ok('[magnitude] the clock was placed on the probe point and held', jump.ok===true,

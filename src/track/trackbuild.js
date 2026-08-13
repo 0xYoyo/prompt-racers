@@ -1731,7 +1731,18 @@ export function previewSigns(engine) { return previewSignsFor(engine, 'oasis'); 
 export function previewSignsCircuit(engine) { return previewSignsFor(engine, 'circuit'); }
 export function previewSignsCloud(engine) { return previewSignsFor(engine, 'cloud'); }
 
-function previewSignsFor(engine, id) {
+/**
+ * ...and the SAME frame at the far read. A board is read twice — once as it
+ * appears out of the mid-ground (~45 m) and once on the way past (~25 m) — and
+ * signOccluded probes both, so a preview that only ever shows the near one
+ * answers half the question. These three exist so the far read can be looked at
+ * rather than inferred from a cap-height column.
+ */
+export function previewSignsFar(engine) { return previewSignsFor(engine, 'oasis', 42); }
+export function previewSignsFarCircuit(engine) { return previewSignsFor(engine, 'circuit', 42); }
+export function previewSignsFarCloud(engine) { return previewSignsFor(engine, 'cloud', 42); }
+
+function previewSignsFor(engine, id, minRead = 20) {
   const ctx = baseScene(engine, id);
   return wrap(engine, ctx, (camera, track, rig) => {
     const sp = track.spline;
@@ -1772,7 +1783,7 @@ function previewSignsFor(engine, id) {
         // Ignore anything nearer than 20 m: a board at arm's length proves
         // nothing about the roadside curriculum, and framing one is how the
         // sizing miss went unnoticed. This frame is about the MID-GROUND read.
-        if (tmp.length() < 20) continue;
+        if (tmp.length() < minRead) continue;
         const score = 1 / tmp.length();
         if (score > bestScore) { bestScore = score; bestT = t; bestBoard = p; }
       }

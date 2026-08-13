@@ -78,10 +78,24 @@ const IDLE_FLOOR = 0.46;
 // an EVENT invented next wave inherits it too, because the gate is downstream of
 // the whole wiring table (see play() and the world-voice guards).
 //
-// `ui` (clicks the child just made), `music` (the bed) and `garage` (the build
-// sequence and the badge-unlock cue, both answers to a button press on those
-// very screens) are never world audio and are never gated.
-const GAMEPLAY_GROUPS = new Set(['race', 'drive', 'impact', 'quiz', 'engine']);
+// IT IS AN ALLOWLIST, AND THAT IS THE WHOLE POINT. The first version of this was
+// the same idea written the other way round — a set of the five gameplay groups,
+// with everything else audible by default — and it was measured fail-open: ids
+// invented in groups `crowd`, `weather`, `world`, `ambience` and `hazard` all
+// played on the title screen at ~0.040 rms / 0.453 peak. A crowd system already
+// exists in src/gfx/props.js, so the next world group is not hypothetical, and
+// under a denylist it arrives audible behind the logo with nothing to catch it.
+// Written as an allowlist, a group nobody has thought of yet is gated by default
+// and the only way to make a sound menu-safe is to say so here, deliberately.
+//
+// Menu-safe means "this is the SCREEN answering the child", not "this is quiet":
+//   ui      — the click, hover and back blip of the thing they just pressed
+//   garage  — the build/reveal sequence, and the badge-unlock cue badges.js
+//             rides on it, both of which are answers to a button on those screens
+//   screen  — screen-level flourishes that belong to a results/podium SCREEN
+//             rather than to a running race (see `podium.sting`)
+//   music   — the bed; it follows the scene by design
+const MENU_SAFE_GROUPS = new Set(['ui', 'garage', 'screen', 'music']);
 
 // ── the quiz sting's place in the mix (Wave 5) ───────────────────────────────
 // GAPS recorded the quiz sting at peak **0.52**, "the loudest thing in the game",
@@ -680,8 +694,13 @@ class AudioSystem {
   }
   /** True while world/gameplay audio is allowed at all. */
   get worldAudible() { return this._screen !== 'menu'; }
-  /** The one predicate every sound passes through. Group in, allowed out. */
-  _audibleHere(group) { return this.worldAudible || !GAMEPLAY_GROUPS.has(group); }
+  /**
+   * The one predicate every sound passes through. Group in, allowed out.
+   * Note the direction: on a menu, a group must be on the MENU_SAFE_GROUPS
+   * allowlist to be heard. An unrecognised group — the one a future world system
+   * registers — is gated, because the default has to be the safe one.
+   */
+  _audibleHere(group) { return this.worldAudible || MENU_SAFE_GROUPS.has(group); }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
   /**
@@ -869,11 +888,23 @@ class AudioSystem {
   // restarting: the scheduler's clock is the context clock, `_pump` schedules
   // relative to `A.now`, and both resume exactly where they stopped.
   /**
-   * suspend() — stop the audio thread. Safe to call twice; a no-op if the graph
-   * was never built or the context is not running.
-   * @returns {boolean} true if a running context was suspended.
+   * suspend() — stop the audio thread. A no-op if the graph was never built, if
+   * the context is not running, or IF WE ARE ALREADY PARKED.
+   *
+   * That last clause is not defensive tidiness, it is the bug this method had:
+   * `_wasRunning` (the record of whether there was anything to come back to) was
+   * recomputed on every call, so a second `audio:suspend` while already parked
+   * read the state of the parked context and wrote `false`. The following
+   * `audio:resume` then cleared `_hostSuspended`, declined to resume — nothing
+   * was running, said the record — and the game stayed silent for the rest of
+   * the session with no way back. `audio:suspend` is a public bus event and
+   * engine.setHidden is public precisely so a gate can drive it, so "the
+   * transition guard upstream only fires once" is not a guarantee this method
+   * gets to rely on. tests/audio.test.mjs drives the double-suspend directly.
+   * @returns {boolean} true if THIS call parked a running context.
    */
   suspend() {
+    if (this._hostSuspended) return false;      // already parked: keep `_wasRunning`
     if (!this.ready) return false;
     // Remember whether there was anything to come back to: a context that was
     // never unlocked must NOT be resumed by a visibility change, or the autoplay
@@ -1698,7 +1729,16 @@ class AudioSystem {
       // decides what may be heard at all, and that must be true before the
       // graph exists, not only after it. Exactly one scene is gameplay; every
       // other screen in the game is a menu with a live race behind it.
-      this.setScreenKind(name === 'race' ? 'race' : 'menu');
+      //
+      // 'preview' is NEITHER, and leaving it out of this line was a trap I set
+      // and a critic walked into: core/harness.js `bootPreview()` boots every
+      // module preview as the scene `preview`, so auditioning race.js, quiz.js
+      // or the kart through tools/preview.mjs classified them as a menu and
+      // muted exactly the sounds the audition exists to judge. A critic then
+      // measures silence and reports a bug that is not in the module. Previews
+      // are un-gated (`null`), which is also what an offline render and a bare
+      // `audio.play()` in a test rig get.
+      this.setScreenKind(name === 'race' ? 'race' : name === 'preview' ? null : 'menu');
       if (!this.ready) return;
       if (name === 'menu' || name === 'title' || name === 'select') this.playMusic('menu');
       else if (name === 'garage') this.playMusic('garage');

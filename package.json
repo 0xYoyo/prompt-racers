@@ -6,7 +6,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "node tests/spline.test.mjs && node tests/curvature.test.mjs && node tests/orientation.test.mjs && node tests/parts.test.mjs && node tests/ai.test.mjs && node tests/feel.test.mjs && node tests/crowd.test.mjs && node tests/quizbank.test.mjs && node tests/finishline.test.mjs && node tests/signage.test.mjs && node tests/beacons.test.mjs && node tests/economy.test.mjs && node tests/badges.test.mjs && node tests/driftboost.test.mjs && node tests/certificate.test.mjs && node tools/checkall.mjs",
+    "test": "node tests/spline.test.mjs && node tests/curvature.test.mjs && node tests/orientation.test.mjs && node tests/parts.test.mjs && node tests/ai.test.mjs && node tests/feel.test.mjs && node tests/crowd.test.mjs && node tests/quizbank.test.mjs && node tests/finishline.test.mjs && node tests/signage.test.mjs && node tests/beacons.test.mjs && node tests/economy.test.mjs && node tests/badges.test.mjs && node tests/driftboost.test.mjs && node tests/certificate.test.mjs && node tests/perf.test.mjs && node tools/checkall.mjs",
     "build": "node tools/build.mjs",
     "dev": "node tools/build.mjs --dev",
     "shot": "node tools/shot.mjs",

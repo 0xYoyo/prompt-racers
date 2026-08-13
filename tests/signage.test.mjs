@@ -38,7 +38,7 @@
  */
 const STUB_ADV = 0.62;
 /** Widest em/char any candidate face measured in real Chrome (generic fallback). */
-const WIDEST_MEASURED_ADV = 0.6033;
+const WIDEST_MEASURED_ADV = 0.6053;
 function stubCanvas() {
   const state = {};
   const ctx = new Proxy(state, {
@@ -62,10 +62,10 @@ function stubCanvas() {
           //
           // THE NUMBER HAS TO DESCRIBE THE WIDEST FONT THAT COULD RENDER, not
           // the one this machine has. Measured in real Chrome at 1024 px over
-          // every authored world phrase, bold, worst line 'שכבה נסתרת':
-          //     "Arial Hebrew"       0.555 em/char  (macOS)
+          // every authored world phrase, bold:
+          //     "Arial Hebrew"       0.555 em/char  (macOS)      'שכבה נסתרת'
           //     "Noto Sans Hebrew"   0.473 em/char  (where installed)
-          //     generic sans-serif   0.603 em/char  (Windows/Linux/Android)
+          //     generic sans-serif   0.605 em/char  (Win/Linux)  'עבודה מתחלקת'
           // The old 0.60 sat BELOW the generic fallback, so a line could fit
           // here and be 0.5% wider than the stub believed on a school laptop.
           // 0.62 matches TEXT_ADV_EM and clears the widest measured fallback,
@@ -226,6 +226,27 @@ for (const def of TRACKS) {
       }
     }
   });
+  // A DOUBLE-SIDED LETTERED QUAD IS A MIRRORED BOARD. The whole anti-mirroring
+  // invariant is stated per FACE — "U along up x N" — and a DoubleSide material
+  // rasterises the same face with the opposite normal, so its reverse is the
+  // authored artwork flipped. It reads correctly until something puts a viewer
+  // behind it, which Neuron City does on every lap: the circuit doubles back and
+  // the barrier boards of the far section face straight down the straight. They
+  // were single DoubleSide quads, and their Hebrew read back-to-front from there
+  // — the last surviving instance of D32's bug, in the one place D32's own check
+  // permits ("a face pointing away is fine if it has a twin"; a DoubleSide quad
+  // is its own evil twin). Every lettered family is now FrontSide with real
+  // back-to-back faces, and this is what stops the cheap version coming back.
+  let twoSided = 0;
+  track.group.traverse(o => {
+    if (!o.isMesh || !TEXT_MESHES.has(o.name)) return;
+    for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+      if (m && m.side !== THREE.FrontSide) twoSided++;
+    }
+  });
+  ok(`${def.id}: no lettered mesh is DoubleSide (its reverse would be mirrored)`,
+    twoSided === 0, twoSided ? `${twoSided} two-sided lettered materials` : '');
+
   ok(`${def.id}: no negative world scale on text meshes`, negScale === 0);
   ok(`${def.id}: no negative texture repeat on text meshes`, negRepeat === 0);
 

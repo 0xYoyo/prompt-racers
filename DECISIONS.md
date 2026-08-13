@@ -1050,3 +1050,86 @@ caught it within one run because an aspect assertion went red. The lesson is not
 using `.tmp/` copies — that is the git-safe method CLAUDE.md mandates — but that a restore
 hook armed early and firing late will undo work done in between: refresh the backup after
 every accepted edit, or arm the trap only around the mutation itself.
+
+## D46 — The performance brief named four levers; measurement killed three of them
+Item 7 asked for a dpr cap, a measured quality probe, hidden-tab suspend, and "make נמוך
+genuinely cheap (shadows off, reduced crowd/particles, lower draw distance)". The first
+three were real and shipped. **The fourth was measured lever by lever and none of it
+survived**, which is recorded here so nobody spends a day rediscovering it:
+
+| candidate | measured effect | verdict |
+|---|---|---|
+| anisotropy 16 → 4 → 1 | 0.1–0.3 ms, inside run-to-run noise (the "restored to 16" control measured *faster* than the baseline) | not changed |
+| `shadowMap.type` PCFSoft → PCF at medium | 2.4 → 2.3 ms | not changed |
+| shadows off entirely at medium | 2.4 → 2.0 ms | already the low/medium boundary |
+| lower low-tier particle caps | particles are **2 draw calls** and Δ0.00 ms when hidden *entirely* | nothing there to win |
+| crowd/prop density cuts in props.js | the whole world is **31–56 draw calls** — props.js already instances and merges | explicitly NOT applied |
+
+`textures.js`'s 16× anisotropy carries a comment explaining that it exists because the low
+tier has no MSAA and grazing ground speckle crawls without it. **Changing a documented
+decision for an unmeasurable gain, during a freeze, is the wrong trade** — and four files
+churned to look busy is worse than one file changed with numbers behind it.
+
+What the cost actually is, found by hiding scene-graph groups and re-benching:
+**805 of 847 draw calls (95%) are the eight karts.** Each AI kart is 140–237 meshes, and
+`createKartLOD(..., lod: 1)` — already selected for AI karts at the low tier since Wave 1 —
+measured **234 meshes against the high-tier path's 234**. The LOD path existed, was wired,
+and reduced nothing, for four waves, because **nothing ever asserted that the cheap path was
+cheaper than the expensive one**. That assertion now exists (D47).
+
+Shipped in `engine.js`: `TIERS.high.pixelRatio` 2 → **1.5** as a documented cap;
+`effectivePixelRatio(q, dpr)` with a floor of 1 so נמוך is exactly 1.0 even under browser
+zoom; the ratio **re-resolved on every resize** rather than at module load, which is why a
+monitor swap, a zoom or a headless viewport override never used to reach the renderer; and
+a hidden-document path that stops the loop, clears the accumulator and emits
+`audio:suspend`/`audio:resume` (measured: 121 fps → **0 frames, 0 simulated seconds**).
+
+Retina high tier, step+draw+finish: **8.00 → 4.90 ms** (track 0), 4.70 → 3.30, 8.10 → 5.90
+— 27–39% off, 44% fewer fragments. At dpr 1 the change is a provable no-op: all three
+high-tier race screenshots are **byte-identical by SHA-1** before and after. The 1.5 cap is
+a real visual change on a retina display and was judged on 1:1 crops rather than in the
+abstract: a gentle upscale blur on wall-panel seams and thin barrier rails, indistinguishable
+at full-frame, and — the argument that carries it — the DOM HUD and every Hebrew glyph are
+drawn by the browser at full device resolution and are untouched, so **nothing a child reads
+got softer**.
+
+Measured on an M4, which is not a school laptop. The honest form of the 60fps claim is
+therefore a margin, not a machine: medium's worst track is 5.0 ms median / 10.6 ms p95
+against a 16.7 ms budget — **3.3× headroom at the median**. A machine would have to be ~3×
+slower at the same workload before medium dropped under 60fps. What it does *not* prove is
+anything about Intel-iGPU hardware, which is draw-call and fill-rate bound in ways an M4
+hides completely. The real defence for that machine is the probe, which now puts it on
+נמוך by measurement instead of guessing `high` at it from `navigator.deviceMemory`.
+
+## D47 — The quality probe is opt-in, because D35 is about the mechanism, not the symptom
+The probe replaces a `deviceMemory`/`hardwareConcurrency` guess with 40 sampled frames after
+20 discarded warm-up frames. That creates a new problem: a probe reacting to real frame time
+hands every gate and preview whatever tier SwiftShader happened to earn that minute, and a
+screenshot silently taken at a different tier reads as a rendering regression in someone
+else's review. Gates must land on a **fixed** tier.
+
+The builder solved that with `navigator.webdriver`, flagged it for ratification rather than
+burying it, and argued — reasonably — that D35's rejection was about changing what a gate
+*sees of the game's content*, whereas this changes only which of three budget tables is in
+force. **Overruled, and the reasoning is the point.** D35 is about the mechanism as much as
+the symptom: a build with a mode that exists only for non-gates is the defect, whichever
+direction the difference runs. And a sniff can be satisfied *by accident* — anything that
+flips `navigator.webdriver` (a future harness, a browser change, a spoof in someone's own
+verification script) silently re-arms the probe under a gate.
+
+Inverted instead: nothing arms the probe unless someone asks. `main.js` — the only entry a
+child ever comes through — calls `engine.enableQualityProbe()`; the capture harness and
+every gate simply never call it and get `AUTO_TIER` by construction rather than by
+detection. An explicit call site cannot be satisfied by accident, and the divergence is one
+visible line instead of a sniff three files away. It also closed a hole the `_headless` belt
+did not cover: `bootPreview()` calls `engine.goto` before `installDebug`, so `_headless` is
+still false for the first frames, and isolated module previews now get the fixed tier for
+free.
+
+Three assertions replaced the automation one, each failing to a different mistake: `init()`
+must not arm the probe, no `navigator.webdriver` may appear **in code**, and `main.js` must
+actually call it — the last because the builder's original gate would have passed with the
+call site deleted so long as the sniff remained. The check strips comments first: an
+assertion that cannot tell the explanation from the thing explained would forbid documenting
+the decision, and that exact trap had already bitten once while the gate was being written,
+when a `deviceMemory` assertion failed on the prose explaining why `deviceMemory` was removed.

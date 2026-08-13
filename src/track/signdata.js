@@ -54,14 +54,14 @@
  *
  * THE MODEL MUST DESCRIBE THE FONT THAT ACTUALLY RENDERS, NOT THE ONE THIS
  * MACHINE HAPPENS TO HAVE. Measured in real Chrome at 1024 px over every phrase
- * in this file (bold, worst line = 'שכבה נסתרת'):
+ * in this file (bold; worst 'שכבה נסתרת' on Arial Hebrew, 'עבודה מתחלקת' on the fallback):
  *
  *     "Arial Hebrew"          0.555 em/char   ← macOS, the first name in the stack
  *     "Noto Sans Hebrew"      0.473 em/char   ← where it is installed
- *     generic `sans-serif`    0.603 em/char   ← Windows / Linux / Android / ChromeOS
+ *     generic `sans-serif`    0.605 em/char   ← Windows / Linux / Android / ChromeOS
  *
  * The generic fallback is what most judges and every school laptop will render,
- * and it is 8.6% wider than the face the old 0.55 was fitted to — so the model
+ * and it is 9.1% wider than the face the old 0.55 was fitted to — so the model
  * was arithmetic about a font that was probably not the one on screen. 0.62
  * keeps it on the pessimistic side of the WIDEST fallback, not of the local one.
  * Nothing ever overflowed (drawWorldText clips and shrinks); what was wrong was

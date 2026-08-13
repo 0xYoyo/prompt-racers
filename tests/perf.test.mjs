@@ -25,7 +25,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
   TIERS, AUTO_TIER, PROBE, engine,
-  effectivePixelRatio, tierFromFrameTime, resolveInitialTier, automationDetected,
+  effectivePixelRatio, tierFromFrameTime, resolveInitialTier,
 } from '../src/core/engine.js';
 import { bus } from '../src/core/bus.js';
 import { save } from '../src/core/save.js';
@@ -93,6 +93,7 @@ ok('effectivePixelRatio survives a missing/garbage devicePixelRatio',
 // evaluated once, at import. Any read of devicePixelRatio inside the TIERS
 // literal is that bug returning, whatever number it caps at.
 const engineSrc = src('src/core/engine.js');
+const mainSrc = src('src/main.js');
 const tierBlock = engineSrc.slice(engineSrc.indexOf('export const TIERS'),
   engineSrc.indexOf('export function effectivePixelRatio'));
 ok('the TIERS table itself reads no devicePixelRatio (resolved per-resize, not at load)',
@@ -180,13 +181,25 @@ for (const t of ['low', 'medium', 'high']) {
 ok('a corrupt saved tier falls back to the fixed tier, probe-eligible',
   resolveInitialTier('ultra').name === AUTO_TIER && resolveInitialTier('ultra').autoTier === true);
 
-// Gates and previews must land on a FIXED tier. Under an automation harness the
-// probe is never armed at all — a screenshot taken at a probed tier would read
-// as a rendering regression in every other reviewer's diff.
-ok('automation is detected, so gates/previews never get a probed tier',
-  typeof automationDetected() === 'boolean'
-  && /automationDetected\(\)/.test(engineSrc)
-  && /this\.autoTier && !automationDetected\(\)/.test(engineSrc));
+// Gates and previews must land on a FIXED tier — a screenshot taken at a probed
+// tier reads as a rendering regression in every other reviewer's diff. The way
+// that is guaranteed is the thing to assert: the probe is OPT-IN, armed only by
+// an explicit `enableQualityProbe()`, never by `init()` and never by sniffing
+// for a test harness. Three assertions, because each fails to a different
+// plausible mistake:
+//   * init() must not arm it        — the regression that reintroduces the leak
+//   * no navigator.webdriver sniff  — the D35 mechanism, rejected here too
+//   * main.js must actually call it — or production silently never probes
+ok('init() does not arm the probe — it is opt-in',
+  !/this\._probe\s*=\s*\{[^}]*\}/.test(engineSrc.split('enableQualityProbe')[0].split('init(mountEl)')[1] || ''));
+// Comments are stripped first: the note above AUTO_TIER explains at length WHY
+// there is no webdriver sniff, and an assertion that cannot tell the explanation
+// from the thing explained would forbid documenting the decision.
+const stripComments = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+ok('the probe does not sniff for an automation harness (D35)',
+  !/navigator\s*\.\s*webdriver/.test(stripComments(engineSrc)));
+ok('…and the production entry point is what arms it',
+  /engine\.enableQualityProbe\(\)/.test(mainSrc));
 
 // ── 5. the hidden document ───────────────────────────────────────────────────
 console.log('\n  \x1b[1mbackgrounded tab\x1b[0m');

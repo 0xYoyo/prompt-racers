@@ -186,6 +186,24 @@ export const PART_SLOTS = ['engine', 'tires', 'wing', 'chassis', 'exhaust'];
 export const PART_TIERS = 4;     // 0 = junk, 3 = glowing hero part
 
 /* ------------------------------------------------------------------ */
+/* level of detail                                                      */
+/* ------------------------------------------------------------------ */
+
+// THE bug this normaliser exists for: race.js asks for a cheap opponent with
+// `lod: 1` — a NUMBER — and every test inside createKart is a STRING compare
+// (`lod === 'low'`). `1 === 'low'` is false, so the "cheap" AI kart was built at
+// MID detail: 235 meshes against the player's own 144 at the low tier. The LOD
+// path was wired, called, and reduced nothing at all.
+//
+// Numbers are the renderer's usual LOD vocabulary (0 = nearest), so accept them:
+// 0 means "no override, use the tier", anything >= 1 means the cheap build.
+export const LOD_LEVELS = ['low', 'mid', 'high'];
+export function normalizeLod(v) {
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 1 ? 'low' : null;
+  return LOD_LEVELS.includes(v) ? v : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* createKart                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -193,10 +211,17 @@ export function createKart(opts = {}) {
   const racer = opts.racer || ROSTER[0];
   const eng = opts.engine || null;
   const q = eng?.q || null;
-  const lod = opts.lod || (q ? (q.name === 'low' ? 'low' : q.name === 'medium' ? 'mid' : 'high') : 'high');
+  const lod = normalizeLod(opts.lod) || (q ? (q.name === 'low' ? 'low' : q.name === 'medium' ? 'mid' : 'high') : 'high');
   const LOW = lod === 'low';
   const HIGH = lod === 'high';
   const shadows = opts.shadows ?? (q ? !!q.shadows : true);
+  // Weld the parts of the kart that never move relative to each other into one
+  // geometry per material. Opt-in, and only createKartLOD (the distant-AI build)
+  // turns it on: the player's kart and every garage/menu kart stay unwelded.
+  const MERGE = !!opts.merge;
+  // Overridable only so the LOD preview rigs can build the welded kart's exact
+  // unwelded twin; the game never passes it.
+  const PLATES = opts.plates ?? (!LOW || MERGE);
 
   const geos = [];   // owned geometries (disposed with the kart)
   const mats = [];   // owned materials
@@ -383,7 +408,12 @@ export function createKart(opts = {}) {
   mesh(G(new THREE.CylinderGeometry(0.06, 0.06, 0.05, LOW ? 6 : 12)), M.accent, steerPivot, [0, 0, 0.02], [Math.PI / 2, 0, 0]);
 
   /* ---------------- number plates -------------------------------- */
-  if (!LOW) {
+  // Kept on the welded build even though it is a 'low' one: the three plates
+  // share a geometry and a material, so after the weld they are ONE draw call,
+  // and the rear number is the only thing that tells a child WHICH rival is in
+  // front of them. The player's own low-tier kart still drops them — nobody ever
+  // sees the number on the kart they are sitting in.
+  if (PLATES) {
     const numTex = numberPlateTexture(racerNumber(racer), col, col2);
     texs.push(numTex);
     const plateMat = mat(0xffffff, { map: numTex, roughness: 0.55, transparent: true, alphaTest: 0.4 });
@@ -1213,6 +1243,167 @@ export function createKart(opts = {}) {
     }
   }
 
+  /* ---------------- static weld (cheap AI karts only) ------------- */
+  //
+  // Draw calls, not triangles, are what an integrated-GPU school laptop runs out
+  // of first, and a measured frame of this game spends 95% of its calls on the
+  // eight karts (847 total, of which 805 are karts and 31 the entire world —
+  // props.js already instances and merges). A kart is ~200 tiny meshes that
+  // never move relative to one another, which is exactly the shape of thing a
+  // renderer should be given as ONE mesh.
+  //
+  // The weld is lossless by construction: same vertices, same normals, same
+  // materials, same world transforms, same shadow flags — the only thing that
+  // changes is how many buffers get bound. Anything that animates is a FRAME
+  // boundary and is welded only within itself:
+  //   bodyPivot   roll/pitch/squat      driverPivot  leans into corners
+  //   headPivot   turns                 steerPivot   turns with the wheel
+  //   arm shoulders (aimed at the grips), each wheel's spin group,
+  //   and the wobblers / coreGlow / flames registries, which are moved,
+  //   pulsed, scaled or toggled per frame by update().
+  const welded = [];      // meshes this pass created, for pruning on rebuild
+
+  // Concatenate a bucket of {geo, matrix} into one indexed BufferGeometry.
+  function weldGeometries(items) {
+    let vCount = 0, iCount = 0;
+    const prepped = [];
+    for (const it of items) {
+      const g = it.geo.clone();
+      g.applyMatrix4(it.matrix);                 // transforms normals correctly
+      if (!g.attributes.normal) g.computeVertexNormals();
+      const n = g.attributes.position.count;
+      vCount += n;
+      iCount += g.index ? g.index.count : n;
+      prepped.push(g);
+    }
+    const pos = new Float32Array(vCount * 3);
+    const nor = new Float32Array(vCount * 3);
+    const uvs = new Float32Array(vCount * 2);
+    const idx = vCount > 65535 ? new Uint32Array(iCount) : new Uint16Array(iCount);
+    let vo = 0, io = 0;
+    for (const g of prepped) {
+      const p = g.attributes.position, nm = g.attributes.normal, uv = g.attributes.uv;
+      for (let i = 0; i < p.count; i++) {
+        const o3 = (vo + i) * 3, o2 = (vo + i) * 2;
+        pos[o3] = p.getX(i); pos[o3 + 1] = p.getY(i); pos[o3 + 2] = p.getZ(i);
+        if (nm) { nor[o3] = nm.getX(i); nor[o3 + 1] = nm.getY(i); nor[o3 + 2] = nm.getZ(i); }
+        if (uv) { uvs[o2] = uv.getX(i); uvs[o2 + 1] = uv.getY(i); }
+      }
+      if (g.index) for (let i = 0; i < g.index.count; i++) idx[io + i] = g.index.getX(i) + vo;
+      else for (let i = 0; i < p.count; i++) idx[io + i] = vo + i;
+      vo += p.count;
+      io += g.index ? g.index.count : p.count;
+      g.dispose();
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    out.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    out.setIndex(new THREE.BufferAttribute(idx, 1));
+    out.computeBoundingSphere();
+    out.computeBoundingBox();
+    return out;
+  }
+
+  // Weld every static mesh under `roots` into one mesh per material, parented to
+  // `frame`. `roots` must all sit in `frame`'s own coordinate space. `stop` is
+  // the set of nodes that must keep their own transform (see the note above);
+  // recursion never enters one, and a mesh with a stopped descendant is left
+  // exactly where it is.
+  function weldFrame(frame, stop, roots = [frame]) {
+    const buckets = new Map();
+    const dead = [];
+    const _m = () => new THREE.Matrix4();
+    const holdsDynamic = obj => {
+      let f = false;
+      obj.traverse(o => { if (o !== obj && (stop.has(o) || o.isInstancedMesh)) f = true; });
+      return f;
+    };
+    const collect = (obj, m) => {
+      if (obj.isMesh && obj.geometry && obj.material) {
+        const mm = obj.material;
+        const key = `${mm.uuid}|${obj.castShadow ? 1 : 0}|${obj.receiveShadow ? 1 : 0}|${obj.renderOrder}|${obj.visible ? 1 : 0}`;
+        let b = buckets.get(key);
+        if (!b) {
+          b = { material: mm, castShadow: obj.castShadow, receiveShadow: obj.receiveShadow,
+            renderOrder: obj.renderOrder, visible: obj.visible, items: [] };
+          buckets.set(key, b);
+        }
+        b.items.push({ geo: obj.geometry, matrix: m });
+      }
+      for (const c of obj.children) { c.updateMatrix(); collect(c, _m().multiplyMatrices(m, c.matrix)); }
+    };
+    const visit = (obj, m) => {
+      for (const c of obj.children) {
+        if (stop.has(c) || c.isInstancedMesh) continue;
+        c.updateMatrix();
+        const cm = _m().multiplyMatrices(m, c.matrix);
+        if (c.isMesh && !holdsDynamic(c)) { collect(c, cm); dead.push(c); }
+        else visit(c, cm);
+      }
+    };
+    for (const r of roots) visit(r, _m());
+    if (!dead.length) return;
+    for (const d of dead) d.removeFromParent();
+    for (const b of buckets.values()) {
+      const mesh2 = new THREE.Mesh(G(weldGeometries(b.items)), b.material);
+      mesh2.castShadow = b.castShadow;
+      mesh2.receiveShadow = b.receiveShadow;
+      mesh2.renderOrder = b.renderOrder;
+      mesh2.visible = b.visible;
+      mesh2.name = 'weld';
+      frame.add(mesh2);
+      welded.push(mesh2);
+    }
+  }
+
+  // Drop the source geometries the weld orphaned. They were never uploaded to
+  // the GPU (the kart is welded before its first frame), so this is CPU arrays
+  // only — but it is ~200 of them per kart, times seven opponents.
+  function pruneGeos() {
+    const live = new Set();
+    group.traverse(o => { if (o.geometry) live.add(o.geometry); });
+    for (let i = geos.length - 1; i >= 0; i--) {
+      if (!live.has(geos[i])) { geos[i].dispose(); geos.splice(i, 1); }
+    }
+  }
+
+  // The five upgrade slots and the chassis are all identity-transform siblings
+  // under bodyPivot, i.e. ONE rigid frame — so they weld together, and a body
+  // that shares a material with a wing costs one draw call, not two. They cannot
+  // weld into chassisGrp itself, because clearSlot() has to be able to throw the
+  // slot half away again when the garage changes a part: see setParts.
+  const slotWeld = MERGE ? new THREE.Group() : null;
+  if (slotWeld) { slotWeld.name = 'weld:slots'; bodyPivot.add(slotWeld); }
+  let chassisWelded = false;
+
+  function weldStatics() {
+    const stop = new Set([driverPivot, headPivot, steerPivot, contact, slotWeld]);
+    for (const a of arms) stop.add(a.shoulder);
+    for (const w of wheels) { stop.add(w.axle); stop.add(w.steer); stop.add(w.spin); }
+    for (const arr of [wobblers, coreGlow, flames]) for (const o of arr) stop.add(o);
+
+    if (!chassisWelded) {
+      // The knees hang off bodyPivot directly; in the welded build they belong
+      // to the same rigid frame as the chassis, so move them there first.
+      for (const c of [...bodyPivot.children]) if (c.isMesh && !stop.has(c)) chassisGrp.add(c);
+      weldFrame(chassisGrp, stop);
+      weldFrame(driverPivot, stop);
+      weldFrame(headPivot, stop);
+      weldFrame(steerPivot, stop);
+      for (const a of arms) weldFrame(a.shoulder, stop);
+      // A wobbler is a frame of its own (update() rotates it), but whatever
+      // hangs off it — the spark racer's three prongs — is static within it.
+      for (const o of wobblers) weldFrame(o, stop);
+      chassisWelded = true;
+    }
+    // The slot half is rebuilt from scratch on every parts change.
+    for (const c of [...slotWeld.children]) { c.removeFromParent(); }
+    weldFrame(slotWeld, stop, PART_SLOTS.map(s => slotGrp[s]).filter(Boolean));
+    for (const w of wheels) if (w.visual) weldFrame(w.visual, stop);
+    pruneGeos();
+  }
+
   let api = null;
 
   let built = false;
@@ -1225,7 +1416,13 @@ export function createKart(opts = {}) {
       if (t !== parts[s]) { parts[s] = t; changed.push(s); }
     }
     if (built && !changed.length) return api;
-    const todo = built ? changed : PART_SLOTS;   // first call builds every slot
+    // First call builds every slot. On a welded kart every LATER call does too:
+    // the five slots share one welded mesh per material, so a single slot can no
+    // longer be replaced on its own — the welded half is thrown away and rebuilt
+    // whole. Slower than the unwelded path and never taken in the game (only the
+    // garage's preview kart changes parts after construction, and it is never
+    // welded), but it keeps setParts honest instead of silently stale.
+    const todo = (built && !MERGE) ? changed : PART_SLOTS;
     built = true;
     for (const s of todo) {
       if (s === 'tires') { for (const w of wheels) buildTyreVisual(w, parts.tires); continue; }
@@ -1237,6 +1434,7 @@ export function createKart(opts = {}) {
       else if (s === 'exhaust') buildExhaust(parts.exhaust);
       else if (s === 'chassis') buildChassisKit(parts.chassis);
     }
+    if (MERGE) weldStatics();
     return api;
   }
 
@@ -1379,8 +1577,19 @@ export function createKart(opts = {}) {
 }
 
 // Cheaper variant for distant AI karts. Respects engine.q if given.
+//
+// Two things make it cheap, and until Wave 5 neither of them fired:
+//   * 'low' detail — the same reduction the player's kart already takes at the
+//     נמוך tier. `opts.lod` used to be passed through raw, so race.js's `lod: 1`
+//     lost the string compare and bought mid detail (see normalizeLod).
+//   * the static weld — one draw call per material per animated frame instead
+//     of one per mesh. Lossless; see weldFrame.
 export function createKartLOD(opts = {}) {
-  return createKart(Object.assign({}, opts, { lod: opts.lod || 'low', shadows: false }));
+  return createKart(Object.assign({}, opts, {
+    lod: normalizeLod(opts.lod) || 'low',
+    shadows: false,
+    merge: opts.merge ?? true,
+  }));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1600,6 +1809,67 @@ export function previewTierLadder(engine) {
     dispose() { disposeWorld(ground, env, karts); },
   };
 }
+
+// ── LOD comparison rigs (Wave 5) ─────────────────────────────────────────────
+// Three builds of the same opponent, framed identically, so the two questions a
+// LOD change has to answer can be answered by looking:
+//   *Old   — what race.js used to get from `lod: 1`: MID detail, unwelded.
+//   *Plain — the LOD fix alone: LOW detail, unwelded.
+//   *Weld  — what it gets now: LOW detail, welded. Must be pixel-identical to
+//            *Plain, because the weld only changes how many buffers are bound.
+// Both rigs hold a constant pose, so `--t 1.5` is reproducible.
+const LOD_ROW = [[10, -3.0], [25, 3.2], [50, 13.0]];
+const LOD_POSE = { steer: 0.10, speed01: 0.62, drifting: false, driftCharge01: 0, airborne: false, boosting: false };
+const LOD_PARTS = { engine: 2, tires: 2, wing: 2, chassis: 2, exhaust: 2 };
+
+function lodRow(engine, make) {
+  const { scene, ground, env } = baseScene(engine, 260);
+  // The race's own fog would have dissolved the 50 m kart into the ground before
+  // it could be judged — which is an argument for the LOD, not a way to test it.
+  scene.fog = new THREE.Fog(0xb9a68d, 120, 400);
+  const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.1, 400);
+  camera.position.set(0, 1.62, 1.2);
+  camera.lookAt(0, 1.0, -24);
+  const karts = LOD_ROW.map(([d, x], i) => {
+    const k = make(engine, ROSTER[i % ROSTER.length]);
+    k.group.position.set(x, 0, -d);
+    scene.add(k.group);
+    return k;
+  });
+  return {
+    scene, camera,
+    update(dt) { for (const k of karts) k.update(dt, LOD_POSE); },
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); },
+    dispose() { disposeWorld(ground, env, karts); },
+  };
+}
+
+function lodHero(engine, make) {
+  const { scene, ground, env } = baseScene(engine, 90);
+  const camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.1, 400);
+  camera.position.set(3.6, 2.15, 4.6);
+  camera.lookAt(0, 0.60, -0.05);
+  const kart = make(engine, ROSTER[0]);
+  kart.group.rotation.y = 3.30;
+  scene.add(kart.group);
+  return {
+    scene, camera,
+    update(dt) { kart.update(dt, LOD_POSE); },
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); },
+    dispose() { disposeWorld(ground, env, [kart]); },
+  };
+}
+
+const mkOld = (engine, racer) => createKart({ racer, engine, parts: LOD_PARTS, lod: 'mid', shadows: false });
+const mkPlain = (engine, racer) => createKart({ racer, engine, parts: LOD_PARTS, lod: 'low', shadows: false, plates: true });
+const mkWeld = (engine, racer) => createKartLOD({ racer, engine, parts: LOD_PARTS, lod: 1 });
+
+export const previewLodOld = engine => lodRow(engine, mkOld);
+export const previewLodPlain = engine => lodRow(engine, mkPlain);
+export const previewLodWeld = engine => lodRow(engine, mkWeld);
+export const previewLodHeroOld = engine => lodHero(engine, mkOld);
+export const previewLodHeroPlain = engine => lodHero(engine, mkPlain);
+export const previewLodHeroWeld = engine => lodHero(engine, mkWeld);
 
 export function previewParts(engine) {
   const { scene, ground, env } = baseScene(engine, 140);

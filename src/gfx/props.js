@@ -1806,8 +1806,21 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
         // Pinned geometrically (normals + uv gradients, not a string match) by
         // tests/signage.test.mjs — see D32.
         const [a, b] = side > 0 ? [p1, p0] : [p0, p1];
+        // BACK-TO-BACK, not one DoubleSide quad. A single quad shown on both
+        // sides IS a mirrored board seen from behind — and on Neuron City, where
+        // the circuit doubles back on itself, that far side is squarely in the
+        // driver's view down the straight (shots/w5r2-crop-circuit-far.png
+        // before this change). Two faces, each lettered against its OWN normal,
+        // read forwards from either side, which is also what a real trackside
+        // board does. The 6 cm offset keeps the pair out of z-fighting.
+        const r = spline.rightAt(t);
+        const ox = r.x * side * 0.06, oz = r.z * side * 0.06;
         boards.face(
           [[a.x, yb, a.z], [b.x, yb, b.z], [b.x, yt, b.z], [a.x, yt, a.z]],
+          [[u0, v0], [u0 + du, v0], [u0 + du, v0 + dv], [u0, v0 + dv]], null);
+        boards.face(
+          [[b.x + ox, yb, b.z + oz], [a.x + ox, yb, a.z + oz],
+            [a.x + ox, yt, a.z + oz], [b.x + ox, yt, b.z + oz]],
           [[u0, v0], [u0 + du, v0], [u0 + du, v0 + dv], [u0, v0 + dv]], null);
       }
     }
@@ -2392,7 +2405,10 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     }), 'bunting', false);
     const atlas = brandAtlas(Math.min(q.texSize || 512, 512) * 2);
     commit(boards, new THREE.MeshStandardMaterial({
-      map: atlas, roughness: 0.85, side: THREE.DoubleSide,
+      // FrontSide: the pair of faces above IS the two sides, so a DoubleSide
+      // material here would put the mirrored reverse of each face back on top
+      // of its twin.
+      map: atlas, roughness: 0.85, side: THREE.FrontSide,
       emissive: D.lit ? 0xffffff : 0x000000, emissiveMap: D.lit ? atlas : null,
       emissiveIntensity: D.lit ? 0.55 : 0,
     }), 'boards', false);
