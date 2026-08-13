@@ -515,8 +515,18 @@ for (let i = 0; i < TRACKS.length; i++) {
   const spread = midOuts.length ? Math.max(...midOuts) - Math.min(...midOuts) : 0;
   ok(`${def.id}: some signage sits in the mid-ground band`, midOuts.length >= 8,
     `${midOuts.length / 4} of ${faces.length / 4} boards beyond +12 m`);
-  ok(`${def.id}: the mid-ground band has depth (>=6 m of spread)`, spread >= 6,
-    `${spread.toFixed(1)} m between nearest and furthest`);
+  // >=4 m, NOT >=6, AND THE REASON IS WRITTEN DOWN. The rung this asserts is
+  // real — boards at one distance are a fence, not depth — but the band they are
+  // spread through is 8-13 m past the run-off, five metres wide by construction
+  // (trackbuild's `wanted`), because beyond about 13 m a board leaves the 62
+  // degree frame before it grows: `שכבה נסתרת` at 22.6 m from the centreline
+  // peaked at 8.7 px of ink for a whole lap. Asserting 6 m of spread out of a
+  // 5 m band is asking for the number to be met by pushing one board out to
+  // where it cannot be read, which is the trade D38 already made in the other
+  // direction. Measured with the band at 7-14 m, circuit still only spread 5.5 m
+  // and oasis's worst read fell from 17.5 to 14.7 px; the spread is what gave.
+  ok(`${def.id}: the mid-ground band has depth (>=4 m of spread)`, spread >= 4,
+    `${spread.toFixed(1)} m between nearest and furthest, band is 5 m wide`);
 
   // ── THE CURRICULUM IS A SEQUENCE, NOT A BAG ────────────────────────────────
   // TRACK_SIGNS[theme].lines is written in the order a child should meet it:
@@ -945,16 +955,17 @@ console.log('\n  OCCLUSION — no furniture crosses the letters\n  ' + '─'.rep
 // was clear. That is the failure this file exists to make loud, and it did:
 // the round-3 draft's first index disagreed with the raycaster on 4 boards.
 const PROBE_COLS = 11, PROBE_ROWS = 5, PROBE_X = 0.43;
-// THE WINDOW A BOARD IS READ OVER, in metres back up the racing line — sampled
-// every 5-9 m from first sight to the last useful glance, not at two points.
-// Two was not enough: at 19 m a marshal-post canopy clipped the foot of the
-// last letter of circuit's `אות עובר הלאה` while both 45 m and 28 m were clean
-// (round-3 draft, shots/w5r3-circuit-near-high.png). 16 m was measured too and
-// left out deliberately: one board on circuit cannot be placed clear of the
-// grandstand canopies that close in, and at 16 m the board fills a third of the
-// frame — losing the corner of one letter there is not what makes a line
-// unreadable. Placement uses the same five.
-const READ_BACKS = [45, 36, 28, 23, 19];
+// THE WINDOW A BOARD IS READ OVER, in metres back up the racing line — six
+// points from first sight to level-ish with the board, not the two round 2 used.
+// Two was not enough twice over: at 19 m a marshal-post canopy clipped the foot
+// of the last letter of circuit's `אות עובר הלאה` while both 45 m and 28 m were
+// clean, and the nearest useful read is nearer still — the signage preview
+// frames a board at 20 m of STRAIGHT-LINE distance, which for a board 20 m off
+// the centreline is only ~6 m back along the track. Placement uses the same six.
+//
+// These are distances BACK ALONG THE RACING LINE, not distances to the board:
+// the eye is on the line, the board is 20-odd metres to the side of it.
+const READ_BACKS = [45, 36, 28, 21, 15, 9];
 for (let i = 0; i < TRACKS.length; i++) {
   const def = TRACKS[i], track = built[i];
   const { spline } = track;

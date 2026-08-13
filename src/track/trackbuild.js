@@ -1182,9 +1182,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       if (mm && mm.transparent && mm.depthWrite === false) return;
       const g = o.geometry;
       const tris = (g.index ? g.index.count : (g.attributes.position?.count || 0)) / 3;
-      if (tris < 1 || tris > 20000) return;
-      const bb0 = new THREE.Box3().setFromObject(o);
-      if (bb0.max.y - bb0.min.y < 3) return;
+      if (tris < 1) return;
       out.push(o);
     });
     return out;
@@ -1357,7 +1355,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
    * stock raycasting, so what it independently checks is the blocker set, the
    * band and this file's triangle index, not the sampling density.
    */
-  const TEXT_PROBE_COLS = 2, TEXT_PROBE_ROWS = 2;
+  const TEXT_PROBE_COLS = 21, TEXT_PROBE_ROWS = 9;
   const TEXT_PROBE_X = 0.43;
   const SIGN_SET = TRACK_SIGNS[def.theme] || TRACK_SIGNS.oasis;
   /**
@@ -1390,7 +1388,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       }
     } else probes.push(centre);
     let blocked = 0;
-    for (const back of [45, 28]) {
+    for (const back of [45, 36, 28, 21, 15, 9]) {
       const rt = ((t - back / L) % 1 + 1) % 1;
       const rp = spline.offsetPoint(rt, 0);
       const ex = rp.x, ey = rp.y + 3.25, ez = rp.z;
