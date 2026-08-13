@@ -77,12 +77,20 @@
 //
 // Bus events emitted (payload shape at emitResult() below):
 //   quiz:open  quiz:correct  quiz:wrong  quiz:timeout  quiz:close
+//   quiz:deferred — a beacon was driven through but the box did NOT open,
+//   because a teaching card closed less than TEACH_GAP_S ago (Wave 5). Nothing
+//   is lost: the beacon respawns and the question comes at the next box. It is
+//   emitted so a gate can prove a deferral actually happened rather than
+//   inferring it from a card that simply never fired.
 // ═════════════════════════════════════════════════════════════════════════════
 import * as THREE from 'three';
 import { bus } from '../core/bus.js';
 import { makeRng } from '../core/rng.js';
 import { save } from '../core/save.js';
-import { h, injectStyles, pushModal, popModal, modalOpen } from '../ui/style.js';
+import {
+  h, injectStyles, pushModal, popModal, modalOpen,
+  teachingCardReady, noteTeachingCard, sinceTeachingCard,
+} from '../ui/style.js';
 import { registerStrings, t, num, getLang } from '../ui/i18n.js';
 import { QUESTIONS, questionsForDifficulty, tiersForDifficulty, bankStats } from './quizdata.js';
 // Preview-only (the game imports these long before quiz.js is reached, so this
@@ -139,8 +147,8 @@ registerStrings({
     // anywhere. House voice: impersonal plural, no gendered imperative (D27).
     'quiz.intro.kicker': 'חדש על המסלול',
     'quiz.intro.title': 'תיבת שאלה',
-    'quiz.intro.1': 'כל תיבה כזאת היא שאלה אחת על AI — תשובה נכונה נותנת <b>טורבו</b> ועוד <b>טוקנים למוסך</b>.',
-    'quiz.intro.2': 'תשובה שלא קלעה לא עולה כלום, אז שווה לאסוף כל תיבה שרואים בדרך.',
+    'quiz.intro.1': 'כל תיבה היא שאלה אחת על AI — תשובה נכונה נותנת <b>טורבו</b> ו<b>טוקנים למוסך</b>.',
+    'quiz.intro.2': 'תשובה שלא קלעה לא עולה כלום, אז אוספים כל תיבה בדרך.',
     'quiz.intro.go': 'קדימה לשאלה! (רווח)',
   },
   en: {
@@ -168,8 +176,8 @@ registerStrings({
     'quiz.topic.vibe': 'Vibe coding',
     'quiz.intro.kicker': 'New on the track',
     'quiz.intro.title': 'Question box',
-    'quiz.intro.1': 'Every one of these boxes is a single question about AI — a right answer gives a <b>boost</b> plus <b>extra tokens for the garage</b>.',
-    'quiz.intro.2': 'An answer that misses costs nothing at all, so every box on the way is worth grabbing.',
+    'quiz.intro.1': 'Every box is one question about AI — a right answer gives a <b>boost</b> and <b>tokens for the garage</b>.',
+    'quiz.intro.2': 'An answer that misses costs nothing, so every box on the way is worth grabbing.',
     'quiz.intro.go': 'On to the question! (Space)',
   },
 });
@@ -532,6 +540,12 @@ function injectQuizCSS() {
 //     is false while ANY modal is up, exactly like the token explainer's, and
 //   • when it defers the save flag is LEFT UNTOUCHED, so the next question box
 //     shows it. A beacon respawns; the explainer is never lost.
+//
+// Wave 5 adds a SECOND reason to wait, and it is deliberately not applied here:
+// the teaching-card cadence (ui/style.js) is checked at the BEACON, so a box
+// that arrives too soon after another card does not open at all. Gating this
+// card instead would hand a child their very first question with the
+// explanation skipped — the one thing the explainer exists to prevent.
 //
 // The save flag is a new key. `save.js` merges unknown keys against DEFAULTS, so
 // this is safe without editing that file, but the lead must add
@@ -966,6 +980,11 @@ export function createQuizSystem(engine, opts = {}) {
         pendingPick = null;
         bus.emit('quiz:introClosed', {});
         openQuestion(p);                // …and now the question the box was for
+        // Normally the question follows immediately and close() will start the
+        // cadence clock for the pair. If something took the screen in between,
+        // nothing followed — and the explainer was still a teaching card, so
+        // the clock has to start here instead.
+        if (phase === 'idle') noteTeachingCard();
       },
     });
     introEl = el;
@@ -1156,6 +1175,10 @@ export function createQuizSystem(engine, opts = {}) {
     phaseT = 0;
     beat = -1;
     cooldown = lastResult?.timedOut ? COOLDOWN_IGNORED_S : COOLDOWN_S;
+    // The whole episode — explainer, question, feedback, 3·2·1 — is ONE
+    // teaching card, and this is the moment it lets go of the screen. The
+    // cadence clock starts here, so the next card (and the next box) waits.
+    noteTeachingCard();
     bus.emit('quiz:close', lastResult);
   }
 
@@ -1191,7 +1214,32 @@ export function createQuizSystem(engine, opts = {}) {
       if (hit) {
         hit.alive = false;
         hit.respawn = RESPAWN_S;
-        openQuestion();
+        // ── TEACHING-CARD CADENCE (Wave 5) ─────────────────────────────────
+        // A question box is a teaching card: on a fresh save the first one
+        // opens the "what a question box is" explainer, and every one of them
+        // ends in the feedback panel a child reads. So it obeys the same gap
+        // as the other cards (ui/style.js): not within TEACH_GAP_S of the
+        // previous card's close.
+        //
+        // The check is HERE, at the beacon, and NOT inside openQuestion(),
+        // for two reasons. First, this is the only trigger a child can
+        // actually produce — openQuestion() is also the previews' and the
+        // harness's force-open, which must stay deterministic. Second, the
+        // explainer must never be skipped INDEPENDENTLY of its question: if
+        // introDue() were the thing gated, a child's very first box would ask
+        // a question they had never had explained. Deferring the whole box
+        // keeps the pair together.
+        //
+        // Deferring costs nothing and queues nothing: the beacon has been
+        // consumed and respawns in RESPAWN_S, and the lap has five more, so
+        // the question simply arrives at the next box (D15/D18's rule for the
+        // quiz, applied to a second reason for waiting). The save flag is
+        // untouched, so the explainer is still owed and still comes.
+        if (!teachingCardReady()) {
+          bus.emit('quiz:deferred', { since: sinceTeachingCard(), reason: 'cadence' });
+        } else {
+          openQuestion();
+        }
       }
     }
 

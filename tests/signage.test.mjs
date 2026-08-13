@@ -47,7 +47,17 @@ function stubCanvas() {
         case 'createPattern':
           return () => ({ addColorStop() {} });
         case 'measureText':
-          return (s) => ({ width: String(s).length * 8 });
+          // FONT-AWARE, and deliberately pessimistic. The old stub returned
+          // `chars * 8` whatever the font, which made the real-font clamp inside
+          // drawWorldText a no-op here and left the gate unable to see the bug
+          // this wave existed to fix. Measured against the shipping bold Hebrew
+          // face at 1024 px, the widest real line came in at 0.52 em/char; 0.60
+          // keeps the model on the far side of the truth, so a line that fits
+          // HERE fits in a browser with room to spare.
+          return (s) => {
+            const m = /(\d+(?:\.\d+)?)px/.exec(String(t.font || '16px'));
+            return { width: String(s).length * 0.60 * (m ? +m[1] : 16) };
+          };
         default:
           return () => {};
       }
@@ -62,9 +72,17 @@ if (typeof globalThis.document === 'undefined') {
 
 const THREE = await import('three');
 const { buildTrack, auditTrackClearance, signUAxis, enforceSignOrientation, TEXT_MESHES, TRACK_SIGNS,
-  signLayout, signUV, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS } =
+  signLayout, signUV, signTileIndex, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS } =
   await import('../src/track/trackbuild.js');
 const { TRACKS, getTrack } = await import('../src/track/trackdef.js');
+const SIGNDATA = await import('../src/track/signdata.js');
+const { WORLD_TEXT_STATS, resetWorldTextStats, fitText, allWorldPhrases,
+  BRAND_BOARDS, HOLO_BOARDS, BRAND_BOARD_W, BRAND_BOARD_H, BRAND_TILE_ASPECT,
+  HOLO_BOARD_W, HOLO_BOARD_H, HOLO_TILE_ASPECT } = SIGNDATA;
+
+// Everything below is measured on the ONE shared drawing path, so the counters
+// have to start from a clean slate before the first track is built.
+resetWorldTextStats();
 
 let failed = 0;
 const ok = (name, pass, detail = '') => {
@@ -144,6 +162,17 @@ for (const def of TRACKS) {
   const gantryFaces = faces.filter(f => f.mesh === 'gantry-board').length;
   ok(`${def.id}: the finish-gantry board is inside the swept set`, gantryFaces >= 4,
     `${gantryFaces} gantry faces (2 boards x 2 tris)`);
+  // ...and the same coverage question asked of EVERY lettered mesh, not only the
+  // one that was caught last time. The barrier sponsor boards and the night
+  // city's holo billboards are lettered too; if either ever loses its name it
+  // drops out of enforceSignOrientation and out of every check below it.
+  const byMesh = {};
+  for (const f of faces) byMesh[f.mesh] = (byMesh[f.mesh] || 0) + 1;
+  const wantMeshes = ['signage', 'boards', 'gantry-board']
+    .concat(def.theme === 'circuit' ? ['holo-signs'] : []);
+  ok(`${def.id}: every lettered mesh is inside the swept set`,
+    wantMeshes.every(m => (byMesh[m] || 0) > 0),
+    wantMeshes.map(m => `${m}=${byMesh[m] || 0}`).join(' '));
   ok(`${def.id}: no mirrored text (U along up x N)`, mirrored === 0,
     mirrored ? `${mirrored}/${faces.length} mirrored, worst dot=${worst.toFixed(3)}` : `${faces.length} faces clean`);
   ok(`${def.id}: no upside-down text (V along +Y)`, upsideDown === 0,
@@ -199,6 +228,185 @@ for (const def of TRACKS) {
     `second pass repaired uv ${again.repairedUV}, winding ${again.repairedWinding}`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ONE TEXT PATH — the Wave-5 bug, and the shape of the gate that catches it.
+//
+// The player reported world text that was "corrupted, truncated, non-words".
+// None of it was a mirroring bug: there were THREE unrelated pieces of code
+// drawing Hebrew into the world, and two of them drew at a FIXED font size onto
+// SQUARE atlas tiles that were then mapped onto 4.5:1 and 2:1 banner quads.
+// Measured with the real font at 1024 px, 'מנוע פרומפט' rendered 656 px wide in
+// a 512 px tile — so 28% of it landed on the tile NEXT DOOR, which then painted
+// its own background over half of it. Every barrier board and every holo
+// billboard in the game showed a truncated word glued to a fragment of another.
+//
+// Nothing above could see it. The anti-mirroring invariant is about geometry and
+// was perfectly satisfied; the legibility gate measured cap height, which was
+// fine; the copy gate read source strings, which were fine. The bug lived in the
+// one place nothing looked: between the size the drawing code chose and the
+// space the tile actually had.
+//
+// So this section asserts on WHAT THE DRAWING DID. `WORLD_TEXT_STATS.draws` is
+// filled by drawWorldText itself — the shipping code path, on the real build of
+// all three tracks — and every entry records the rows it laid out, the size it
+// settled on, the width it measured and the limit it had. The checks are
+// OCR-free and source-driven: the rows must reassemble into the authored phrase,
+// the measured width must fit, and the phrase must be one this project wrote.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n  ONE TEXT PATH — every letter in the world drawn by signdata.js\n  ' + '─'.repeat(78));
+{
+  const draws = WORLD_TEXT_STATS.draws;
+  const prefixes = new Set(draws.map(d => d.key.split(':')[0]));
+  // Which mesh each consumer of the shared path ends up on. D32b's lesson: a
+  // drawing site that is not tied to a mesh in TEXT_MESHES is a site outside
+  // both the fix and the gate.
+  const MESH_OF = { signage: 'signage', boards: 'boards', 'holo-signs': 'holo-signs', gantry: 'gantry-board' };
+
+  ok('the shared path drew the world text of all three tracks',
+    draws.length >= 3 * 16 + BRAND_BOARDS.length + HOLO_BOARDS.length + 3,
+    `${draws.length} lines drawn`);
+  ok('all four lettered consumers go through it',
+    ['signage', 'boards', 'holo-signs', 'gantry'].every(p => prefixes.has(p)),
+    [...prefixes].sort().join(', '));
+  ok('every consumer of the shared path names a mesh in TEXT_MESHES',
+    [...prefixes].every(p => MESH_OF[p] && TEXT_MESHES.has(MESH_OF[p])),
+    [...prefixes].map(p => `${p}->${MESH_OF[p] || '??'}`).join(' '));
+
+  // THE assertion the shipped brand/holo atlases fail: nothing overflows.
+  ok('no world text overflows its tile', WORLD_TEXT_STATS.overflow === 0,
+    WORLD_TEXT_STATS.worst
+      ? `"${WORLD_TEXT_STATS.worst.line}" ${WORLD_TEXT_STATS.worst.wpx.toFixed(0)}px in ` +
+        `${WORLD_TEXT_STATS.worst.limit.toFixed(0)}px (${WORLD_TEXT_STATS.worst.key})`
+      : `${WORLD_TEXT_STATS.drawn} lines, ${WORLD_TEXT_STATS.wrapped} wrapped, ` +
+        `${WORLD_TEXT_STATS.shrunk} shrunk to fit`);
+
+  // Measured, per line, against the space it actually had.
+  const over = draws.filter(d => d.widthPx > d.limit + 1e-6);
+  ok('every measured line fits inside its own tile', over.length === 0,
+    over.length ? over.slice(0, 3).map(d => `${d.key} "${d.line}" ${d.widthPx.toFixed(0)}>${d.limit.toFixed(0)}`).join(' | ')
+      : `widest fill ${Math.max(...draws.map(d => d.widthPx / d.limit)).toFixed(2)} of the limit`);
+
+  // WHOLE WORDS. Shrink-to-fit and wrapping are allowed; losing a character is
+  // not. The rows the fitter produced must reassemble into the authored phrase.
+  const cut = draws.filter(d => d.rows.join(' ') !== d.line);
+  ok('no line is truncated or broken mid-word', cut.length === 0,
+    cut.length ? cut.slice(0, 3).map(d => `${d.key}: "${d.rows.join(' ')}" != "${d.line}"`).join(' | ') : '');
+
+  // The copy on the boards is copy this project authored — not a leftover, not
+  // a placeholder, not a fragment of the line next door.
+  const authored = new Set(allWorldPhrases().map(p => p.line).concat(TRACKS.map(t => t.nameHe)));
+  const unknown = draws.filter(d => !authored.has(d.line));
+  ok('every phrase drawn into the world is an authored phrase', unknown.length === 0,
+    unknown.length ? [...new Set(unknown.map(d => `${d.key} "${d.line}"`))].slice(0, 4).join(' | ') : '');
+  const drawnSet = new Set(draws.map(d => d.line));
+  const missing = allWorldPhrases().filter(p => !drawnSet.has(p.line));
+  ok('every authored phrase reaches the world', missing.length === 0,
+    missing.length ? missing.slice(0, 4).map(p => `${p.source}[${p.index}] "${p.line}"`).join(' | ')
+      : `${allWorldPhrases().length} authored phrases, all drawn`);
+
+  // THE ROOT CAUSE, pinned from the BUILT GEOMETRY of all three tracks. A tile
+  // whose aspect differs from its board's means the fit budget the drawing code
+  // works to is not the metres of board the text really has — which is how "it
+  // fits" and "it spills into the next tile" were true at the same time, and it
+  // is also why the gantry name has been 2.2x too wide since Wave 1. Derived
+  // from the uv rect (the atlases are square canvases, so du/dv IS the tile
+  // aspect) rather than from the constants, so it fails if a board is resized
+  // without its tile — the realistic regression.
+  const wrongAspect = [];
+  for (const track of built) {
+    track.group.updateMatrixWorld(true);
+    track.group.traverse(o => {
+      if (!o.isMesh || !TEXT_MESHES.has(o.name)) return;
+      const pos = o.geometry.attributes.position, uv = o.geometry.attributes.uv;
+      if (!pos || !uv) return;
+      const p = new THREE.Vector3();
+      for (let qd = 0; qd < pos.count / 4; qd++) {
+        const b = qd * 4;
+        let lo = Infinity, hi = -Infinity, u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+        const pts = [];
+        for (let k = 0; k < 4; k++) {
+          p.fromBufferAttribute(pos, b + k).applyMatrix4(o.matrixWorld);
+          pts.push(p.clone());
+          lo = Math.min(lo, p.y); hi = Math.max(hi, p.y);
+          u0 = Math.min(u0, uv.getX(b + k)); u1 = Math.max(u1, uv.getX(b + k));
+          v0 = Math.min(v0, uv.getY(b + k)); v1 = Math.max(v1, uv.getY(b + k));
+        }
+        const hM = hi - lo;
+        let wM = 0;
+        for (const a of pts) for (const c of pts) wM = Math.max(wM, Math.hypot(a.x - c.x, a.z - c.z));
+        if (hM < 1e-6 || wM < 1e-6) continue;
+        // The gantry board carries its own answer: its material samples a 4:1
+        // strip and the name is pre-compressed to suit (see gantryTexture).
+        const want = o.userData.textAspect ?? ((u1 - u0) / (v1 - v0));
+        const got = wM / hM;
+        if (Math.abs(got / want - 1) > 0.03) {
+          wrongAspect.push(`${track.def.id}/${o.name} board ${got.toFixed(2)}:1 vs text ${want.toFixed(2)}:1`);
+        }
+      }
+    });
+  }
+  ok('every lettered board has its texture tile\'s aspect (text is not stretched)',
+    wrongAspect.length === 0,
+    wrongAspect.length ? [...new Set(wrongAspect)].slice(0, 4).join(' | ')
+      : `signage ${SIGN_TILE_ASPECT}:1, boards ${BRAND_TILE_ASPECT}:1, holo ${HOLO_TILE_ASPECT}:1, gantry pre-compressed`);
+
+  // Wrapping is the fitter's answer to a line too long for one row, and it must
+  // never lose a word. Exercised directly because the shipping boards are wide
+  // enough that a single row always wins — which is exactly why the branch would
+  // otherwise rot unnoticed.
+  const long = 'מנוע פרומפט חזק מאוד';
+  const wrapped = fitText(long, 1.0);
+  ok('the fitter wraps rather than truncating when a row will not fit',
+    wrapped.rows.length === 2 && wrapped.rows.join(' ') === long,
+    `${wrapped.rows.length} rows: ${wrapped.rows.join(' / ')}`);
+  ok('wrapping buys a bigger glyph than cramming one row',
+    wrapped.fontFrac > fitText(long, 1.0, { maxRows: 1 }).fontFrac,
+    `${wrapped.fontFrac.toFixed(3)} vs ${fitText(long, 1.0, { maxRows: 1 }).fontFrac.toFixed(3)} em`);
+
+  // D38's floor, applied to the two board families that never had one. Cap
+  // height in metres, and what that is in pixels at the distance each is read
+  // from (px = 547 * capMetres / distance at 1600x900, fov 62).
+  const capOf = (line, aspect, hM, opts) => fitText(line, aspect, opts).capFrac * hM;
+  const brandCaps = BRAND_BOARDS.map(b => capOf(b.he, BRAND_TILE_ASPECT, BRAND_BOARD_H));
+  const holoCaps = HOLO_BOARDS.map(b => capOf(b.he, HOLO_TILE_ASPECT, HOLO_BOARD_H, { fitH: 0.60 }));
+  const minBrand = Math.min(...brandCaps), minHolo = Math.min(...holoCaps);
+  ok('barrier boards clear the legibility floor (>=0.30 m of cap)', minBrand >= 0.30,
+    `smallest ${minBrand.toFixed(3)} m = ${(547 * minBrand / 12).toFixed(1)} px read at 12 m`);
+  ok('holo billboards clear the legibility floor (>=0.60 m of cap)', minHolo >= 0.60,
+    `smallest ${minHolo.toFixed(3)} m = ${(547 * minHolo / 30).toFixed(1)} px read at 30 m`);
+}
+
+/**
+ * Every roadside board of a built track, in the order a driver passes it after
+ * the start line, with the ATLAS TILE it carries read back out of the uv buffer.
+ * `tile` is the index into TRACK_SIGNS[theme].lines.
+ */
+function boardOrder(track, def) {
+  const mesh = track.group.getObjectByName('signage');
+  if (!mesh) return [];
+  track.group.updateMatrixWorld(true);
+  const pos = mesh.geometry.attributes.position, uv = mesh.geometry.attributes.uv;
+  const seen = new Map();
+  const p = new THREE.Vector3();
+  for (let qd = 0; qd < pos.count / 4; qd++) {
+    const b = qd * 4;
+    const c = new THREE.Vector3();
+    let u0 = Infinity, v0 = Infinity;
+    for (let k = 0; k < 4; k++) {
+      p.fromBufferAttribute(pos, b + k).applyMatrix4(mesh.matrixWorld);
+      c.add(p);
+      u0 = Math.min(u0, uv.getX(b + k)); v0 = Math.min(v0, uv.getY(b + k));
+    }
+    c.multiplyScalar(0.25);
+    const tile = signTileIndex(u0, v0);
+    // Two back-to-back faces per board: one entry each.
+    if (seen.has(tile)) continue;
+    const s = track.spline.closestT(c);
+    seen.set(tile, { tile, arc: ((s.t - def.startT) % 1 + 1) % 1 });
+  }
+  return [...seen.values()].sort((a, b) => a.arc - b.arc).map((b, i) => ({ ...b, pos: i }));
+}
+
 console.log('\n  ROADSIDE SIGNAGE — placement, clearance, thinning\n  ' + '─'.repeat(78));
 for (let i = 0; i < TRACKS.length; i++) {
   const def = TRACKS[i], track = built[i];
@@ -228,6 +436,20 @@ for (let i = 0; i < TRACKS.length; i++) {
     `${midOuts.length / 4} of ${faces.length / 4} boards beyond +12 m`);
   ok(`${def.id}: the mid-ground band has depth (>=6 m of spread)`, spread >= 6,
     `${spread.toFixed(1)} m between nearest and furthest`);
+
+  // ── THE CURRICULUM IS A SEQUENCE, NOT A BAG ────────────────────────────────
+  // TRACK_SIGNS[theme].lines is written in the order a child should meet it:
+  // the early boards need no vocabulary, the late ones echo glossary terms the
+  // game has already taught. That is worth nothing unless the ORDER ON THE
+  // GROUND is the order in the list — one shuffled index, or a random pick per
+  // board, and the progression is decoration. Derived from the built UV buffer,
+  // not from the placement code, so it holds however the boards get placed.
+  const order = boardOrder(track, def);
+  const wrong = order.filter((b, k) => b.tile !== k);
+  ok(`${def.id}: boards carry the authored lines IN ORDER along the lap`,
+    order.length >= 6 && wrong.length === 0,
+    wrong.length ? `board ${wrong[0].pos} of ${order.length} shows line ${wrong[0].tile}`
+      : `${order.length} boards, tiles ${order.map(b => b.tile).join(',')} from the start line`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,6 +613,30 @@ for (let i = 0; i < TRACKS.length; i++) {
   ok('signage thins out on the low quality tier', count(lo) < count(hi),
     `low=${count(lo)} boards, high=${count(hi)} boards`);
   ok('low tier still keeps some signage', count(lo) >= 3, `low=${count(lo)}`);
+  hi.dispose(); lo.dispose();
+}
+
+{
+  // The SAME question of the other two lettered families. They were exempt: the
+  // barrier boards were gated on a raw rng threshold and the holo billboards on
+  // a fixed 62 m step, so the low tier carried every one of them — lettered
+  // furniture is a texture upload and a draw call like anything else.
+  // Circuit City, because it is the only track with holo billboards.
+  const hi = buildTrack('circuit', engineAt(1), { audit: false });
+  const lo = buildTrack('circuit', engineAt(0.35, 256), { audit: false });
+  const quads = (tr, name) => {
+    const m = tr.group.getObjectByName(name);
+    return m ? m.geometry.index.count / 6 : 0;
+  };
+  ok('barrier sponsor boards thin out on the low quality tier',
+    quads(lo, 'boards') < quads(hi, 'boards'),
+    `low=${quads(lo, 'boards')}, high=${quads(hi, 'boards')}`);
+  ok('low tier still keeps some sponsor boards', quads(lo, 'boards') >= 3, `low=${quads(lo, 'boards')}`);
+  ok('holo billboards thin out on the low quality tier',
+    quads(lo, 'holo-signs') < quads(hi, 'holo-signs'),
+    `low=${quads(lo, 'holo-signs')}, high=${quads(hi, 'holo-signs')}`);
+  ok('low tier still keeps some holo billboards', quads(lo, 'holo-signs') >= 3,
+    `low=${quads(lo, 'holo-signs')}`);
   hi.dispose(); lo.dispose();
 }
 

@@ -6,7 +6,7 @@ import { Raycaster, Vector3, Quaternion } from 'three';
 import { audio } from '../audio/audio.js';   // re-exported for the gates; main.js owns the real import
 import { save } from './save.js';
 import { applyDir, setLang } from '../ui/i18n.js';
-import { injectStyles } from '../ui/style.js';
+import { injectStyles, setTeachingClock } from '../ui/style.js';
 
 export function installDebug() {
   const D = {
@@ -35,6 +35,19 @@ export function installDebug() {
     // the moment its clock jumps backwards.
     bus,
   };
+  // The teaching-card cadence (ui/style.js) is wall-clock by default, and every
+  // gate steps the sim faster than real time — so under a harness no wall time
+  // passes between boxes and every explainer after the first defers forever
+  // (measured: flowtest --only=play 34/34 → 31/34, one box a race). `engine.time`
+  // is the clock that actually matches "seconds of game the child has watched":
+  // it advances by the frame dt in production, by the stepped dt under a gate,
+  // and in neither case while the game is paused or the tab is in the background.
+  //
+  // Deliberately NOT guarded behind `_headless`, though it sits in the harness:
+  // a cadence that behaves one way for a child and another way for a gate is
+  // precisely D35's rejected `navigator.webdriver` shortcut wearing a different
+  // hat, on the one sequence every first race opens with. Same clock for both.
+  setTeachingClock(() => engine.time);
   window.__DEBUG = D;
   // Handles the automated P0 gates need (tools/flowtest.mjs). Read-only; no game
   // code depends on these, so they remain strippable.

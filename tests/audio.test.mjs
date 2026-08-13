@@ -183,6 +183,185 @@ try {
   const quiet = await page.evaluate(() => window.__measure(400));
   ok('idle bus is quiet (proves the meter is honest)', quiet.rms < RMS_FLOOR, `rms ${quiet.rms.toFixed(5)}`);
 
+  // ── 2a. MENU AND BACKDROP SCREENS ARE GAMEPLAY-SILENT (Wave 5) ────────────
+  // Measured on the built game before the fix: sitting on the TITLE SCREEN, whose
+  // backdrop is a real raceScene with a real pack in it, produced 123 overtake
+  // stingers, 2 lap jingles, a best-lap chime, a final-lap warning and a podium
+  // sting in one 400s sit — plus a `race:complete` that scenes.js recorded into
+  // the save and badges.js scored as if it were the child's own race.
+  //
+  // This is deliberately measured on the screen that is SECRETLY RUNNING THE GAME
+  // (the same lesson as the idle-bus check above): a menu-silence assertion taken
+  // on a screen with no simulation behind it proves nothing at all. So the
+  // backdrop is stepped for 90 REAL simulated seconds through the harness while
+  // the meter is open.
+  //
+  // Three separate properties, because they fail in three different ways:
+  //   (a) the live backdrop makes no sound and starts no sounds;
+  //   (b) hand-emitted gameplay events — every one the game can raise — are
+  //       silent on a menu even though the same events are audible in a race;
+  //   (c) THE STRUCTURAL ONE: a sound id that did not exist when audio.js was
+  //       written is silent too if it is registered in a gameplay GROUP, and
+  //       audible if it is registered in the UI group. A hardcoded list of known
+  //       gameplay ids passes (a) and (b) and fails exactly here — which is what
+  //       a future maintainer would actually write, and the same proof D34 used
+  //       for the modal duck.
+  // And the counter-assertion, on the same screen in the same state: music and a
+  // UI click MUST still be heard, or "silent menus" would just be a mute.
+  //
+  // `race:wrongway` is deliberately NOT in the list below, and the reason is the
+  // one thing a categorical gate cannot do: audio.js wires it to `ui.error`, a UI
+  // sound, so on a menu it is allowed BY DESIGN — a menu may blip. It is covered
+  // by (a) instead, because race.js is where it is stopped: the backdrop never
+  // emits it in the first place. Left in the list it added rms 0.004 of legal UI
+  // audio to a silence window and made this assertion sit on its own threshold.
+  const MENU_EVENTS = [
+    ['race:countdown', { n: 2 }], ['race:start', {}], ['race:lap', { lap: 2 }],
+    ['race:bestlap', { ms: 41000 }], ['race:finallap', {}],
+    ['race:position', { from: 4, to: 3 }], ['race:position', { from: 3, to: 4 }],
+    ['race:finish', { position: 1 }],
+    ['token:pickup', { tokens: 3, combo: 2 }],
+    ['kart:collide', { kind: 'wall', speed: 0.9 }], ['kart:collide', { kind: 'kart', speed: 0.7 }],
+    ['surface:change', { surface: 'grass' }], ['surface:change', { surface: 'sand' }],
+    ['drift:start', {}], ['drift:tier', { tier: 2 }], ['drift:boost', { tier: 2 }],
+    ['quiz:correct', {}], ['quiz:wrong', {}], ['quiz:timeout', {}],
+  ];
+  await page.evaluate(() => window.__DEBUG.goto('menu'));
+  await sleep(500);
+  const menu = await page.evaluate(async evts => {
+    const a = window.__AUDIO, bus = a.bus;
+    const started = [];
+    const realPlay = a.play.bind(a);
+    a.play = (n, o) => {
+      const r = realPlay(n, o);
+      if (r) started.push({ name: n, group: (a.sounds.get(n) || {}).group });
+      return r;
+    };
+    const drain = () => { const out = started.slice(); started.length = 0; return out; };
+    try {
+      // Badge unlocks announce themselves with `garage.reveal` through
+      // `audio:play` (badges.js), and a badge unlocks exactly once per save —
+      // so the first pass over these events would otherwise measure a one-time
+      // congratulation and call it a leaking race. Burn the one-time unlocks off
+      // first, three passes, THEN open the meter. (That cue is UI-class audio and
+      // is allowed on menus by design; it is the screen's own answer to the
+      // child, not a race narrating itself.)
+      for (let pass = 0; pass < 3; pass++) {
+        for (const [name, payload] of evts) bus.emit(name, payload);
+        await new Promise(r => setTimeout(r, 60));
+      }
+      await window.__hush();
+      await new Promise(r => setTimeout(r, 700));
+      drain();
+
+      // (a) the live backdrop, stepped for 90 simulated seconds.
+      // Both layers are checked separately here, because either one alone would
+      // hide a break in the other: the EVENTS the backdrop emits (race.js's
+      // guard) and the SOUND that reaches the bus (audio.js's). With only the
+      // audio-side assertion, a backdrop that emits the whole race again still
+      // measures silent — and the next thing to subscribe to those events, a
+      // crowd, a banner, a save write, would get them.
+      const GAMEPLAY_EVENT = /^(race:|token:|drift:|surface:change|kart:collide|kart:engine)/;
+      const emitted = new Set();
+      const realEmit = bus.emit.bind(bus);
+      bus.emit = (evt, p) => { if (GAMEPLAY_EVENT.test(evt)) emitted.add(evt); return realEmit(evt, p); };
+      const backdropMeter = window.__measure(2500);
+      for (let i = 0; i < 90; i++) { window.__DEBUG.advance(1); await new Promise(r => setTimeout(r, 0)); }
+      const backdrop = await backdropMeter;
+      bus.emit = realEmit;
+      const backdropEvents = [...emitted];
+      const backdropStarted = drain();
+
+      // (b) every gameplay event the game can raise, by hand
+      await window.__hush();
+      const handMeter = window.__measure(1800);
+      for (const [name, payload] of evts) {
+        bus.emit(name, payload);
+        await new Promise(r => setTimeout(r, 45));
+      }
+      // the persistent voices have no `play()` to refuse them — check them too
+      for (let i = 0; i < 30; i++) {
+        bus.emit('kart:engine', { rpm01: 0.9, load: 1, boosting: false, surface: 'asphalt' });
+        bus.emit('drift:charge', { charge: 0.8 });
+        await new Promise(r => setTimeout(r, 16));
+      }
+      const hand = await handMeter;
+      const handStarted = drain();
+      const engineLive = a.engine.enabled;
+
+      // (c) two sounds invented right now: same synthesis, different GROUP
+      const voice = function (t) {
+        this._tone(t, { type: 'triangle', f: 660, dur: 0.45, peak: 0.30, attack: 0.004 });
+        this._tone(t, { type: 'sine', f: 990, dur: 0.35, peak: 0.18, attack: 0.004 });
+      };
+      a._snd('futureRace.sting', 'race', 0.6, 'probe (gameplay group)', voice);
+      a._snd('futureUi.sting', 'ui', 0.6, 'probe (ui group)', voice);
+      await window.__hush();
+      const gm = window.__measure(900);
+      const gameAccepted = a.play('futureRace.sting');
+      const unknownGame = await gm;
+      const um = window.__measure(900);
+      const uiAccepted = a.play('futureUi.sting');
+      const unknownUi = await um;
+
+      // the counter-assertion: this screen is not simply muted
+      await window.__hush();
+      a.playMusic('menu');
+      await new Promise(r => setTimeout(r, 900));
+      const music = await window.__measure(1200);
+      a.stopMusic(0.1);
+      await new Promise(r => setTimeout(r, 600));
+      const cm = window.__measure(900);
+      bus.emit('ui:confirm');
+      const click = await cm;
+
+      return {
+        backdrop, backdropStarted, backdropEvents, hand, handStarted, engineLive,
+        gameAccepted, uiAccepted, unknownGame, unknownUi, music, click,
+        scene: window.__DEBUG.state().scene,
+      };
+    } finally { a.play = realPlay; }
+  }, MENU_EVENTS);
+
+  const GAMEPLAY_GROUPS = ['race', 'drive', 'impact', 'quiz', 'engine'];
+  const leaked = list => list.filter(s => GAMEPLAY_GROUPS.includes(s.group)).map(s => s.name);
+  ok('the silent-menu probe really sat on the title screen', menu.scene === 'menu', menu.scene);
+  ok('the LIVE menu backdrop emits no gameplay EVENTS (race.js)',
+    menu.backdropEvents.length === 0,
+    menu.backdropEvents.length ? 'EMITTED: ' + menu.backdropEvents.join(', ')
+      : '90s of simulated racing behind the logo, not a word');
+  ok('the LIVE menu backdrop starts no gameplay sound',
+    leaked(menu.backdropStarted).length === 0,
+    leaked(menu.backdropStarted).length
+      ? 'SOUNDED: ' + [...new Set(leaked(menu.backdropStarted))].join(', ')
+      : '90s of simulated racing behind the logo, silent');
+  ok('the LIVE menu backdrop is inaudible on the master bus',
+    menu.backdrop.rms < RMS_FLOOR, `rms ${menu.backdrop.rms.toFixed(5)} < ${RMS_FLOOR}`);
+  ok('every gameplay EVENT is silent on a menu screen',
+    leaked(menu.handStarted).length === 0 && menu.hand.rms < RMS_FLOOR,
+    leaked(menu.handStarted).length
+      ? 'SOUNDED: ' + [...new Set(leaked(menu.handStarted))].join(', ')
+      : `${MENU_EVENTS.length} events, rms ${menu.hand.rms.toFixed(5)}`);
+  ok('the engine voice cannot be armed from a menu', menu.engineLive === false);
+  ok('an UNKNOWN gameplay sound id is silent too (group-driven, not a list)',
+    menu.gameAccepted === false && menu.unknownGame.rms < RMS_FLOOR,
+    `accepted=${menu.gameAccepted} rms ${menu.unknownGame.rms.toFixed(5)}`);
+  ok('a UI sound invented at the same moment still plays',
+    menu.uiAccepted === true && menu.unknownUi.rms > RMS_FLOOR,
+    `accepted=${menu.uiAccepted} rms ${menu.unknownUi.rms.toFixed(4)}`);
+  ok('menu MUSIC still plays on that same screen',
+    menu.music.rms > RMS_FLOOR, `rms ${menu.music.rms.toFixed(4)}`);
+  ok('a UI click still sounds on that same screen',
+    menu.click.rms > RMS_FLOOR, `rms ${menu.click.rms.toFixed(4)}`);
+
+  // Back to racer select, and onto the screen KIND where world audio is allowed —
+  // everything from here to the real race below measures the sounds themselves,
+  // and `scene:entered('race')` is what puts the game in this state for real.
+  await page.evaluate(() => window.__DEBUG.goto('select'));
+  await sleep(300);
+  await page.evaluate(() => window.__AUDIO.setScreenKind('race'));
+  await page.evaluate(() => window.__hush());
+
   // ── 3. per-source: each family must measurably reach the destination ───────
   const measureSource = async (label, setup, ms = 900) => {
     await page.evaluate(() => window.__hush());
@@ -391,6 +570,110 @@ try {
     + `(must stay above ${RMS_FLOOR} and drop below 75%)`);
   await page.evaluate(() => window.__hush());
 
+  // ── 2c-ii. A HIDDEN TAB PARKS THE AUDIO THREAD (Wave 5, item 7) ───────────
+  // engine.js emits `audio:suspend` / `audio:resume` on visibility change; the
+  // requirement is a REAL suspend, because the symptom being fixed is CPU burn
+  // in a background tab and a graph ramped to zero still renders every voice.
+  //
+  // SILENCE IS NOT MEASURED WITH THE ANALYSER HERE, and that is not a shortcut.
+  // A suspended context processes nothing, so `getFloatTimeDomainData` keeps
+  // handing back the LAST buffer it filled — the meter would read the pre-suspend
+  // audio forever and this assertion would fail on a correct fix and pass on a
+  // ramp. The honest instrument is the context clock: if `currentTime` does not
+  // advance, not one sample was produced. That is silence, and it is also the
+  // exact property "the audio thread stopped" means.
+  const SUSPEND_WINDOW = 700;      // ms of wall time to watch the clock over
+  const susp = await page.evaluate(async ms => {
+    const a = window.__AUDIO, bus = a.bus;
+    const clockRate = async () => {
+      const t0 = a.ctx.currentTime, w0 = performance.now();
+      await new Promise(r => setTimeout(r, ms));
+      return (a.ctx.currentTime - t0) / ((performance.now() - w0) / 1000);
+    };
+    const mixState = () => ({
+      muted: a.muted, master: a.master.gain.value, volume: a.getMasterVolume(),
+      engineBus: a.engineBus.gain.value, musicBus: a.musicBus.gain.value,
+      modalDucked: a._modalDucked, track: a.music.track, theme: a.music.themeId,
+      step: a.music._step,
+    });
+    const out = {};
+    try {
+      // ---- 1. plain: music playing, tab hidden, tab back -------------------
+      a.playMusic('race', { theme: 'oasis' });
+      await new Promise(r => setTimeout(r, 900));
+      out.runningRate = await clockRate();
+      out.before = mixState();
+      out.beforeRms = await window.__measure(700);
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 250));
+      out.state = a.ctx.state;
+      out.suspendedRate = await clockRate();
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 300));
+      out.stateAfter = a.ctx.state;
+      out.resumedRate = await clockRate();
+      out.after = mixState();
+      out.afterRms = await window.__measure(700);
+
+      // ---- 2. muted across the round trip ----------------------------------
+      a.setMuted(true, false);
+      a.setMasterVolume(0.62, false);
+      const mutedBefore = mixState();
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 250));
+      // the trap: an unmute or an unlock() while parked would restart the thread
+      a.unlock();
+      const mutedMid = { state: a.ctx.state, muted: a.muted };
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 350));
+      out.muted = { before: mutedBefore, mid: mutedMid, after: mixState() };
+      a.setMuted(false, false);
+
+      // ---- 3. a modal is open across the round trip (D34's duck) -----------
+      a.modal.push('quiz');
+      await new Promise(r => setTimeout(r, 300));
+      const duckBefore = mixState();
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 250));
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 350));
+      out.duck = { before: duckBefore, after: mixState() };
+      return out;
+    } finally {
+      try { a.modal.pop('quiz'); } catch { /* */ }
+      a.setMuted(false, false);
+      bus.emit('audio:resume');
+      a.stopMusic(0.1);
+    }
+  }, SUSPEND_WINDOW);
+
+  const near = (x, y, tol) => Math.abs(x - y) <= tol;
+  ok('audio:suspend really suspends the AudioContext',
+    susp.state === 'suspended', `ctx.state=${susp.state}`);
+  ok('a suspended context produces no samples at all (clock frozen)',
+    susp.suspendedRate < 0.02 && susp.runningRate > 0.8,
+    `clock ran at x${susp.runningRate.toFixed(2)} → x${susp.suspendedRate.toFixed(3)} of real time`);
+  ok('audio:resume restarts the thread', susp.stateAfter === 'running' && susp.resumedRate > 0.8,
+    `ctx.state=${susp.stateAfter}, clock x${susp.resumedRate.toFixed(2)}`);
+  ok('the mix comes back where it was, and music does not restart',
+    susp.afterRms.rms > RMS_FLOOR && susp.after.track === susp.before.track
+    && susp.after.theme === susp.before.theme && susp.after.step >= susp.before.step,
+    `rms ${susp.beforeRms.rms.toFixed(4)} → ${susp.afterRms.rms.toFixed(4)}, `
+    + `${susp.before.track}/${susp.before.theme} step ${susp.before.step} → ${susp.after.step}`);
+  // The two states a maintainer's "resume everything" reflex would clobber.
+  ok('MUTE survives hide/show (and a parked tab cannot be unlocked)',
+    susp.muted.after.muted === true && susp.muted.after.master === 0
+    && susp.muted.mid.state === 'suspended'
+    && near(susp.muted.after.volume, susp.muted.before.volume, 0.001),
+    `muted ${susp.muted.before.muted}→${susp.muted.after.muted}, master ${susp.muted.after.master}, `
+    + `volume ${susp.muted.before.volume}→${susp.muted.after.volume}, mid-state ${susp.muted.mid.state}`);
+  ok('the MODAL DUCK survives hide/show (D34 stays applied)',
+    susp.duck.after.modalDucked === true && susp.duck.after.engineBus < 0.001
+    && near(susp.duck.after.musicBus, susp.duck.before.musicBus, 0.02),
+    `ducked=${susp.duck.after.modalDucked} engineBus ${susp.duck.after.engineBus.toFixed(4)} `
+    + `musicBus ${susp.duck.before.musicBus.toFixed(3)}→${susp.duck.after.musicBus.toFixed(3)}`);
+  await page.evaluate(() => window.__hush());
+
   // ── 2d. master volume API (used by the settings screen) ───────────────────
   const mv = await page.evaluate(() => {
     const a = window.__AUDIO, was = a.getMasterVolume();
@@ -435,6 +718,67 @@ try {
     bus.emit('quiz:correct');
     setTimeout(() => bus.emit('quiz:wrong'), 700);
   `, 1500);
+
+  // ── 3b. THE QUIZ STING'S PLACE IN THE MIX (Wave 5) ────────────────────────
+  // The sting fires 7–10 times a race (D28) over a bed that never rests, so where
+  // it sits relative to the MUSIC is the whole question — an absolute ceiling
+  // would be meaningless the moment the music moves. Pinned as a ratio, measured.
+  //
+  // ONE sweep on ONE long meter (D34): every number below comes from the same
+  // 2.5s / fftSize-32768 windows, run back to back. Taking each on its own short
+  // window is how three parties got three answers out of one build in Wave 4.
+  //
+  // Two traps this measurement has already fallen into, both documented so the
+  // next person does not re-fall into them:
+  //  * THE FIRST SOUND OF A PAGE LOAD IS NOT THE SOUND. The first `quiz:correct`
+  //    of a save unlocks the `quiz-first` badge, and badges.js announces every
+  //    unlock with `garage.reveal` — peak 0.489 on its own. Measured together
+  //    they read peak 0.524, which is the "0.52 quiz stinger" GAPS recorded; the
+  //    sting alone was 0.272. Section 2a above burns the one-time unlocks off
+  //    before anything is measured, which is why this section is honest.
+  //  * BOTH ENDS OR NEITHER. A ratio alone is satisfied by a sting that has been
+  //    turned off, so the floor and the right/wrong contrast are pinned too.
+  const STING_VS_MUSIC = 0.55;    // sting peak as a fraction of music peak
+  const STING_RMS_FLOOR = 0.008;  // it must still be a moment, not a whisper
+  const mix = await page.evaluate(async () => {
+    const a = window.__AUDIO, bus = a.bus;
+    const one = async src => {
+      await window.__hush();
+      await new Promise(r => setTimeout(r, 900));   // let any tail leave the window
+      // eslint-disable-next-line no-new-func
+      await new Function('a', 'bus', src)(a, bus);
+      return window.__measureLF(2500);
+    };
+    return {
+      silence: await one(';'),
+      correct: await one(`bus.emit('quiz:correct');`),
+      wrong: await one(`bus.emit('quiz:wrong');`),
+      music: await one(`a.playMusic('race', { theme: 'oasis' });`),
+      wall: await one(`bus.emit('kart:collide', { kind: 'wall', speed: 1 });`),
+      token: await one(`bus.emit('token:pickup', { combo: 1 });`),
+    };
+  });
+  await page.evaluate(() => window.__hush());
+  console.log(`  \x1b[2mmix sweep (one long meter): sting ${mix.correct.peak.toFixed(3)}/${mix.correct.rms.toFixed(4)}  `
+    + `wrong ${mix.wrong.peak.toFixed(3)}/${mix.wrong.rms.toFixed(4)}  music ${mix.music.peak.toFixed(3)}/${mix.music.rms.toFixed(4)}  `
+    + `wall ${mix.wall.peak.toFixed(3)}  token ${mix.token.peak.toFixed(3)}\x1b[0m`);
+  ok('the mix meter is honest (silence between rows)', mix.silence.rms < RMS_FLOOR,
+    `rms ${mix.silence.rms.toFixed(5)}`);
+  ok('quiz sting sits BELOW the music it plays over',
+    mix.correct.peak < mix.music.peak * STING_VS_MUSIC,
+    `sting peak ${mix.correct.peak.toFixed(3)} vs music ${mix.music.peak.toFixed(3)} `
+    + `= ${(mix.correct.peak / Math.max(1e-9, mix.music.peak)).toFixed(2)} (need < ${STING_VS_MUSIC})`);
+  ok('quiz sting is not the loudest event in the game',
+    mix.correct.peak < mix.wall.peak && mix.correct.rms < mix.music.rms,
+    `sting ${mix.correct.peak.toFixed(3)} < wall ${mix.wall.peak.toFixed(3)}, `
+    + `rms ${mix.correct.rms.toFixed(4)} < music ${mix.music.rms.toFixed(4)}`);
+  ok('quiz sting was not "fixed" by silencing it',
+    mix.correct.rms > STING_RMS_FLOOR && mix.correct.peak > mix.token.peak,
+    `rms ${mix.correct.rms.toFixed(4)} > ${STING_RMS_FLOOR}, peak ${mix.correct.peak.toFixed(3)} > token ${mix.token.peak.toFixed(3)}`);
+  ok('right still reads brighter than wrong (the only contrast it carries)',
+    mix.correct.peak > mix.wrong.peak && mix.correct.rms > mix.wrong.rms * 1.2,
+    `correct ${mix.correct.peak.toFixed(3)}/${mix.correct.rms.toFixed(4)} vs `
+    + `wrong ${mix.wrong.peak.toFixed(3)}/${mix.wrong.rms.toFixed(4)}`);
 
   for (const theme of ['oasis', 'circuit', 'cloud']) {
     await measureSource(`music — ${theme}`, `a.playMusic('race', { theme: ${JSON.stringify(theme)} });`, 1600);

@@ -44,6 +44,14 @@
 //     scrim swallows pointer events and it takes Escape in the CAPTURE phase, so
 //     Escape dismisses the card instead of falling through to input.js and
 //     opening the pause menu over it.
+// ── TEACHING-CARD CADENCE (Wave 5; primitive in ui/style.js) ────────────────
+// This card is the FIRST teaching card of every race and is never itself
+// deferred for cadence — it is the curtain going up, and rule 1 of the Wave-5
+// onboarding pass is that it stays exactly where it is, pre-countdown, every
+// race. What it must do is START the clock: it calls `noteTeachingCard()` when
+// it CLOSES, so the first-token explainer and the first-question-box explainer
+// cannot fire on its heels. Without this line the card is invisible to the
+// cadence and the first ninety seconds go back to being a slideshow.
 // NOTE for the lead: pause.js refuses to open over `modalHas('token') ||
 // modalHas('meet')` by name. 'intro' is not in that list. In practice the pause
 // menu is unreachable while the card is up (Escape is taken in capture, the
@@ -52,7 +60,7 @@
 // should still be added to that list when pause.js is next touched.
 import * as THREE from 'three';
 import { getTrack, TRACKS } from '../track/trackdef.js';
-import { h, injectStyles, pushModal, popModal, modalOpen } from '../ui/style.js';
+import { h, injectStyles, pushModal, popModal, modalOpen, noteTeachingCard } from '../ui/style.js';
 import { registerStrings, t, num, getLang } from '../ui/i18n.js';
 import { applyTheme } from '../gfx/sky.js';
 import { buildTrack } from '../track/trackbuild.js';
@@ -77,14 +85,14 @@ const PACK = {
     'intro.go': 'יוצאים לדרך',
     'intro.hint': 'רווח או נגיעה במסך',
     'intro.fact.oasis':
-      'נתונים הם המים של הבינה המלאכותית — היא לומדת רק מהדוגמאות שמראים לה. ' +
-      'נווה קטן ונקי שווה לה יותר מאגם ענק ובוצי.',
+      'נתונים הם המים של הבינה המלאכותית: היא לומדת רק ממה שמראים לה. ' +
+      'נווה קטן ונקי שווה יותר מאגם ענק ובוצי.',
     'intro.fact.circuit':
-      'מאחורי כל תשובה של בינה מלאכותית עומדת רשת נוירונים: מיליוני חיבורים זעירים שנדלקים יחד, ' +
-      'כמו רחובות שנדלקים בעיר בלילה. אף אחד מהם לא יודע את התשובה לבד.',
+      'מאחורי כל תשובה של בינה מלאכותית עומדת רשת נוירונים — מיליוני חיבורים זעירים שנדלקים יחד, ' +
+      'כמו רחובות בעיר בלילה. אף אחד מהם לא יודע את התשובה לבד.',
     'intro.fact.cloud':
-      'הענן הוא בסך הכול מחשבים ענקיים שיושבים במקום אחר בעולם. ' +
-      'הפרומפט שלכם טס אליהם, נענה שם, וחוזר — הכול בשנייה אחת.',
+      'הענן הוא פשוט מחשבים ענקיים במקום אחר בעולם. ' +
+      'הפרומפט שלכם טס אליהם, נענה שם וחוזר — הכול בשנייה אחת.',
   },
   en: {
     'intro.welcome': 'Welcome to',
@@ -93,14 +101,14 @@ const PACK = {
     'intro.go': "Let's go",
     'intro.hint': 'Space or tap the screen',
     'intro.fact.oasis':
-      'Data is the water an AI grows on — it only ever learns from the examples it is shown. ' +
-      'A small clean oasis is worth more to it than a huge muddy lake.',
+      'Data is the water an AI grows on: it only ever learns from what it is shown. ' +
+      'A small clean oasis is worth more than a huge muddy lake.',
     'intro.fact.circuit':
-      'Behind every AI answer stands a neural network: millions of tiny connections lighting up together, ' +
-      'like streets switching on across a city at night. Not one of them knows the answer alone.',
+      'Behind every AI answer stands a neural network — millions of tiny connections lighting up together, ' +
+      'like streets across a city at night. Not one of them knows the answer alone.',
     'intro.fact.cloud':
-      'The cloud is really just enormous computers sitting somewhere else in the world. ' +
-      'Your prompt flies over to them, gets answered there, and comes back — all in about a second.',
+      'The cloud is just enormous computers somewhere else in the world. ' +
+      'Your prompt flies over, gets answered there and comes back — all in about a second.',
   },
 };
 registerStrings(PACK);
@@ -285,6 +293,9 @@ export function createIntroCard(o = {}) {
     removeEventListener('keydown', onKey, true);
     root.remove();
     release();                                   // popModal('intro')
+    // The cadence clock starts HERE, at the close, not at the open: a child who
+    // reads the card for twenty seconds must not spend the next card's budget.
+    noteTeachingCard();
     o.onSkip?.(source);
   }
 

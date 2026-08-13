@@ -324,8 +324,33 @@ export function difficulty01(d) {
 //   stock player  race 1: 1st-3rd (mean 2.2)   race 2: 3rd-4th   race 3: 3rd-5th
 //   tier-1 player            1st-2nd (1.2)              2nd-3rd          1st-3rd
 //   tier-2 player            1st                        1st-2nd          1st
+//
+// WAVE 5: circuit 0.96 -> 0.98, and why that number was the one that moved.
+// -----------------------------------------------------------------------
+// The calibration above puts the field where the design wants it relative to
+// the REFERENCE AUTOPILOT — a machine whose skill is identical on all three
+// geometries. A child's is not: `circuit` is the plainest, widest geometry in
+// the game and the one a human drives closest to the optimal line on, so a
+// handicap sized against the machine over-pays on exactly that track. Measured
+// (41 seeds, autopilot player, 3 laps, race 2 = circuit d2, place out of 8):
+//
+//   circuit pace   stock 100%       tier-2 100%      tier-3 100%     85% stock
+//   0.96 (before)  3.20  best 2nd   1.78  24% wins   1.29  71% wins   5.05
+//   0.98 (now)     3.83  best 3rd   2.32   7% wins   1.71  32% wins   5.24
+//
+// i.e. race 2 stopped being a race a clean driver could podium in with no
+// engagement at all, and stopped being a formality for a well-upgraded one.
+// Race 1 (oasis) and race 3 (cloud) are bit-for-bit unmoved: this constant is
+// keyed by track id and the championship maps race N -> track N.
+// Alternatives measured and rejected, both because they broke the RANK order
+// rather than the gap: `aiPartTier` race 2 -> tier 2 put race 2 (4.00) above
+// race 3 (3.80) at 100% and left a fully-spent garage unable to win it; a
+// quartic `slotStretch` falloff (race-2 stretch 1.20 -> 1.05) moved the 85%
+// child twice as far as the 100% one (5.00 -> 5.60) while leaving the tier-3
+// walkover the complaint is about untouched (1.20, 4/5 wins). Values above
+// 0.99 tie or pass race 3 at 100% and are the punishing side of the target.
 const AI_PACE = 1.00;
-const TRACK_PACE = { oasis: 1.03, circuit: 0.96, cloud: 1.00 };
+const TRACK_PACE = { oasis: 1.03, circuit: 0.98, cloud: 1.00 };
 const paceForDifficulty = () => AI_PACE;
 
 // Championship tier of the opponents' own karts: race 1 stock, race 2 tier 1,

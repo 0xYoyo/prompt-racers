@@ -18,6 +18,15 @@ import {
   rockTexture, stripeTexture, woodTexture, waterTexture, stoneWallTexture,
   sandTexture, canvasTexture,
 } from './textures.js';
+// Every Hebrew letter this module puts in the world comes from here: the phrase
+// sets AND the single fitter that draws them. props.js used to own a second copy
+// of the brand list and two fixed-font draw calls with no measurement at all —
+// see the header of signdata.js for what that cost.
+import {
+  BRAND_BOARDS, BRAND_COLS, BRAND_ROWS, BRAND_BOARD_W, BRAND_TILE_ASPECT,
+  HOLO_BOARDS, HOLO_COLS, HOLO_ROWS, HOLO_BOARD_W, HOLO_TILE_ASPECT,
+  drawWorldText, tileUV, tileBox,
+} from '../track/signdata.js';
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 const smooth = t => t * t * (3 - 2 * t);
@@ -847,52 +856,45 @@ export function createPool(x, z, radius, heightAt, rng, q = {}) {
 // SIGNAGE — our own invented in-world Hebrew brands
 // ---------------------------------------------------------------------------
 
-const BRANDS = [
-  { he: 'טורבו־בינה', bg: 0xc4402f, fg: 0xffe9c4 },
-  { he: 'מנוע פרומפט', bg: 0x1f6f78, fg: 0xfdf3dd },
-  { he: 'ברק אנרגיה', bg: 0xe0a52c, fg: 0x3a2410 },
-  { he: 'נחל נתונים', bg: 0x2f5f34, fg: 0xf2f6d8 },
-];
-
 /**
- * All four sponsor boards baked into one 2x2 atlas so every banner on the
- * circuit is a single draw call.
+ * The four sponsor boards baked into one atlas so every banner on the circuit is
+ * a single draw call.
+ *
+ * ONE TILE PER CANVAS ROW (1 x 4). This used to be a 2x2 grid of SQUARE tiles
+ * mapped onto a 4.5:1 banner, and the text was set at a fixed 0.24 of the tile —
+ * measured with the real font, 'מנוע פרומפט' came out 28% wider than its tile,
+ * spilled into the tile beside it, and was then half-painted-over by that tile's
+ * own background. Every barrier board in the game read as a broken non-word.
+ * Now the tile aspect IS the board aspect, and the text is fitted and clipped by
+ * the shared path in signdata.js.
  */
 export function brandAtlas(size = 512) {
   return canvasTexture('brandAtlas', size, (ctx, S) => {
-    const h = S / 2;
-    BRANDS.forEach((b, i) => {
-      const ox = (i % 2) * h, oy = Math.floor(i / 2) * h;
+    BRAND_BOARDS.forEach((b, i) => {
+      const t = tileBox(i, BRAND_COLS, BRAND_ROWS, S);
       ctx.save();
-      ctx.translate(ox, oy);
-      ctx.fillStyle = '#' + b.bg.toString(16).padStart(6, '0');
-      ctx.fillRect(0, 0, h, h);
+      ctx.beginPath(); ctx.rect(t.x, t.y, t.w, t.h); ctx.clip();
+      ctx.translate(t.x, t.y);
+      ctx.fillStyle = b.bg;
+      ctx.fillRect(0, 0, t.w, t.h);
       for (let k = 0; k < 500; k++) {
         ctx.fillStyle = `rgba(255,255,255,${0.010 + ((k * 13) % 6) * 0.004})`;
-        ctx.fillRect((k * 97) % h, (k * 181) % h, 3, 2);
+        ctx.fillRect((k * 97) % t.w, (k * 181) % t.h, 3, 2);
       }
-      ctx.fillStyle = '#' + b.fg.toString(16).padStart(6, '0');
+      ctx.fillStyle = b.fg;
       ctx.globalAlpha = 0.25;
-      ctx.fillRect(0, h * 0.10, h, h * 0.035);
-      ctx.fillRect(0, h * 0.855, h, h * 0.035);
-      ctx.globalAlpha = 1;
-      ctx.direction = 'rtl'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.font = `bold ${Math.round(h * 0.24)}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
-      ctx.fillStyle = 'rgba(0,0,0,0.30)';
-      ctx.fillText(b.he, h / 2 + h * 0.012, h / 2 + h * 0.016);
-      ctx.fillStyle = '#' + b.fg.toString(16).padStart(6, '0');
-      ctx.fillText(b.he, h / 2, h / 2);
+      ctx.fillRect(0, t.h * 0.10, t.w, t.h * 0.070);
+      ctx.fillRect(0, t.h * 0.83, t.w, t.h * 0.070);
       ctx.restore();
+      drawWorldText(ctx, b.he, t, {
+        fg: b.fg, shadow: 'rgba(0,0,0,0.30)', key: 'boards:' + i,
+      });
     });
   });
 }
 
 /** UV rect of brand `i` inside the atlas. */
-function atlasUV(i) {
-  const k = i % 4;
-  const u0 = (k % 2) * 0.5, v0 = 1 - (Math.floor(k / 2) + 1) * 0.5;
-  return [u0, v0, 0.5, 0.5];
-}
+function atlasUV(i) { return tileUV(i, BRAND_COLS, BRAND_ROWS); }
 
 // ---------------------------------------------------------------------------
 // STANDS, CANOPIES, BUNTING, FLAGS
@@ -1320,38 +1322,40 @@ export function createCityBlocks(centre, spline, rng, opts = {}) {
   return { mesh, dispose() { g.dispose(); mat.dispose(); } };
 }
 
-/** Holographic sign face: a Hebrew brand glowing on a dark scanlined panel. */
+/**
+ * Holographic sign faces: Hebrew brands glowing on dark scanlined panels.
+ *
+ * 2 x 4 = eight tiles at 2:1, which is the billboard's 9.0 m x 4.5 m. It was a
+ * 2x2 grid of square tiles on the same 2:1 quad, with the text at a fixed 0.23
+ * of the tile and no measurement: 'מנוע פרומפט' overran its tile by 23%, and the
+ * night city's billboards read as a truncated word fused to a fragment of the
+ * one next to it. Eight entries rather than four because a board comes round
+ * every 62 m and four repeated three times a lap.
+ */
 export function holoTexture(size = 512) {
-  const B = [
-    { he: 'טורבו־בינה', fg: '#7ff2ff', bg: '#0a1030' },
-    { he: 'מנוע פרומפט', fg: '#ff86d6', bg: '#160a2e' },
-    { he: 'אלגו־גיר', fg: '#a8ff9c', bg: '#07172a' },
-    { he: 'ברק אנרגיה', fg: '#ffd76a', bg: '#231032' },
-  ];
   return canvasTexture('holoAtlas', size, (ctx, S) => {
-    const h = S / 2;
-    B.forEach((b, i) => {
-      const ox = (i % 2) * h, oy = Math.floor(i / 2) * h;
-      ctx.save(); ctx.translate(ox, oy);
-      ctx.fillStyle = b.bg; ctx.fillRect(0, 0, h, h);
+    HOLO_BOARDS.forEach((b, i) => {
+      const t = tileBox(i, HOLO_COLS, HOLO_ROWS, S);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(t.x, t.y, t.w, t.h); ctx.clip();
+      ctx.translate(t.x, t.y);
+      ctx.fillStyle = b.bg; ctx.fillRect(0, 0, t.w, t.h);
       // scanlines
       ctx.fillStyle = 'rgba(255,255,255,0.05)';
-      for (let y = 0; y < h; y += 6) ctx.fillRect(0, y, h, 2);
+      for (let y = 0; y < t.h; y += 6) ctx.fillRect(0, y, t.w, 2);
       // frame
-      ctx.strokeStyle = b.fg; ctx.globalAlpha = 0.85; ctx.lineWidth = h * 0.018;
-      ctx.strokeRect(h * 0.05, h * 0.10, h * 0.90, h * 0.80);
-      ctx.globalAlpha = 1;
-      ctx.direction = 'rtl'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.font = `bold ${Math.round(h * 0.23)}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
-      ctx.shadowColor = b.fg; ctx.shadowBlur = h * 0.09;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(b.he, h / 2, h * 0.46);
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = b.fg;
+      ctx.strokeStyle = b.fg; ctx.globalAlpha = 0.85; ctx.lineWidth = t.h * 0.030;
+      ctx.strokeRect(t.w * 0.025, t.h * 0.08, t.w * 0.95, t.h * 0.84);
       ctx.globalAlpha = 0.9;
-      ctx.fillRect(h * 0.18, h * 0.66, h * 0.64, h * 0.035);
-      ctx.fillRect(h * 0.30, h * 0.74, h * 0.40, h * 0.025);
+      ctx.fillStyle = b.fg;
+      ctx.fillRect(t.w * 0.30, t.h * 0.755, t.w * 0.40, t.h * 0.045);
+      ctx.fillRect(t.w * 0.38, t.h * 0.845, t.w * 0.24, t.h * 0.035);
       ctx.restore();
+      // `fitH` reserves the lower third of the panel for the two light bars, so
+      // the fitter is choosing a size for the space the text really has.
+      drawWorldText(ctx, b.he, t, {
+        fg: '#ffffff', glow: b.fg, baseline: 0.42, fitH: 0.60, key: 'holo-signs:' + i,
+      });
     });
   });
 }
@@ -1542,6 +1546,21 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
   const clearance = (x, z) => {
     const s = spline.closestT(CW.set(x, 0, z));
     return s.dist - spline.widthAt(s.t);
+  };
+  /**
+   * The far end of a board `want` metres long, measured IN THE WORLD at lateral
+   * offset `lat`, and the length it actually came out. A step of `want/L` in `t`
+   * is `want` metres along the CENTRELINE; out at the barrier on a corner the
+   * same step is up to 25% longer or shorter, which is enough to put a lettered
+   * board's aspect out of agreement with its texture tile's. One correction step
+   * is plenty (the error is smooth in t).
+   * @returns {[{x,y,z}, number]} the far point and the real length in metres
+   */
+  const spanOf = (t, lat, p0, want) => {
+    let p1 = spline.offsetPoint(t + want / L, lat);
+    const d0 = Math.hypot(p1.x - p0.x, p1.z - p0.z);
+    if (d0 > 0.05) p1 = spline.offsetPoint(t + (want / L) * (want / d0), lat);
+    return [p1, Math.hypot(p1.x - p0.x, p1.z - p0.z)];
   };
   /** Is a rotated w x d footprint (centred at local z = zOff) clear by `pad`? */
   const rectClear = (x, z, rotY, w, d, zOff, pad) => {
@@ -1747,18 +1766,29 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
   {
     const step = 26 / L;
     let bi = 0;
+    // Lettered furniture thins with the quality tier, exactly as the roadside
+    // signage does: a board is a texture upload and a pair of tris, and the low
+    // tier is where a mid-range machine is trying to hold 60 fps.
+    // Two independent rng gates multiply, so scaling both by the raw density
+    // would square it — 0.35 would take a 36-board lap to 3. Damped so the low
+    // tier loses about half of them and the barrier still reads as decorated.
+    const boardDens = 0.55 + 0.45 * (q.propDensity ?? 1);
     for (let t = 0; t < 1; t += step) {
-      if (rng() > 0.75) continue;
+      if (rng() > 0.75 * boardDens) continue;
       for (const side of [-1, 1]) {
-        if (rng() > 0.6) continue;
+        if (rng() > 0.6 * boardDens) continue;
         const w = spline.widthAt(t);
         const lat = side * (w + RUNOFF - 0.08);
-        const t2 = t + 5.0 / L;
+        // The board's aspect must equal its atlas tile's, or the fit budget the
+        // drawing code works to is not the metres of board the text actually
+        // has. BRAND_BOARD_W/H are 4.48 x 1.12 = the tiles' 4:1 — but a step of
+        // 4.48 m along the CENTRELINE is not 4.48 m out at the barrier on a
+        // corner, so the width is measured and the height follows from it.
         const p0 = spline.offsetPoint(t, lat);
-        const p1 = spline.offsetPoint(t2, lat);
+        const [p1, boardW] = spanOf(t, lat, p0, BRAND_BOARD_W);
         if (clearance(p0.x, p0.z) < RUNOFF - 0.6 || clearance(p1.x, p1.z) < RUNOFF - 0.6) continue;
         const [u0, v0, du, dv] = atlasUV(bi++);
-        const yb = p0.y + 0.16, yt = p0.y + 1.28;
+        const yb = p0.y + 0.16, yt = yb + boardW / BRAND_TILE_ASPECT;
         // A viewer standing on the track looks along `side * right`, so their
         // screen-right is `-side * tangent` and u has to increase in exactly
         // that direction. p1 is one tangent-step past p0, hence the swap by
@@ -2121,20 +2151,24 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
     });
     dressed.add(city.mesh); parts.push(city);
 
-    // holographic billboards on masts above the barrier
-    const step = 62 / L;
+    // holographic billboards on masts above the barrier — spaced further apart
+    // on the thinner tiers, same reason as the barrier boards above.
+    const step = (density >= 0.9 ? 62 : density >= 0.6 ? 86 : 124) / L;
     let bi2 = 0;
     for (let t = 0.01; t < 1; t += step) {
       const side = (bi2 % 2 === 0) ? 1 : -1;
       const w = spline.widthAt(t);
       const lat = side * (w + RUNOFF + 2.2);
-      const t2 = t + 9.0 / L;
-      const p0 = spline.offsetPoint(t, lat), p1 = spline.offsetPoint(t2, lat);
+      // 9.0 m x 4.5 m — the 2:1 of its atlas tile. See the note in brandAtlas:
+      // a tile whose aspect differs from its board's is how text that "fits"
+      // ends up in the neighbouring tile.
+      const p0 = spline.offsetPoint(t, lat);
+      const [p1, holoW] = spanOf(t, lat, p0, HOLO_BOARD_W);
       if (clearance(p0.x, p0.z) < RUNOFF + 1.4 || clearance(p1.x, p1.z) < RUNOFF + 1.4) { bi2++; continue; }
-      const k = bi2++ % 4;
-      const u0 = (k % 2) * 0.5, v0 = 1 - (Math.floor(k / 2) + 1) * 0.5;
+      const k = bi2++ % (HOLO_COLS * HOLO_ROWS);
+      const [u0, v0, du2, dv2] = tileUV(k, HOLO_COLS, HOLO_ROWS);
       const gy = Math.max(heightAt(p0.x, p0.z), p0.y - 0.3);
-      const yb = gy + 5.0, yt = gy + 9.4;
+      const yb = gy + 5.0, yt = yb + holoW / HOLO_TILE_ASPECT;
       // Same inverted swap as the sponsor boards above, with a louder symptom:
       // this material is FrontSide, so instead of reading mirrored the night
       // city's holo billboards were back-face culled and simply INVISIBLE from
@@ -2142,7 +2176,7 @@ export function dressTrack(trackGroup, spline, def, engine, rng = makeRng(99)) {
       const [a2, b2] = side > 0 ? [p1, p0] : [p0, p1];
       signs.face(
         [[a2.x, yb, a2.z], [b2.x, yb, b2.z], [b2.x, yt, b2.z], [a2.x, yt, a2.z]],
-        [[u0, v0], [u0 + 0.5, v0], [u0 + 0.5, v0 + 0.5], [u0, v0 + 0.5]], null);
+        [[u0, v0], [u0 + du2, v0], [u0 + du2, v0 + dv2], [u0, v0 + dv2]], null);
       // masts + halo + the pool of light it throws on the wet track
       const r = spline.rightAt(t), tan = spline.tangentAt(t);
       const hue = D.accents[k % D.accents.length];

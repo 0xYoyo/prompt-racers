@@ -235,17 +235,13 @@ console.log('\n=== 2b. A DECENT GARAGE UPGRADE WINS IT BACK ===');
     assert(mean(p) <= stock - 0.8,
       `race ${R.n}: the upgrade is worth ${f(stock - mean(p), 1)} places over stock (>= 0.8)`);
   }
-  // Race 2 is the one a tier-2 kart only fights for rather than wins outright
-  // (2/5 seeds), which is the intended shape: on the hardest of the three for a
-  // reference driver, the last step has to come from the quiz or the garage. A
-  // fully-spent garage must still close it, or the championship is unwinnable.
-  {
-    const T3 = { engine: 3, tyres: 3, frame: 3, turbo: 3 };
-    const runs = SEEDS.map(seed => race({ track: 'circuit', difficulty: 2, pace: 1.00, seed, parts: T3 }));
-    const wins = runs.filter(r => r.pos === 1).length;
-    assert(wins >= 4,
-      `race 2: a fully-upgraded kart wins outright (${wins}/${runs.length} seeds, >= 4)`);
-  }
+  // Race 2 is the one a tier-2 kart only fights for rather than wins outright,
+  // which is the intended shape: on the hardest of the three for a reference
+  // driver, the last step has to come from the quiz or the garage. The other
+  // half of that promise — a FULLY-spent garage must still close race 2, or the
+  // championship is unwinnable — is asserted in section 3b instead of here,
+  // because on five seeds it is a coin flip: the same code measures 3/5 and 4/5
+  // depending on which five, while over 21 seeds it is a stable 48%.
 }
 
 // --- 3. the championship still escalates ------------------------------------
@@ -298,6 +294,74 @@ console.log('\n=== 3. THE CHAMPIONSHIP STILL ESCALATES ===');
     `and it is a ladder, not a step: race 2 (${f(e85[1], 1)}) sits above race 1 (${f(e85[0], 1)})`);
   assert(e85[0] >= 3.0,
     `race 1 at 85% is gentle, not a free win (mean place ${f(e85[0], 1)} >= 3.0)`);
+}
+
+// --- 3b. race 2 is the MIDDLE RUNG, on both axes (Wave 5) --------------------
+// The bug this section exists to catch, reported from a real playtest: "race 2
+// is easier than race 1 — winnable by clean driving alone whatever the kart is
+// in". Everything above this line passed while that was true, because on the
+// five gate seeds race 1 and race 2 both read mean 3.0 at 100% pace and the
+// only assertions about them were one-sided bounds.
+//
+// Measured on the SAME 21 seeds, before (circuit 0.96) -> after (0.98):
+//   race 2, stock, 100%          3.19 (best 2nd) -> 3.62 (best 3rd)
+//   race 2, tier-3, 100%         1.14, 18/21 wins -> 1.52, 10/21 wins
+//   race 1 / race 3, stock 100%  2.33 / 3.71 (untouched: the constant is
+//                                keyed by track and race N -> track N)
+// Twenty-one seeds rather than five because both cells that carry the bug are
+// coin flips at five: the tier-3 win count reads 3/5 or 4/5 on the same code.
+console.log('\n=== 3b. RACE 2 IS THE MIDDLE RUNG (21 seeds, both axes) ===');
+{
+  const S21 = [3, 11, 19, 41, 57, 2, 7, 23, 31, 47, 61, 5, 13, 29, 37, 53, 67, 71, 79, 83, 97];
+  const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const T3 = { engine: 3, tyres: 3, frame: 3, turbo: 3 };
+  const cell = (R, pace, parts = null) => {
+    const p = S21.map(seed => race({ track: R.track, difficulty: R.difficulty, pace, seed, parts }).pos);
+    return { p, mean: mean(p), wins: p.filter(x => x === 1).length, best: Math.min(...p) };
+  };
+  const [R1, R2, R3] = RACES;
+  const c1 = cell(R1, 1.00), c2 = cell(R2, 1.00), c3 = cell(R3, 1.00);
+  const c2t3 = cell(R2, 1.00, T3);
+  const e1 = cell(R1, 0.85), e2 = cell(R2, 0.85), e3 = cell(R3, 0.85);
+  const show = (n, c) => console.log(`  ${n}: mean ${f(c.mean)}  best ${c.best}  wins ${c.wins}/${S21.length}  [${c.p.join(' ')}]`);
+  show('race 1 stock 100%', c1); show('race 2 stock 100%', c2); show('race 3 stock 100%', c3);
+  show('race 2 TIER-3 100%', c2t3);
+  console.log(`  85% ladder over 21 seeds: ${f(e1.mean)}  ->  ${f(e2.mean)}  ->  ${f(e3.mean)}`);
+
+  // (i) the reported failure, direct: race 2 must be a clear step DOWN the
+  // order from race 1 for the same clean, unengaged, stock driver. Pre-fix 0.86.
+  assert(c2.mean - c1.mean >= 1.05,
+    `race 2 is strictly harder than race 1 for a stock clean driver ` +
+    `(${f(c1.mean)} -> ${f(c2.mean)}, gap ${f(c2.mean - c1.mean)} >= 1.05 places)`);
+  // (ii) and lands where the brief wants it: 3rd-4th, never a podium handed out
+  // for driving alone. Pre-fix 3.19 with 2nd places on 4 of the 21 seeds.
+  assert(c2.wins === 0 && c2.mean >= 3.40,
+    `race 2 with no engagement is a 3rd-4th finish, not a podium fight ` +
+    `(mean ${f(c2.mean)} >= 3.40, ${c2.wins} wins)`);
+  // (iii) the other end of the same requirement: race 2 must stay BELOW the
+  // finale. If a future rebalance overshoots this constant, race 2 becomes the
+  // hardest race in the championship and the curve is broken the other way.
+  assert(c2.mean <= c3.mean + 0.25,
+    `race 2 is still easier than the finale (race 2 ${f(c2.mean)} <= race 3 ${f(c3.mean)} + 0.25)`);
+  // (iv) THE SPECIFIC PLAYTEST COMPLAINT: a well-upgraded kart driven cleanly,
+  // with zero quiz engagement, must not simply collect race 2. Pre-fix a tier-3
+  // kart won 18 of 21 seeds (86%) at mean 1.14 — the race was a formality for
+  // anyone who had spent in the garage.
+  assert(c2t3.mean >= 1.35 && c2t3.wins <= 13,
+    `race 2 is not a formality for a well-upgraded clean driver ` +
+    `(tier-3 mean ${f(c2t3.mean)} >= 1.35, ${c2t3.wins}/${S21.length} wins <= 13)`);
+  // (v) ...but a FULLY-spent garage must still close it, or the championship is
+  // unwinnable for the child who did everything the game asked. This is the
+  // assertion moved out of section 2b, where five seeds could not measure it.
+  assert(c2t3.wins >= 5 && c2t3.mean <= 2.20,
+    `race 2 is still won by a fully-spent garage (tier-3 ${c2t3.wins}/${S21.length} wins >= 5, ` +
+    `mean ${f(c2t3.mean)} <= 2.20)`);
+  // (vi) the struggling child's ladder, on the same 21 seeds. The hold-back
+  // floor deliberately flattens this axis (D33b), so the margin here is small
+  // by design — it is a shape guard, not the assertion that catches this bug.
+  assert(e2.mean >= e1.mean + 0.75 && e2.mean <= e3.mean - 0.55,
+    `at 85% race 2 still sits between the other two ` +
+    `(${f(e1.mean)} -> ${f(e2.mean)} -> ${f(e3.mean)})`);
 }
 
 // --- 4. the band stays inside its hard bound --------------------------------

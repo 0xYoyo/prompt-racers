@@ -258,6 +258,22 @@ export function raceScene(engine, opts = {}) {
   // their UI. It must be a silent, chrome-less world — no HUD in the overlay, no
   // input capture stealing menu keys, and no engine/collision audio.
   const backdrop = !!opts.backdrop;
+
+  // ── ONE gate for everything this race says out loud ────────────────────────
+  // A backdrop race is a moving picture behind a menu, not a race: nothing it
+  // does may be heard, banner-ed, scored or saved. Guarding each emit site
+  // individually is what left `race:position`, `race:lap`, `race:bestlap`,
+  // `race:finallap`, `race:finish` and `race:complete` live behind the title
+  // screen — measured on the built game, one sit on the menu produced 123
+  // overtake stingers, 2 lap jingles, a final-lap warning and a podium sting,
+  // plus a `race:complete` that scenes.js and badges.js recorded as if it were
+  // the child's own race. Six guards existed; six more sites had none.
+  // Same lesson as D31: the next call site always forgets. So EVERY gameplay
+  // emission in this scene goes through `emit`, which is a no-op while
+  // `backdrop` is true — an emit added next wave inherits the guarantee, and
+  // there is nothing left to remember.
+  const emit = backdrop ? () => {} : (evt, payload) => bus.emit(evt, payload);
+
   const hud = backdrop ? null : createHUD(engine, { spline, maxSpeedKmh: 140 });
   hud?.setSpline?.(spline, def.startT ?? 0);
 
@@ -340,7 +356,7 @@ export function raceScene(engine, opts = {}) {
     if (input) { input.enabled = false; input.softReset(); }
   }
 
-  if (!backdrop) bus.emit('race:begin', { track: def.id, laps, racer: racer.id });
+  emit('race:begin', { track: def.id, laps, racer: racer.id });
 
   // A correct quiz answer pays tokens; the quiz applies the boost itself.
   const offQuiz = backdrop ? null : bus.on('quiz:correct', ({ tokens: n }) => { S.tokens += n || 0; S.quizTokens += n || 0; });
@@ -388,12 +404,12 @@ export function raceScene(engine, opts = {}) {
       const beat = Math.min(3, Math.floor(S.clock / (COUNTDOWN_S / 4)));
       if (beat !== S.lastCountdownBeat) {
         S.lastCountdownBeat = beat;
-        if (!backdrop) bus.emit('race:countdown', { n: 3 - beat });   // 3,2,1 then 0 = GO
+        emit('race:countdown', { n: 3 - beat });   // 3,2,1 then 0 = GO
       }
       if (S.clock >= COUNTDOWN_S) {
         S.phase = 'racing';
         S.clock = 0;
-        if (!backdrop) bus.emit('race:start');
+        emit('race:start');
       }
       return;                       // karts sit still; the world still animates in update()
     }
@@ -433,7 +449,7 @@ export function raceScene(engine, opts = {}) {
     const goingBack = d < -0.00002 && player.speed > 4;
     S.wrongWayT = goingBack ? S.wrongWayT + dt : Math.max(0, S.wrongWayT - dt * 2);
     const ww = S.wrongWayT > 0.7;
-    if (ww !== S.wrongWay) { S.wrongWay = ww; bus.emit('race:wrongway', { on: ww }); }
+    if (ww !== S.wrongWay) { S.wrongWay = ww; emit('race:wrongway', { on: ww }); }
 
     // ---- tokens --------------------------------------------------------
     if (tokens && racing && !S.finished) {
@@ -448,12 +464,11 @@ export function raceScene(engine, opts = {}) {
         // destroyed the garage's whole lesson ("precision costs — choose where it is
         // worth it") for any child who raced well. See GAPS: token economy.
         S.tokens += 1;
-        if (!backdrop) {
-          bus.emit('token:pickup', { tokens: S.tokens, combo: S.combo });
-          // The very first token a player ever collects explains what tokens are —
-          // the moment the idea is most concrete, because they just picked one up.
-          if (shouldShowFirstTokenPopup()) showFirstTokenPopup();
-        }
+        emit('token:pickup', { tokens: S.tokens, combo: S.combo });
+        // The very first token a player ever collects explains what tokens are —
+        // the moment the idea is most concrete, because they just picked one up.
+        // (A popup is not an emission, so this one keeps its own guard.)
+        if (!backdrop && shouldShowFirstTokenPopup()) showFirstTokenPopup();
       }
       S.comboT = Math.max(0, S.comboT - dt);
       if (S.comboT === 0) S.combo = 0;
@@ -549,7 +564,7 @@ export function raceScene(engine, opts = {}) {
     const ms = S.lapTime * 1000;
     if (S.bestLap == null || ms < S.bestLap) {
       S.bestLap = ms;
-      bus.emit('race:bestlap', { ms });
+      emit('race:bestlap', { ms });
       const key = def.id;
       const best = save.read('bestLap') || {};
       if (!best[key] || ms < best[key]) save.set({ bestLap: { ...best, [key]: ms } });
@@ -561,8 +576,8 @@ export function raceScene(engine, opts = {}) {
     if (S.lap >= laps) return finishPlayer();
 
     S.lap++;
-    bus.emit('race:lap', { lap: S.lap, totalLaps: laps, lapTimeMs: ms });
-    if (S.lap === laps) bus.emit('race:finallap');
+    emit('race:lap', { lap: S.lap, totalLaps: laps, lapTimeMs: ms });
+    if (S.lap === laps) emit('race:finallap');
   }
 
   function finishPlayer() {
@@ -572,7 +587,7 @@ export function raceScene(engine, opts = {}) {
     S.phase = 'finished';
     if (input) input.enabled = false;
     chase.mode = 'orbit';
-    bus.emit('race:finish', { position: S.position });
+    emit('race:finish', { position: S.position });
 
     // Settle the remaining order deterministically from current progress so the
     // results screen can appear immediately rather than waiting out the AI.
@@ -614,7 +629,7 @@ export function raceScene(engine, opts = {}) {
     // answering questions) and called it the child's race.
     if (!backdrop && typeof window !== 'undefined') window.__LAST_RESULT__ = result;
     setTimeout(() => {
-      bus.emit('race:complete', result);
+      emit('race:complete', result);
       opts.onComplete?.(result);
     }, 2200);
   }
@@ -634,7 +649,7 @@ export function raceScene(engine, opts = {}) {
     const idx = order.findIndex(r => r.isPlayer || !r.racer);
     const np = (idx >= 0 ? idx : order.length) + 1;
     if (np !== S.position && !S.finished) {
-      bus.emit('race:position', { from: S.position, to: np });
+      emit('race:position', { from: S.position, to: np });
       S.position = np;
     } else if (S.finished) S.position = np;
     void p;
@@ -647,11 +662,11 @@ export function raceScene(engine, opts = {}) {
     if (backdrop) return;   // a menu backdrop must never make engine noise
     if (player.drifting !== prev.drifting) {
       prev.drifting = player.drifting;
-      bus.emit(player.drifting ? 'drift:start' : 'drift:end', { tier: player.driftTier });
+      emit(player.drifting ? 'drift:start' : 'drift:end', { tier: player.driftTier });
     }
-    if (player.drifting) bus.emit('drift:charge', { charge: player.driftCharge01 });
+    if (player.drifting) emit('drift:charge', { charge: player.driftCharge01 });
     if (player.driftTier !== prev.tier) {
-      if (player.driftTier > prev.tier && player.driftTier > 0) bus.emit('drift:tier', { tier: player.driftTier });
+      if (player.driftTier > prev.tier && player.driftTier > 0) emit('drift:tier', { tier: player.driftTier });
       prev.tier = player.driftTier;
     }
     // Watch the boost SEQUENCE, not the `boosting` rising edge, and read the
@@ -675,26 +690,26 @@ export function raceScene(engine, opts = {}) {
     if (boosts && boosts.length) {
       for (const b of boosts) {
         prev.boostSeq = b.seq;
-        bus.emit('drift:boost', { tier: b.tier, source: b.source });
+        emit('drift:boost', { tier: b.tier, source: b.source });
       }
       chase.shake(0.35, 0.25);   // ONE shake per frame, however many boosts drained
     } else if (player.boostSeq !== prev.boostSeq) {
       // Safety net for a body that has no log (stubs, older mocks, the AI
       // bodies a future gate might hand in): the pre-drain behaviour exactly.
       prev.boostSeq = player.boostSeq;
-      bus.emit('drift:boost', { tier: player.lastBoostTier, source: player.lastBoostSource });
+      emit('drift:boost', { tier: player.lastBoostTier, source: player.lastBoostSource });
       chase.shake(0.35, 0.25);
     }
     prev.boosting = player.boosting;
-    if (player.wallHit && !prev.wallHit) { bus.emit('kart:collide', { kind: 'wall', speed: player.speed }); chase.shake(0.6, 0.3); }
+    if (player.wallHit && !prev.wallHit) { emit('kart:collide', { kind: 'wall', speed: player.speed }); chase.shake(0.6, 0.3); }
     prev.wallHit = !!player.wallHit;
-    if (player.kartHit && !prev.kartHit) { bus.emit('kart:collide', { kind: 'kart', speed: player.speed }); chase.shake(0.3, 0.2); }
+    if (player.kartHit && !prev.kartHit) { emit('kart:collide', { kind: 'kart', speed: player.speed }); chase.shake(0.3, 0.2); }
     prev.kartHit = !!player.kartHit;
     if (player.offTrack !== prev.offTrack) {
       prev.offTrack = player.offTrack;
-      bus.emit('surface:change', { surface: player.offTrack ? player.surfaceKind : 'asphalt' });
+      emit('surface:change', { surface: player.offTrack ? player.surfaceKind : 'asphalt' });
     }
-    bus.emit('kart:engine', {
+    emit('kart:engine', {
       rpm01: Math.min(1, player.speed / Math.max(1, player.p?.topSpeed || 24)),
       load: player.throttleApplied ?? 1,
       boosting: player.boosting,

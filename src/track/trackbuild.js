@@ -22,6 +22,13 @@ import {
 } from '../gfx/textures.js';
 import { applyTheme, getTheme } from '../gfx/sky.js';
 import { dressTrack } from '../gfx/props.js';
+// ALL world lettering — here, in props.js and on the gantry — is authored and
+// drawn by src/track/signdata.js. See its header for why there is exactly one
+// of each. Re-exported below so the long-standing import sites keep working.
+import {
+  TRACK_SIGNS, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS, SIGN_CAP_EM,
+  signLayout, signUV, signTileIndex, drawWorldText,
+} from './signdata.js';
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 const smooth = t => t * t * (3 - 2 * t);
@@ -177,17 +184,11 @@ function tileable(maps) {
 // ---------------------------------------------------------------------------
 // signage — our own invented in-world Hebrew brands
 // ---------------------------------------------------------------------------
-
-export const BRANDS = [
-  { he: 'טורבו־בינה', bg: 0xc4402f, fg: 0xffe9c4 },
-  { he: 'מנוע פרומפט', bg: 0x1f6f78, fg: 0xfdf3dd },
-  { he: 'ברק אנרגיה', bg: 0xe0a52c, fg: 0x3a2410 },
-  { he: 'נחל נתונים', bg: 0x2f5f34, fg: 0xf2f6d8 },
-  { he: 'אלגו־גיר', bg: 0x6b3f8c, fg: 0xf7e6ff },
-  { he: 'שמן חכם', bg: 0xb4552a, fg: 0xffe6bf },
-];
-
-function hexCss(h) { return '#' + h.toString(16).padStart(6, '0'); }
+//
+// The brand list and the invented identities live in signdata.js now (they were
+// duplicated here AND in props.js, with the two copies already drifting apart).
+// `brandTexture()` went with them: it was a THIRD fixed-font, unmeasured drawing
+// path that no code path had called since Wave 1.
 
 // ---------------------------------------------------------------------------
 // THE ANTI-MIRRORING RULE (Wave 4, item 7)
@@ -435,122 +436,19 @@ export function enforceSignOrientation(group, spline, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// ROADSIDE SIGNAGE — ambient curriculum (Wave 4, item 14)
+// ROADSIDE SIGNAGE — ambient curriculum (Wave 4, item 14; Wave 5 rebuild)
 // ---------------------------------------------------------------------------
 //
-// Two or three Hebrew words per board, at most SIGN_MAX_CHARS characters, themed
-// to the track. The length limit is not style, it is optics: cap height is
-// `0.4 * boardWidth / characters` (see signLayout), so every character costs the
-// whole board 7% of its legibility. The first draft averaged 16 characters on a
-// 7 m board and rendered at 7 px of Hebrew from the driver's seat — correct,
-// well-themed curriculum that no child could read. 16 lines per track so a
-// 14-board lap never repeats. All original copy; no brands, no real companies.
-export const TRACK_SIGNS = {
-  // נווה הנתונים — data
-  oasis: {
-    skin: { bg: '#efdcb8', edge: '#c4402f', fg: '#38200f', lit: 0 },
-    lines: [
-      // 'איכות קודמת' read as "the PREVIOUS quality" as easily as "quality comes
-      // first" — ambiguous at 40 km/h. 'שדה לכל נתון' used שדה in its database
-      // sense, which to an eight-year-old is a field with grass in it.
-      'נתונים נקיים', 'תווית לדוגמה', 'אוסף אימון', 'קודם איכות',
-      'דפוס חוזר', 'מאגר נתונים', 'מודדים ומשפרים', 'עוד דוגמאות',
-      'פחות טעויות', 'תמונות ומילים', 'מיון לפי סוג', 'טבלה מסודרת',
-      'רעש מסתיר דפוס', 'דוגמה טובה', 'נתונים חסרים', 'קודם בודקים',
-    ],
-  },
-  // עיר הנוירונים — neural networks
-  circuit: {
-    skin: { bg: '#0d1236', edge: '#ff5fae', fg: '#8ff6ff', lit: 1.25 },
-    lines: [
-      'רשת נוירונים', 'שכבה על שכבה', 'משקלים לומדים', 'נוירון מדליק',
-      'קלט אל פלט', 'סיבוב אימון', 'טעות מלמדת', 'חיבורים חזקים',
-      // 'סף הפעלה' is the right concept and unreadable jargon; the same idea in
-      // words a child owns, and it rhymes with 'נוירון מדליק' two rows up.
-      'שכבה נסתרת', 'אות עובר הלאה', 'נדלק או כבוי', 'מתאמנים שוב',
-      'זיהוי דפוסים', 'חיזוי מהיר', 'רשת עמוקה', 'למידה בשלבים',
-    ],
-  },
-  // פסגת הענן — cloud computing
-  cloud: {
-    // DARK board, light letters — the reverse of the other two. Cloud Peak is a
-    // white plateau under a pale dawn sky, and the original ivory-on-ivory board
-    // was invisible as a SHAPE before it was ever unreadable as text. A dark
-    // panel silhouetted on the plateau edge is also the frame's only altitude
-    // cue from a seated camera (GAPS: "does not read as above the clouds").
-    skin: { bg: '#2c3350', edge: '#ffc247', fg: '#f7f1e6', lit: 0.5 },
-    lines: [
-      'מחשוב ענן', 'מרכז נתונים', 'כוח לפי דרישה', 'שרת רחוק',
-      'הכול מגובה', 'העלאה והורדה', 'אלפי מחשבים', 'מתרחב לפי צורך',
-      'תשובה מהירה', 'אחסון בענן', 'גיבוי אוטומטי', 'חיבור מאובטח',
-      // 'משאב לפי מידה' was adult procurement Hebrew, and the third "…לפי…" board
-      // on a track that already has 'כוח לפי דרישה' and 'מתרחב לפי צורך'.
-      'חלוקת עומס', 'זמין מכל מקום', 'רשת עולמית', 'רק מה שצריך',
-    ],
-  },
+// The copy, the atlas geometry (SIGN_COLS/ROWS/TILE_ASPECT), `signLayout` and
+// `signUV` all live in signdata.js now, next to the barrier-board and holo
+// phrase sets and the ONE fitter that draws all of them. Re-exported here
+// because trackbuild has been their import site since D38.
+export {
+  TRACK_SIGNS, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS, SIGN_CAP_EM,
+  signLayout, signUV, signTileIndex,
 };
 
-// --- atlas geometry, stated once so the gate can re-derive a tile from a UV ---
-//
-// 2 x 8 = 16 tiles, so a 14-board lap never shows the same line twice (the 2 x 4
-// atlas did, six times a lap). The tiles are 4:1, and the boards are built to the
-// same aspect: a wide, short board is what lets a SHORT line of Hebrew be set at
-// the largest cap height per square metre of board — see signLayout.
-export const SIGN_COLS = 2;
-export const SIGN_ROWS = 8;
-/** Tile aspect (width / height) — the board's aspect must match it. */
-export const SIGN_TILE_ASPECT = SIGN_ROWS / SIGN_COLS;
-
-/**
- * Average glyph advance of the bold Hebrew face, in em. Used so sign sizing is
- * ANALYTIC and therefore measurable headlessly: `measureText` needs a real font
- * and a real canvas, so anything that decides size inside the draw callback is
- * invisible to a gate and can silently shrink to nothing (which is exactly what
- * happened — see the legibility gate in tests/signage.test.mjs).
- */
-const SIGN_ADV_EM = 0.55;
-/** Cap height of the Hebrew face as a fraction of the em box. */
-export const SIGN_CAP_EM = 0.70;
-const SIGN_FIT_W = 0.86;      // fraction of tile width the text may occupy
-const SIGN_MAX_EM = 0.52;     // font size ceiling, as a fraction of tile height
-/** Longest line the boards are designed to set at full size. */
-export const SIGN_MAX_CHARS = 14;
-
-/**
- * Lay a sign line out on its tile, deterministically and without a canvas.
- * @returns {{rows:string[], fontFrac:number, capFrac:number}}
- *   fontFrac/capFrac are fractions of the TILE HEIGHT, which equals the board's
- *   world height — so `capFrac * boardHeightMetres` is the glyph cap height a
- *   driver actually sees, and that is what the legibility gate projects.
- *
- * THE ONE IDENTITY WORTH REMEMBERING. While a line is width-limited,
- *
- *     capMetres = SIGN_CAP_EM * SIGN_FIT_W * boardWidthMetres / characters
- *               ≈ 0.4 * boardWidth / characters
- *
- * — the tile aspect cancels out entirely. Legible signage is therefore bought
- * with METRES OF BOARD WIDTH PER CHARACTER and with nothing else, which is why
- * the fix for 7 px Hebrew was short copy on wide boards rather than a bigger
- * font (there was no room for a bigger font) or more boards (there was no
- * shortage of boards).
- */
-export function signLayout(line, aspect = SIGN_TILE_ASPECT) {
-  const n = String(line).length;
-  const byWidth = (SIGN_FIT_W * aspect) / (SIGN_ADV_EM * Math.max(1, n));
-  const fontFrac = Math.min(SIGN_MAX_EM, byWidth);
-  return { rows: [String(line)], fontFrac, capFrac: fontFrac * SIGN_CAP_EM };
-}
-
-/** UV rect of sign `i` in the sign atlas. */
-export function signUV(i) {
-  const N = SIGN_COLS * SIGN_ROWS;
-  const k = ((i % N) + N) % N;
-  const col = k % SIGN_COLS, row = (k / SIGN_COLS) | 0;
-  const du = 1 / SIGN_COLS, dv = 1 / SIGN_ROWS;
-  return [col * du, 1 - (row + 1) * dv, du, dv];
-}
-
-/** Eight themed sign faces baked into one atlas — one draw call for the lap. */
+/** Sixteen themed sign faces baked into one atlas — one draw call for the lap. */
 export function signAtlas(theme, size = 1024) {
   const set = TRACK_SIGNS[theme] || TRACK_SIGNS.oasis;
   const K = set.skin;
@@ -570,62 +468,15 @@ export function signAtlas(theme, size = 1024) {
       ctx.fillStyle = K.edge;
       ctx.fillRect(0, 0, tw, th * 0.055);
       ctx.fillRect(0, th * 0.945, tw, th * 0.055);
-      ctx.direction = 'rtl'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      // Size comes from `signLayout` — analytic, canvas-free, and therefore
-      // visible to the legibility gate. `measureText` is used ONLY as a safety
-      // clamp for a font wider than the model expects; it can shrink, never grow,
-      // and if it ever bites the gate's projection is an over-estimate.
-      const lay = signLayout(line, tw / th);
-      let px = Math.max(8, Math.round(th * lay.fontFrac));
-      for (let g = 0; g < 4; g++) {
-        ctx.font = `bold ${px}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
-        const wpx = Math.max(...lay.rows.map(r => ctx.measureText(r)?.width || 0));
-        if (wpx <= tw * SIGN_FIT_W || px <= 8) break;
-        px = Math.round(px * Math.max(0.6, (tw * SIGN_FIT_W) / wpx));
-      }
-      ctx.font = `bold ${px}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
-      const nR = lay.rows.length;
-      const lead = px * 1.18;
-      lay.rows.forEach((row, r) => {
-        const cyR = th * 0.52 + (r - (nR - 1) / 2) * lead;
-        ctx.fillStyle = 'rgba(0,0,0,0.30)';
-        ctx.fillText(row, tw / 2 + tw * 0.006, cyR + th * 0.014);
-        ctx.fillStyle = K.fg;
-        ctx.fillText(row, tw / 2, cyR);
-      });
       ctx.restore();
+      // ONE text path for the whole world (signdata.js): analytic size, real-font
+      // shrink clamp, wrap before truncate, and the tile is clipped so no line
+      // can ever paint into its neighbour.
+      drawWorldText(ctx, line, { x: ox, y: oy, w: tw, h: th }, {
+        fg: K.fg, shadow: 'rgba(0,0,0,0.30)', key: 'signage:' + theme + ':' + i,
+      });
     });
   });
-}
-
-/** A sponsor board / banner face. Cached by brand index + size. */
-export function brandTexture(index, size = 256) {
-  const b = BRANDS[index % BRANDS.length];
-  return canvasTexture(`brand${index % BRANDS.length}`, size, (ctx, S) => {
-    const H = S / 4;
-    ctx.fillStyle = hexCss(b.bg);
-    ctx.fillRect(0, 0, S, S);
-    // faded canvas weave so the board is not a flat colour
-    for (let i = 0; i < 900; i++) {
-      const x = (i * 97) % S, y = (i * 181) % S;
-      ctx.fillStyle = `rgba(255,255,255,${0.012 + ((i * 13) % 7) * 0.004})`;
-      ctx.fillRect(x, y, 3, 2);
-    }
-    ctx.fillStyle = hexCss(b.fg);
-    ctx.globalAlpha = 0.22;
-    ctx.fillRect(0, S * 0.06, S, S * 0.02);
-    ctx.fillRect(0, S * 0.92, S, S * 0.02);
-    ctx.globalAlpha = 1;
-    ctx.direction = 'rtl';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = `bold ${Math.round(S * 0.19)}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
-    ctx.fillStyle = 'rgba(0,0,0,0.28)';
-    ctx.fillText(b.he, S / 2 + S * 0.008, S / 2 + S * 0.012);
-    ctx.fillStyle = hexCss(b.fg);
-    ctx.fillText(b.he, S / 2, S / 2);
-    void H;
-  }, { wrap: THREE.RepeatWrapping });
 }
 
 /** The start gantry face: track name + a couple of brand strips. */
@@ -635,9 +486,20 @@ const GANTRY_SKIN = {
   cloud: { a: '#e8dfd4', b: '#fbf3e6', c: '#d8cec2', rule: '#ffc247', text: '#7a5a2a', lamp: ['rgba(255,246,220,0.95)', 'rgba(255,214,150,0)'] },
 };
 
-function gantryTexture(nameHe, size = 512, theme = 'oasis') {
+/**
+ * @param squash  how much wider the board is than the texture band it samples.
+ *   The material shows the top quarter of a square canvas (a 4:1 strip) on a
+ *   board that is ~9:1, so a glyph drawn square on the canvas arrives on the
+ *   beam 2.2x too wide — the gantry name has been quietly stretched since Wave
+ *   1. Rather than shrink the sampled band (which would throw away half the
+ *   texels the name is drawn with), the text is laid out in a virtual box
+ *   `squash` times wider and the context is scaled back down: same texel
+ *   density, correct letterforms, and the aspect the fitter works to is now the
+ *   board's real one. Same disease as the brand atlases, milder symptom.
+ */
+function gantryTexture(nameHe, size = 512, theme = 'oasis', squash = 1) {
   const K = GANTRY_SKIN[theme] || GANTRY_SKIN.oasis;
-  return canvasTexture('gantry:' + nameHe, size, (ctx, S) => {
+  return canvasTexture(`gantry:${nameHe}:${squash.toFixed(3)}`, size, (ctx, S) => {
     const H = S / 4;                       // the beam is 4:1
     const g = ctx.createLinearGradient(0, 0, 0, H);
     g.addColorStop(0, K.a); g.addColorStop(0.5, K.b); g.addColorStop(1, K.c);
@@ -647,12 +509,17 @@ function gantryTexture(nameHe, size = 512, theme = 'oasis') {
     ctx.fillStyle = K.rule;
     ctx.fillRect(0, H * 0.06, S, H * 0.035);
     ctx.fillRect(0, H * 0.90, S, H * 0.035);
-    ctx.direction = 'rtl'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = `bold ${Math.round(H * 0.48)}px "Arial Hebrew", "Noto Sans Hebrew", sans-serif`;
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.fillText(nameHe, S / 2, H * 0.53 + H * 0.02);
-    ctx.fillStyle = K.text;
-    ctx.fillText(nameHe, S / 2, H * 0.51);
+    // The gantry is lettered by the SAME path as every other board (signdata.js).
+    // It has never overflowed — a 4:1 beam is generous — but D32b's lesson is
+    // that the piece everyone believes is fine by construction is exactly the one
+    // that ends up outside the fix and outside the gate.
+    ctx.save();
+    ctx.scale(1 / squash, 1);
+    drawWorldText(ctx, nameHe, { x: 0, y: 0, w: S * squash, h: H }, {
+      fg: K.text, shadow: 'rgba(0,0,0,0.45)', maxEm: 0.48, baseline: 0.51,
+      key: 'gantry:' + theme,
+    });
+    ctx.restore();
     // lamp strip along the bottom
     const lamps = 26;
     for (let i = 0; i < lamps; i++) {
@@ -1162,9 +1029,19 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
         { roughness: 0.85, color: 0xf2ece4 }),
     };
     const woodMat = keep((gantryMats[def.theme] || gantryMats.oasis)());
+    // Beam geometry first: the banner's own aspect decides how the name is set.
+    const span = wStart + RUNOFF + 1.4;   // legs stand outside the barrier
+    const HGT = 6.2;
+    const beamW = span * 2 + 1.6;
+    const boardH = Math.min(3.0, beamW / 9);
+    const boardW = beamW - 0.3;
     // the artwork lives in the top quarter of the (square) canvas, so the board
-    // samples only that band — full texel density on a 4:1 banner
-    const gTex = gantryTexture(def.nameHe, 1024, def.theme);
+    // samples only that band — full texel density on a 4:1 banner. The BOARD is
+    // ~9:1, so the strip is stretched 2.2x across it; `squash` is that factor,
+    // and gantryTexture pre-compresses the name by it so the letters land in
+    // their true proportions. See the aspect rule in signdata.js.
+    const gSquash = (boardW / boardH) / 4;
+    const gTex = gantryTexture(def.nameHe, 1024, def.theme, gSquash);
     gTex.repeat.set(1, 0.25); gTex.offset.set(0, 0.75);
     // FrontSide, one board per direction: a DoubleSide banner shows mirrored
     // Hebrew to anyone standing behind it.
@@ -1177,8 +1054,6 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
 
     const gan = new THREE.Group();
     gan.name = 'gantry';
-    const span = wStart + RUNOFF + 1.4;   // legs stand outside the barrier
-    const HGT = 6.2;
     // legs + cross-bracing, in one merged wooden geometry
     const wmb = new MB(false);
     for (const s of [-1, 1]) {
@@ -1189,8 +1064,6 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       wmb.box(s * span, HGT * 0.55, 0, 0.5, 3.4, 0.5, 0.35);
     }
     // the beam itself
-    const beamW = span * 2 + 1.6;
-    const boardH = Math.min(3.0, beamW / 9);
     wmb.box(0, HGT + 0.30, 0, beamW, 0.42, 1.35, 0.3);
     wmb.box(0, HGT + 0.60 + boardH, 0, beamW, 0.34, 1.35, 0.3);
     const wg = wmb.geometry(); geos.push(wg);
@@ -1198,7 +1071,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     legs.castShadow = !!q.shadows; legs.receiveShadow = !!q.shadows;
     gan.add(legs);
 
-    const boardGeo = new THREE.PlaneGeometry(beamW - 0.3, boardH);
+    const boardGeo = new THREE.PlaneGeometry(boardW, boardH);
     geos.push(boardGeo);
     for (const side of [0, Math.PI]) {
       const board = new THREE.Mesh(boardGeo, gMat);
@@ -1211,6 +1084,10 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // construction, unchecked" is precisely the seam this project keeps losing
       // days to.
       board.name = 'gantry-board';
+      // The aspect the name was actually laid out for. The gate compares it with
+      // the board's own world aspect: if the beam is resized without resizing
+      // the letterforms with it, the gantry silently goes back to stretched.
+      board.userData.textAspect = 4 * gSquash;
       board.position.set(0, HGT + 0.45 + boardH / 2, side ? -0.14 : 0.14);
       board.rotation.y = side;
       board.castShadow = false;
