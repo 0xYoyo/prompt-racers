@@ -234,8 +234,21 @@ export function raceScene(engine, opts = {}) {
   }) : null;
   const aiKarts = [];
   for (const k of fieldKarts(field)) {
-    const mk = (engine.q.propDensity < 0.5 ? createKartLOD : createKart)(
-      { racer: k.racer, parts: aiVisualParts, engine, lod: engine.q.propDensity < 0.5 ? 1 : 0 });
+    // Rival karts are 95% of the frame's draw calls (D50), so they are built
+    // through createKartLOD at EVERY tier — but what that buys differs:
+    //   נמוך   weld + the reduced-detail build (`lod: 'low'`)
+    //   בינוני/גבוה  weld ONLY — same geometry, same materials, same vertices as
+    //          createKart, just merged. Proven lossless: identical triangle,
+    //          vertex and material counts, unchanged bounding sphere, and a
+    //          gate that matches every world-space vertex and normal against an
+    //          unwelded twin. 235 meshes → 61.
+    // The player's kart is never welded and never reduced: it is the hero art,
+    // it is 3–8 m from the camera every frame, and it is one kart out of eight.
+    const cheap = engine.q.propDensity < 0.5;
+    const mk = createKartLOD({
+      racer: k.racer, parts: aiVisualParts, engine,
+      lod: cheap ? 'low' : 'high', merge: true,
+    });
     scene.add(mk.group);
     aiKarts.push({ ...k, mesh: mk });
   }

@@ -89,7 +89,7 @@ if (typeof globalThis.document === 'undefined') {
 const THREE = await import('three');
 const { buildTrack, auditTrackClearance, signUAxis, enforceSignOrientation, TEXT_MESHES, TRACK_SIGNS,
   signLayout, signUV, signTileIndex, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS,
-  SIGN_LINES } = await import('../src/track/trackbuild.js');
+  SIGN_LINES, inkBand } = await import('../src/track/trackbuild.js');
 const { TRACKS, getTrack } = await import('../src/track/trackdef.js');
 const SIGNDATA = await import('../src/track/signdata.js');
 const { WORLD_TEXT_STATS, resetWorldTextStats, fitText, allWorldPhrases,
@@ -929,21 +929,45 @@ for (let i = 0; i < TRACKS.length; i++) {
 // was clear, instead of as a blind spot the two share.
 // ─────────────────────────────────────────────────────────────────────────────
 console.log('\n  OCCLUSION — no furniture crosses the letters\n  ' + '─'.repeat(78));
-const PROBE_COLS = 9, PROBE_ROWS = 3, PROBE_X = 0.43, PROBE_Y = 0.22;
-// The window a board is read over, in metres back up the racing line. Three
-// points, not two: at 19 m a marshal-post canopy clipped the foot of the last
-// letter of circuit's `אות עובר הלאה` while 45 m and 28 m were both clean.
-const READ_BACKS = [45, 28, 19];
+// 11 x 5 over the band THIS line's ink occupies — `inkBand` re-derives it from
+// the same layout the drawing uses, per board, so a wrapped two-row line is
+// probed where its two rows are rather than in the gap between them.
+//
+// WHAT IS INDEPENDENT HERE AND WHAT IS NOT. These 55 points are a SUBSET of the
+// 189 placement probes (every 11th-of-the-width column is one of its 21, every
+// half-band row is one of its 9), so this cannot second-guess the sampling
+// density — placement is four times denser and both are point samples, which a
+// 0.2 m mast can in principle slip between. What it does check independently is
+// everything else, with a different engine: the blocker set (every mesh, no
+// height or triangle-count filter), the ink band, the read window, and the
+// bucketed triangle index in trackbuild — this uses stock THREE.Raycaster, so an
+// index that loses a triangle shows up here as a board the placement believed
+// was clear. That is the failure this file exists to make loud, and it did:
+// the round-3 draft's first index disagreed with the raycaster on 4 boards.
+const PROBE_COLS = 11, PROBE_ROWS = 5, PROBE_X = 0.43;
+// THE WINDOW A BOARD IS READ OVER, in metres back up the racing line — sampled
+// every 5-9 m from first sight to the last useful glance, not at two points.
+// Two was not enough: at 19 m a marshal-post canopy clipped the foot of the
+// last letter of circuit's `אות עובר הלאה` while both 45 m and 28 m were clean
+// (round-3 draft, shots/w5r3-circuit-near-high.png). 16 m was measured too and
+// left out deliberately: one board on circuit cannot be placed clear of the
+// grandstand canopies that close in, and at 16 m the board fills a third of the
+// frame — losing the corner of one letter there is not what makes a line
+// unreadable. Placement uses the same five.
+const READ_BACKS = [45, 36, 28, 23, 19];
 for (let i = 0; i < TRACKS.length; i++) {
   const def = TRACKS[i], track = built[i];
   const { spline } = track;
   const L = spline.length;
-  // EVERYTHING. Name-free, height-free, triangle-count-free: the only exclusion
-  // is the signage itself (its own panels and legs).
+  // EVERYTHING. Name-free, height-free, triangle-count-free.
   const blockers = [];
   track.group.updateMatrixWorld(true);
   track.group.traverse(o => {
     if (!o.isMesh || !o.geometry || /^signage/.test(o.name)) return;
+    // ...with ONE exclusion, the same one auditTrackClearance makes: an additive
+    // card that never writes depth tints what is behind it, it does not hide it.
+    const mm = Array.isArray(o.material) ? o.material[0] : o.material;
+    if (mm && mm.transparent && mm.depthWrite === false) return;
     const g = o.geometry;
     const tris = (g.index ? g.index.count : (g.attributes.position?.count || 0)) / 3;
     if (tris < 1) return;
@@ -956,11 +980,12 @@ for (let i = 0; i < TRACKS.length; i++) {
     const u = signUAxis(p.n);
     const t = spline.closestT(p.c).t;
     const w = p.h * SIGN_TILE_ASPECT;
+    const bandY = inkBand(p.line, SIGN_TILE_ASPECT).halfY;
     const probes = [];
     for (let a = 0; a < PROBE_COLS; a++) {
       const sx = -PROBE_X + (2 * PROBE_X * a) / (PROBE_COLS - 1);
       for (let b = 0; b < PROBE_ROWS; b++) {
-        const sy = -PROBE_Y + (2 * PROBE_Y * b) / (PROBE_ROWS - 1);
+        const sy = -bandY + (2 * bandY * b) / (PROBE_ROWS - 1);
         probes.push(new THREE.Vector3(p.c.x + u.x * sx * w, p.c.y + sy * p.h, p.c.z + u.z * sx * w));
       }
     }
@@ -983,7 +1008,7 @@ for (let i = 0; i < TRACKS.length; i++) {
   }
   ok(`${def.id}: nothing crosses the letters of any board`, blocked.length === 0,
     blocked.length ? `${blocked.length} blocked probes: ` + [...new Set(blocked)].slice(0, 3).join(' | ')
-      : `${signPanels(track).length / 2} boards x ${PROBE_COLS}x${PROBE_ROWS} text-band points x 2 faces x ${READ_BACKS.length} read distances = ${probeCount} clear sight lines`);
+      : `${signPanels(track).length / 2} boards x ${PROBE_COLS}x${PROBE_ROWS} ink-band points x 2 faces x ${READ_BACKS.length} read distances = ${probeCount} clear sight lines`);
 }
 
 console.log('\n  COPY — ambient curriculum, short enough to be READ\n  ' + '─'.repeat(78));

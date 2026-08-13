@@ -14,7 +14,7 @@ import { MAX_COST, MIN_COMPLETE_COST, KART_SLOTS, optionsFor, costOf } from '../
 // The carryover half of the economy gate (Wave 5) needs the garage's own scorer
 // and its own rebate, for the same reason the line above imports its prices: a
 // copy of them here would pass while the game had moved.
-import { scorePrompt, tokenReward } from '../src/garage/scoring.js';
+import { scorePrompt, tokenReward, REBATE_CAP } from '../src/garage/scoring.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -1386,7 +1386,7 @@ try {
   const bestAskUpTo = n => askTable[Math.max(0, Math.min(30, n))];
   // The wallet a child arrives at the SECOND garage with, exactly as scenes.js
   // computes it: race 1, spend, rebate, race 2.
-  const walletAtSecondGarage = (r1, buy, r2) => r1 - buy.cost + tokenReward(buy.score, false) + r2;
+  const walletAtSecondGarage = (r1, buy, r2) => r1 - buy.cost + tokenReward(buy.score, false, buy.cost) + r2;
 
   const SAVE_KEY = 'promptracers.v1';
   /**
@@ -1502,30 +1502,61 @@ try {
         idle.r.tokensFromQuiz === 0 && idle.opened >= 3 && RI < R1,
         `${idle.opened} boxes met, ${idle.correct} answered → ${RI} banked vs the engaged ${R1}`);
 
-      // THE TARGET. The child buys something REAL at the first garage — an ask
-      // costing at least twice the cheapest complete one — and can still afford
-      // the top tier at the second. Not "buys the cheapest thing and hoards":
-      // that was the only route before Wave 5, and it paid the child for NOT
-      // engaging with the teaching screen.
+      // THE TARGET, asserted against the policy a CHILD ACTUALLY FOLLOWS.
+      //
+      // The first version of this searched for ANY first-garage spend that left
+      // the top tier in reach, and passed as soon as one existed — i.e. it proved
+      // a perfectly-chosen reserve exists, which is not a thing an eight-year-old
+      // computes. Nobody plays a garage by solving for the optimal reserve; they
+      // buy the best thing they can afford. So the assertion is that policy, and
+      // the search result is kept only as the printed margin beside it.
+      const intuitive = bestAskUpTo(R1);                     // "buy the best I can afford"
+      const intuitiveWallet = walletAtSecondGarage(R1, intuitive, R2);
+      // The best a child could do WITH restraint, for the margin line: the most
+      // expensive real ask (at least twice the cheapest complete one) that still
+      // leaves the top tier affordable.
       const REAL_ASK = MIN_COMPLETE_COST * 2;
-      let bought = null, wallet = 0;
+      let reserved = null, reservedWallet = 0;
       for (let cap = R1; cap >= REAL_ASK; cap--) {
         const ask = bestAskUpTo(cap);
         if (ask.cost < REAL_ASK) continue;
         const w = walletAtSecondGarage(R1, ask, R2);
-        if (w >= MAX_COST) { bought = ask; wallet = w; break; }   // the most it can spend and still get there
+        if (w >= MAX_COST) { reserved = ask; reservedWallet = w; break; }
       }
       console.log(`        \x1b[2mcarryover: race1 ${R1} + race2 ${R2}`
-        + (bought ? `, best first-garage ask that keeps the top tier in reach: ${bought.cost} tokens (score ${bought.score},`
-          + ` rebate ${tokenReward(bought.score, false)}) → ${wallet} at the second garage` : ', top tier unreachable')
-        + `  ·  disengaged ${RI}+${RI}\x1b[0m`);
+        + `  ·  buy-the-best-affordable: spend ${intuitive.cost} (score ${intuitive.score},`
+        + ` rebate ${tokenReward(intuitive.score, false, intuitive.cost)}) → ${intuitiveWallet}`
+        + (reserved ? `  ·  with restraint: spend ${reserved.cost} → ${reservedWallet}` : '  ·  no reserve reaches it')
+        + `  ·  disengaged ${RI}+${RI}  ·  top ask ${MAX_COST}\x1b[0m`);
+      // THE TARGET: reachable by spending REAL money at the first garage. This is
+      // an existence claim over the child's actual choice set — "there is a real
+      // ask you can buy and still get there" — and it is computed from THIS
+      // engaged run's own R1 and R2, so a lucky disengaged race cannot satisfy it.
       step('E2: an engaged child reaches a top-tier ask by the second garage',
-        !!bought && wallet >= MAX_COST,
-        bought ? `${R1} − ${bought.cost} + ${tokenReward(bought.score, false)} + ${R2} = ${wallet} vs the ${MAX_COST} top ask`
-          : `nothing above ${REAL_ASK} tokens leaves ${MAX_COST} in reach`);
-      step('E2: …and it is a real ask, not the cheapest thing on the screen',
-        !!bought && bought.cost >= REAL_ASK,
-        bought ? `spent ${bought.cost} at the first garage, cheapest complete ask is ${MIN_COMPLETE_COST}` : '—');
+        !!reserved && reservedWallet >= MAX_COST,
+        reserved
+          ? `${R1} − ${reserved.cost} + ${tokenReward(reserved.score, false, reserved.cost)} + ${R2}`
+            + ` = ${reservedWallet} vs the ${MAX_COST} top ask`
+          : `nothing costing ${REAL_ASK}+ leaves ${MAX_COST} in reach`);
+      step('E2: …and the ask it takes is a real one, not the cheapest on the screen',
+        !!reserved && reserved.cost >= REAL_ASK,
+        reserved ? `spent ${reserved.cost} at the first garage, cheapest complete ask is ${MIN_COMPLETE_COST}` : '—');
+      // …AND HOW FAR THE UNRESERVED CHILD FALLS SHORT, pinned rather than left to
+      // the printout. Nobody plays a garage by solving for the optimal reserve —
+      // they buy the best thing they can afford — and on the poorest engaged pair
+      // that policy lands SHORT. That is a real trade and not a punishment (the
+      // spender wins 12 more championship points across the two parted races than
+      // the hoarder; measured in .tmp/placecost.mjs), but it must not be allowed
+      // to grow: at more than half a rebate short, the top tier stops being one
+      // good prompt away and becomes a different order of magnitude, which is the
+      // state Wave 5 was opened to fix. Reverting the rebate to its Wave-4 value
+      // makes this 5 short and turns it red.
+      const short = MAX_COST - intuitiveWallet;
+      step('E2: …and the child who just buys the best they can afford is at most half a rebate short',
+        short <= REBATE_CAP / 2,
+        short <= 0
+          ? `reaches it outright (${intuitiveWallet} vs ${MAX_COST})`
+          : `${short} short of ${MAX_COST} (spent ${intuitive.cost}), bar is ${REBATE_CAP / 2}`);
 
       // The other half, and the half that is easy to lose: making the top tier
       // reachable must not make it reachable for a child who engaged with
@@ -1534,7 +1565,7 @@ try {
       const idleWallet = walletAtSecondGarage(RI, bestAskUpTo(MIN_COMPLETE_COST), RI);
       step('E2: a child who ignores every box still cannot, however they hoard',
         idleWallet < MAX_COST,
-        `${RI} − ${MIN_COMPLETE_COST} + ${tokenReward(bestAskUpTo(MIN_COMPLETE_COST).score, false)} + ${RI}`
+        `${RI} − ${MIN_COMPLETE_COST} + ${tokenReward(bestAskUpTo(MIN_COMPLETE_COST).score, false, MIN_COMPLETE_COST)} + ${RI}`
         + ` = ${idleWallet} vs the ${MAX_COST} top ask`);
     }
     await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);

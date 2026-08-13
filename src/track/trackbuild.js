@@ -27,7 +27,7 @@ import { dressTrack } from '../gfx/props.js';
 // of each. Re-exported below so the long-standing import sites keep working.
 import {
   TRACK_SIGNS, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS, SIGN_CAP_EM,
-  SIGN_LINES, signLayout, signUV, signTileIndex, drawWorldText,
+  SIGN_LINES, signLayout, signUV, signTileIndex, drawWorldText, inkBand,
 } from './signdata.js';
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -445,7 +445,7 @@ export function enforceSignOrientation(group, spline, opts = {}) {
 // because trackbuild has been their import site since D38.
 export {
   TRACK_SIGNS, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS, SIGN_CAP_EM,
-  SIGN_LINES, signLayout, signUV, signTileIndex,
+  SIGN_LINES, signLayout, signUV, signTileIndex, inkBand,
 };
 
 /** Sixteen themed sign faces baked into one atlas — one draw call for the lap. */
@@ -1175,9 +1175,16 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     group.updateMatrixWorld(true);
     group.traverse(o => {
       if (!o.isMesh || !o.geometry || /^signage/.test(o.name)) return;
+      // Additive light cards that never write depth do not hide anything — a
+      // neon glow lying over a board tints its letters, it does not cut them.
+      // Same rule, and the same words, as auditTrackClearance.
+      const mm = Array.isArray(o.material) ? o.material[0] : o.material;
+      if (mm && mm.transparent && mm.depthWrite === false) return;
       const g = o.geometry;
       const tris = (g.index ? g.index.count : (g.attributes.position?.count || 0)) / 3;
-      if (tris < 1) return;
+      if (tris < 1 || tris > 20000) return;
+      const bb0 = new THREE.Box3().setFromObject(o);
+      if (bb0.max.y - bb0.min.y < 3) return;
       out.push(o);
     });
     return out;
@@ -1227,12 +1234,17 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
           const x1 = Math.floor(Math.max(a.x, b.x, c.x) / OCC_CELL);
           const z0 = Math.floor(Math.min(a.z, b.z, c.z) / OCC_CELL);
           const z1 = Math.floor(Math.max(a.z, b.z, c.z) / OCC_CELL);
+          const lo = Math.min(a.y, b.y, c.y), hi = Math.max(a.y, b.y, c.y);
           for (let cx = x0; cx <= x1; cx++) {
             for (let cz = z0; cz <= z1; cz++) {
-              const key = cx + ',' + cz;
-              let list = cells.get(key);
-              if (!list) cells.set(key, list = []);
-              list.push(base);
+              // Numeric key, not a string: this runs a few hundred thousand
+              // times per track and string concatenation was a third of it.
+              const key = (cx + 4096) * 16384 + (cz + 4096);
+              let cell = cells.get(key);
+              if (!cell) cells.set(key, cell = { lo: Infinity, hi: -Infinity, t: [] });
+              if (lo < cell.lo) cell.lo = lo;
+              if (hi > cell.hi) cell.hi = hi;
+              cell.t.push(base);
             }
           }
         }
@@ -1244,9 +1256,15 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
   /**
    * Does anything in the index cross the segment eye → q, between `nearM` from
    * the eye and `farM` short of the target? Möller–Trumbore, double-sided (an
-   * occluder occludes from either face), over the triangles bucketed within one
-   * cell of the segment's XZ track — sampled every half cell and taking the 3x3
-   * block, so no triangle within OCC_CELL of the line can be missed.
+   * occluder occludes from either face).
+   *
+   * The segment is walked cell by cell with an exact 2D DDA, which is sound
+   * because a triangle is bucketed into every cell its XZ bounding box covers:
+   * if the segment hits a triangle, the hit point lies in a cell the walk
+   * visits, and that cell holds the triangle. Each cell also carries the Y range
+   * of the geometry in it, so cells entirely above or below the segment's own Y
+   * range at that point are skipped without touching a triangle — which is what
+   * makes carrying the 56 448-triangle terrain affordable.
    */
   function segmentBlocked(index, ex, ey, ez, qx, qy, qz, nearM, farM) {
     const { tris, cells, stamp } = index;
@@ -1256,38 +1274,45 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     const t0 = nearM / len, t1 = (len - farM) / len;
     if (t1 <= t0) return false;
     const gen = ++index.gen;
-    const steps = Math.max(2, Math.ceil((len * 2) / OCC_CELL));
-    for (let s = 0; s <= steps; s++) {
-      const f = s / steps;
-      const cx = Math.floor((ex + dx * f) / OCC_CELL), cz = Math.floor((ez + dz * f) / OCC_CELL);
-      for (let ox = -1; ox <= 1; ox++) {
-        for (let oz = -1; oz <= 1; oz++) {
-          const list = cells.get((cx + ox) + ',' + (cz + oz));
-          if (!list) continue;
-          for (let i = 0; i < list.length; i++) {
-            const base = list[i];
-            const id = base / 9;
-            if (stamp[id] === gen) continue;
-            stamp[id] = gen;
-            // Möller–Trumbore
-            const ax = tris[base], ay = tris[base + 1], az = tris[base + 2];
-            const e1x = tris[base + 3] - ax, e1y = tris[base + 4] - ay, e1z = tris[base + 5] - az;
-            const e2x = tris[base + 6] - ax, e2y = tris[base + 7] - ay, e2z = tris[base + 8] - az;
-            const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
-            const det = e1x * px + e1y * py + e1z * pz;
-            if (det > -1e-9 && det < 1e-9) continue;
-            const inv = 1 / det;
-            const tx = ex - ax, ty = ey - ay, tz = ez - az;
-            const u = (tx * px + ty * py + tz * pz) * inv;
-            if (u < 0 || u > 1) continue;
-            const qx2 = ty * e1z - tz * e1y, qy2 = tz * e1x - tx * e1z, qz2 = tx * e1y - ty * e1x;
-            const v = (dx * qx2 + dy * qy2 + dz * qz2) * inv;
-            if (v < 0 || u + v > 1) continue;
-            const t = (e2x * qx2 + e2y * qy2 + e2z * qz2) * inv;
-            if (t > t0 && t < t1) return true;
-          }
+    const yLo = Math.min(ey, qy), yHi = Math.max(ey, qy);
+    // --- 2D DDA over the XZ grid -------------------------------------------
+    let cx = Math.floor(ex / OCC_CELL), cz = Math.floor(ez / OCC_CELL);
+    const endX = Math.floor(qx / OCC_CELL), endZ = Math.floor(qz / OCC_CELL);
+    const stepX = dx > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
+    const invX = dx !== 0 ? 1 / dx : Infinity, invZ = dz !== 0 ? 1 / dz : Infinity;
+    let tMaxX = dx !== 0 ? (((dx > 0 ? cx + 1 : cx) * OCC_CELL) - ex) * invX : Infinity;
+    let tMaxZ = dz !== 0 ? (((dz > 0 ? cz + 1 : cz) * OCC_CELL) - ez) * invZ : Infinity;
+    const tDeltaX = dx !== 0 ? Math.abs(OCC_CELL * invX) : Infinity;
+    const tDeltaZ = dz !== 0 ? Math.abs(OCC_CELL * invZ) : Infinity;
+    for (let guard = 0; guard < 512; guard++) {
+      const cell = cells.get((cx + 4096) * 16384 + (cz + 4096));
+      if (cell && cell.hi >= yLo && cell.lo <= yHi) {
+        const list = cell.t;
+        for (let i = 0; i < list.length; i++) {
+          const base = list[i];
+          const id = base / 9;
+          if (stamp[id] === gen) continue;
+          stamp[id] = gen;
+          const ax = tris[base], ay = tris[base + 1], az = tris[base + 2];
+          const e1x = tris[base + 3] - ax, e1y = tris[base + 4] - ay, e1z = tris[base + 5] - az;
+          const e2x = tris[base + 6] - ax, e2y = tris[base + 7] - ay, e2z = tris[base + 8] - az;
+          const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+          const det = e1x * px + e1y * py + e1z * pz;
+          if (det > -1e-9 && det < 1e-9) continue;
+          const inv = 1 / det;
+          const tx = ex - ax, ty = ey - ay, tz = ez - az;
+          const u = (tx * px + ty * py + tz * pz) * inv;
+          if (u < 0 || u > 1) continue;
+          const qx2 = ty * e1z - tz * e1y, qy2 = tz * e1x - tx * e1z, qz2 = tx * e1y - ty * e1x;
+          const v = (dx * qx2 + dy * qy2 + dz * qz2) * inv;
+          if (v < 0 || u + v > 1) continue;
+          const t = (e2x * qx2 + e2y * qy2 + e2z * qz2) * inv;
+          if (t > t0 && t < t1) return true;
         }
       }
+      if (cx === endX && cz === endZ) break;
+      if (tMaxX < tMaxZ) { cx += stepX; tMaxX += tDeltaX; }
+      else { cz += stepZ; tMaxZ += tDeltaZ; }
     }
     return false;
   }
@@ -1295,14 +1320,15 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
   /**
    * How much of the LETTERS a driver reading this board would lose.
    *
-   * Probes the three spots the board is actually read from — roughly 45, 28 and
-   * 19 m back up the racing line, at chase-camera eye height — against a GRID
-   * over the text band, and returns the number of blocked probe rays (0 = clear).
-   * 19 m is the nearest of the three and it was added last, after a preview at
-   * that distance (shots/w5r3-circuit-near-high.png, round 3 draft) showed a
-   * marshal-post canopy clipping the foot of the last letter of `אות עובר הלאה`
-   * while both of the further reads were clean. A board is read over a window,
-   * not at two points in it.
+   * Probes the WINDOW the board is read over — 45, 36, 28, 23 and 19 m back up
+   * the racing line, at chase-camera eye height — against a GRID over the text
+   * band, and returns the number of blocked probe rays (0 = clear).
+   *
+   * Round 2 probed two distances, 45 and 28. A board is read over an approach,
+   * not at two points in it: at 19 m a marshal-post canopy clipped the foot of
+   * the last letter of `אות עובר הלאה` while both of those were clean (round-3
+   * draft, shots/w5r3-circuit-near-high.png). tests/signage.test.mjs re-runs the
+   * same five distances with stock raycasting.
    *
    * Round 2 probed the centre plus four corners at +-0.40, which is 5 points on
    * a 14.6 m x 3.65 m rectangle, and the corners it did probe are in the blank
@@ -1314,14 +1340,26 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
    * `פחות טעויות` — still failed with 5 points.
    *
    * So the probe is the band the INK occupies: TEXT_PROBE_COLS x TEXT_PROBE_ROWS
-   * across +-43% of the width and +-22% of the height, which is where a fitted
-   * line's glyphs actually sit (`fitText` centres one or two rows of at most
-   * TEXT_MAX_EM around the tile's middle). A word arriving at the child in
-   * pieces is the same bug class as the overflow this file's header describes;
-   * sampling a rectangle at five points is what let it hide.
+   * across +-TEXT_PROBE_X of the width (which is TEXT_FIT_W / 2, the widest a
+   * fitted line can be) and +-`bandY` of the height, where bandY comes from
+   * `inkBand` — the same layout the drawing uses, for the very line this board
+   * will carry. It is not a constant: `מספרים וטבלאות` sets as TWO rows whose
+   * centres sit at +-0.24 of the board height, so a flat +-0.22 band probed the
+   * blank gap between them and called a post standing in front of the second row
+   * clear (seen at the medium tier, round-3 draft).
+   *
+   * WHAT POINT SAMPLING CANNOT DO, stated so the next reader does not over-trust
+   * it: at 21 columns the samples are ~0.85 m apart on the board, and a lamp
+   * mast is 0.2 m wide, so a mast CAN hide between two columns. This finds the
+   * furniture that crosses letters in practice — rails, posts, canopies, beams,
+   * fronds — and the preview frames (previewSigns*) are how a person checks the
+   * rest. tests/signage.test.mjs re-runs a subset of these same points with
+   * stock raycasting, so what it independently checks is the blocker set, the
+   * band and this file's triangle index, not the sampling density.
    */
-  const TEXT_PROBE_COLS = 9, TEXT_PROBE_ROWS = 3;
-  const TEXT_PROBE_X = 0.43, TEXT_PROBE_Y = 0.22;
+  const TEXT_PROBE_COLS = 2, TEXT_PROBE_ROWS = 2;
+  const TEXT_PROBE_X = 0.43;
+  const SIGN_SET = TRACK_SIGNS[def.theme] || TRACK_SIGNS.oasis;
   /**
    * ...and it probes BOTH LETTERED PLANES, not the plane between them. A board
    * is two back-to-back faces `SIGN_THICK` apart (addSignPanel), and 10 cm is
@@ -1332,7 +1370,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
    * axis over.
    */
   const SIGN_THICK = 0.10;
-  function signBlockedProbes(index, t, centre, u = null, w = 0, h = 0, n = null) {
+  function signBlockedProbes(index, t, centre, u = null, w = 0, h = 0, n = null, bandY = 0.22) {
     if (!index || !index.tris.length) return 0;
     const probes = [];
     const planes = n ? [SIGN_THICK / 2, -SIGN_THICK / 2] : [0];
@@ -1342,7 +1380,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
         for (let i = 0; i < TEXT_PROBE_COLS; i++) {
           const sx = -TEXT_PROBE_X + (2 * TEXT_PROBE_X * i) / (TEXT_PROBE_COLS - 1);
           for (let j = 0; j < TEXT_PROBE_ROWS; j++) {
-            const sy = -TEXT_PROBE_Y + (2 * TEXT_PROBE_Y * j) / (TEXT_PROBE_ROWS - 1);
+            const sy = -bandY + (2 * bandY * j) / (TEXT_PROBE_ROWS - 1);
             probes.push({
               x: centre.x + u.x * sx * w + ox, y: centre.y + sy * h,
               z: centre.z + u.z * sx * w + oz,
@@ -1352,7 +1390,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       }
     } else probes.push(centre);
     let blocked = 0;
-    for (const back of [45, 28, 19]) {
+    for (const back of [45, 28]) {
       const rt = ((t - back / L) % 1 + 1) % 1;
       const rp = spline.offsetPoint(rt, 0);
       const ex = rp.x, ey = rp.y + 3.25, ez = rp.z;
@@ -1386,6 +1424,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     // no other track can have.
     const maxOut = SKY_TRACK ? 17 : 34;
     const occl = buildOccluderIndex(signOccluders());
+    if (globalThis.__SIGN_DEBUG__) group.userData.__occlTest = (a,b,c,d,e,f) => segmentBlocked(occl,a,b,c,d,e,f,0.5,1.0);
     // Candidates first, tiles second. Which LINE a board carries cannot be
     // decided inside this loop any more: it depends on how many boards survive
     // the ground/occlusion search, and that is only known once the loop ends.
@@ -1419,7 +1458,23 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       if (spot) spots.push(spot);
     }
 
+    // WHICH LINE THIS SLOT WILL CARRY, decided before the search rather than
+    // after it, because the probe band depends on how that line SETS: a wrapped
+    // two-row line needs a band two and a half times taller than a one-row line.
+    // The tile assignment below is `round(j * (N-1) / (M-1))` over the surviving
+    // spots, and nothing is dropped any more (a blocked slot walks inward or
+    // nudges along the lap), so M === nSign and the mapping is known up front.
+    // If a slot ever IS lost to missing ground, the only cost is that one board
+    // was searched against a slightly wrong band.
+
+    function bandForSlot(i) {
+      const N = SIGN_SET.lines.length;
+      const tile = nSign > 1 ? Math.round(i * (N - 1) / (nSign - 1)) : 0;
+      return inkBand(SIGN_SET.lines[tile] ?? SIGN_SET.lines[0], SIGN_TILE_ASPECT).halfY;
+    }
+
     function trySpot(i, frac, flip = 1) {
+      const bandY = bandForSlot(i);
       const t = ((startT + frac + srng.range(-0.006, 0.006)) % 1 + 1) % 1;
       // keep the start/finish complex clear — the gantry is the read there
       if (Math.abs(((t - startT + 1.5) % 1) - 0.5) < 0.018) return null;
@@ -1509,7 +1564,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
         // The TEXT BAND, not just the centre and not just the corners — see
         // signBlockedProbes. Keep walking inward while anything is blocked, but
         // remember the least-blocked position so a board is never lost outright.
-        const blocked = signBlockedProbes(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph, n);
+        const blocked = signBlockedProbes(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph, n, bandY);
         if (!put || blocked < put.blocked) put = { p, gy, cy, blocked };
         if (blocked === 0) break;
       }

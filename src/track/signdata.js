@@ -172,10 +172,11 @@ function splitRows(line, n) {
  * @param {string} line
  * @param {number} aspect   tile width / tile height
  * @param {object} [opts]   {maxEm, fitW, fitH, maxRows}
- * @returns {{rows:string[], fontFrac:number, capFrac:number, chars:number}}
- *   fontFrac/capFrac are fractions of the TILE HEIGHT, which equals the board's
- *   world height — so `capFrac * boardHeightMetres` is the cap height a driver
- *   actually sees, and that is what the legibility gate projects.
+ * @returns {{rows, fontFrac, capFrac, inkFrac, chars}}
+ *   All three fractions are of the TILE HEIGHT, which equals the board's world
+ *   height. `capFrac * boardHeightMetres` is the row height the LAYOUT reserves;
+ *   `inkFrac * boardHeightMetres` is the LETTER BODY a driver actually sees, and
+ *   that — not capFrac — is what the legibility gate projects into pixels.
  *
  * Shrink-to-fit first, wrap to a second row only if that buys a bigger glyph.
  * It NEVER truncates: the returned rows always contain every character of the
@@ -210,6 +211,29 @@ export function fitText(line, aspect, opts = {}) {
     inkFrac: best.fontFrac * TEXT_BODY_EM,
     chars: text.length,
   };
+}
+
+/**
+ * WHERE THE INK ACTUALLY SITS ON THE TILE — the band an occlusion probe has to
+ * sample, as a half-height fraction of the tile (and of the board, since the
+ * two share an aspect).
+ *
+ * This exists because a probe band guessed from a single-row layout misses a
+ * WRAPPED line completely. `מספרים וטבלאות` is 14 characters, and on a 4:1 tile
+ * two rows buy a bigger glyph than one, so it sets as two rows whose centres
+ * sit at +-0.24 of the tile height — outside a +-0.22 band, which then probes
+ * the blank gap between the rows and calls a post standing in front of the
+ * second row clear (seen at the medium tier, round-3 draft).
+ *
+ * Derived from the same `fitText` the drawing uses: (rows-1)/2 lead + half a
+ * letter body, plus the 2% the block sits below the tile's middle because
+ * drawWorldText's default baseline is 0.52.
+ */
+export function inkBand(line, aspect, opts = {}) {
+  const lay = fitText(line, aspect, opts);
+  const half = ((lay.rows.length - 1) / 2) * TEXT_LEAD * lay.fontFrac
+    + 0.5 * lay.fontFrac * TEXT_BODY_EM;
+  return { halfY: half + 0.02, halfX: TEXT_FIT_W / 2, rows: lay.rows.length };
 }
 
 /**

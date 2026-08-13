@@ -1295,3 +1295,76 @@ are excluded from the weld and stay reachable — rather than commented as a haz
 61 meshes against 235, with identical triangles, vertices, materials and vertex positions.
 That is what lets בינוני take the draw-call win at zero art cost; the tier selection itself
 lives in `race.js` and is the lead's wiring.
+
+## D51 — The brief's preferred lever was arithmetically unavailable, so the rebate moved instead
+Item 5 asked that an engaged child afford one top-tier ask by garage visit 2–3 while a
+disengaged one cannot, and asked to reach that by **raising quiz-correct token rewards**.
+Measured, that lever does not exist.
+
+An engaged race meets **5–8 question boxes** (down from D28's 10/8/7 — the Wave-5 teaching
+cadence defers about one a race). Flat `REWARD_TOKENS` 1 → 2 therefore adds 10–16 tokens and
+puts a **21–25 token race** on the board, recreating exactly the failure D39 flattened the
+tiers to prevent, and nothing absorbs it: pickups are 3–6, `TOKEN_CLUSTERS_PER_LAP` cannot go
+below 1 without a source paying nothing, and `FINISH_TOKENS`' top is 5 against a floor GAPS
+says to raise rather than cut.
+
+A **tiered** raise cannot thread it either, and the reason is structural rather than
+empirical. `quizdata.js` maps difficulty → tiers as `1→[1]`, `2→[1,2]`, `3→[2,3]`, and
+`scenes.js` sets `difficulty = 1 + trackIndex`. So tier 3 appears **only in race 3 — the race
+followed by the podium, not a garage** — and raising it is worth exactly zero to a child;
+tier 1 appears in races 1–2 and a raise adds +5–8 to race 1 alone; tier 2 takes race 2 to
+16–20 and breaks the economy's own invariant at 29. **The only tier whose raise is safe is the
+only tier whose raise buys nothing.** While the top ask is 21 and a race can meet 8 boxes, the
+per-box reward can only be 1. That derivation now lives above `REWARD_TOKENS` so it is not
+re-litigated next wave.
+
+The lever that moved instead is the garage **rebate** (`tokenReward`: guided rate 0.045 → 0.08
+cap 4 → 7; expert 0.075 → 0.095 cap 7 → 8, both caps now *derived* from `MAX_COST` rather than
+typed, because D39's finding was that a written invariant rots without anyone editing the line
+it is written on). It is defensible on the lesson as well as the arithmetic: the rebate is paid
+for **writing a good prompt**, which is more on-lesson than quiz recall.
+
+**The diagnosis was worse than the brief's complaint.** Pre-fix, an engaged child who bought
+the best ask they could afford at the first garage arrived at the last with 16–19 and could
+never reach 21; the only route to the top tier was to buy the **cheapest** thing first. The
+game paid a child for not engaging with its own teaching screen.
+
+**The hoarding question, settled by measuring the right currency.** A critic found that
+hoarding still reaches 23–28 against exactly 21 for buying something real, and concluded the
+fix had not changed which strategy the economy rewards. It had priced hoarding in *tokens* —
+but tokens are not the child's objective, the championship is. Re-measured in places:
+
+| | spender | hoarder |
+|---|---|---|
+| race 2 | P3 / P4 / P3 | P4 / P4 / P3 |
+| race 3 | **P1 / P3 / P1** | P3 / P4 / P5 |
+| championship points over the two spendable races | **43** | 31 |
+
+Hoarding wins 2–7 tokens and costs **twelve championship points — more than a race win**.
+It is nearly free in race 2 and ruinous in race 3, where the tier-0 engine's deficit compounds
+to 1.5–3.5 s a lap. So it is a real trade rather than a dominant strategy, and the child on the
+intuitive policy is the one winning the championship. **A dominance claim is only as good as
+the currency it is measured in.**
+
+That also settled the tuning: raising the rebate to 8 makes the intuitive policy reach 21 on
+6/6 runs, but then hoarding is dominated in *both* currencies and there is no choice left at
+all. Left at 7. Honest statement of where it lands: **the target is met, but on the poorest
+engaged run it requires one act of restraint at the first garage**, and the gate pins that
+shortfall at a bounded ≤ half a rebate rather than asserting that a perfect reserve exists —
+which is what it did before, and why it was green while the intuitive policy failed on 4 of 6
+runs.
+
+**An exploit, clamped at source.** `garage.js`'s `spent()` returns only the part row's cost in
+expert mode (free text replaces the three priced rows), so an 8-token rebate against a 4-token
+spend made an expert build a net **profit**: typing the placeholder example the screen itself
+displays scores 92 and left a child with a free tier-3 part and 4 tokens conjured from
+nothing — at the first garage, where the wallet is floored to 4 — and cleared `prompt-80` on a
+wallet of 4, routing around D40's "needs 17" entirely. It predates Wave 5 at +3 and this wave
+widened it to +4. `tokenReward` now takes the spend and clamps to it, **inside the function
+rather than at the call site, because a call site that forgets is how the rule rotted the first
+time.** D17's rule stated properly: a rebate is below the SPEND, not below a constant.
+
+`prompt-80` is finally under D40's rule too — `PROMPT_STEPS` is derived from the garage's own
+tier cuts and checked against `tierForScore`, so "precise prompt" provably means "you built a
+tier-3 part", in both languages. It was the one badge with neither a derivation nor a string
+assertion, while GAPS names it as the first thing to check after any economy change.

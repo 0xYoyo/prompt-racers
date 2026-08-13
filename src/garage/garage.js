@@ -1923,7 +1923,14 @@ export function garageScene(engine, opts = {}) {
 
   function revealOverlay() {
     const r = st.result;
-    const gain = tokenReward(r.score, st.expert);
+    // The spend is passed so the rebate can never exceed it. Expert mode charges
+    // only for the part row (free text replaces the three priced rows), so an
+    // 8-token rebate against a 4-token spend made an expert build a net PROFIT:
+    // typing the placeholder the screen itself shows scored 92 and left a child
+    // with a free tier-3 part and 4 tokens conjured from nothing — at the first
+    // garage, where the wallet is floored to 4. D17's rule stated properly is
+    // that a rebate is below the SPEND, not below a constant.
+    const gain = tokenReward(r.score, st.expert, spent());
     const ghost = ghostFor(r);
     // The caller needs BOTH halves of the transaction: what the prompt cost and
     // what the build paid. Reporting only `gain` is how the token economy ended

@@ -299,6 +299,17 @@ const DISMISS_AFTER_S = 0.45;
 // lap without a source paying nothing at all, and the finish table's top is 5
 // with a floor of 3 that GAPS' standing instruction says to raise, not cut.
 //
+// AND THE TIERS CANNOT RESCUE IT EITHER, which is the part that looks like a way
+// out and is not. `quizdata.js` maps difficulty → tiers as 1 → [1], 2 → [1,2],
+// 3 → [2,3], and `scenes.js` sets difficulty = 1 + trackIndex. So tier 1 appears
+// in races 1 AND 2 (raising it adds 5–8 to race 1 alone), tier 2 takes race 2 to
+// 16–20 and its worst case past the 21-token ask, and tier 3 appears ONLY in
+// race 3 — which is followed by the podium, not a garage, so raising it buys the
+// child nothing at all. The only tier whose raise is safe is the only tier whose
+// raise is worthless. That is a structural fact about the routing, not a
+// property of today's numbers, and it is why D39's flattening should be treated
+// as settled rather than re-litigated each wave.
+//
 // The arithmetic in one line, so nobody has to re-derive it: while the most
 // expensive ask is 21 and a race meets up to 8 boxes, the per-box reward can
 // only be 1. The Wave-5 income came from the garage rebate instead
