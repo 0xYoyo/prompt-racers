@@ -256,7 +256,42 @@ export function modalHas(id) { return _modals.has(id); }
  * moment where every panel is provably gone, so it is where the registry is
  * truthfully empty.
  */
-export function clearModals() { _modals.clear(); _notifyModalChange(); }
+export function clearModals() { _modals.clear(); _notifyModalChange(); _teachAt = -Infinity; }
+
+// ── TEACHING-CARD CADENCE (Wave 5) ──────────────────────────────────────────
+// The first race could show four teaching cards inside ~90 seconds: the track
+// intro card, the first-token explainer, the first-question-box explainer and
+// the quiz's own feedback. Each is individually justified and together they are
+// a slideshow — the thing the brief asks the first ninety seconds NOT to be.
+//
+// The spacing rule lives HERE, next to the registry, for D31's reason: the
+// alternative is every explainer knowing about every other explainer, and the
+// fifth one added next wave knowing about none of them. A card asks
+// `teachingCardReady()` before opening and calls `noteTeachingCard()` when it
+// closes; anything that is not ready DEFERS to its next natural trigger (the
+// next pickup, the next beacon) rather than queueing or dropping — a beacon
+// respawns, so nothing is ever lost by waiting.
+//
+// The gap is measured from the previous card's CLOSE, not its open, so a card a
+// slow reader sits on for twenty seconds does not spend the next card's budget.
+// The clock is injectable because the gates drive time synthetically; it is
+// wall-clock by default because that is what "feels like a slideshow" is
+// measured in — race time does not advance at all while a card is up (D20).
+const TEACH_GAP_S = 15;
+let _teachAt = -Infinity;
+let _teachClock = () => (typeof performance !== 'undefined' ? performance.now() / 1000 : Date.now() / 1000);
+
+/** Gates and previews drive time synthetically. Pass nothing to restore real time. */
+export function setTeachingClock(fn) {
+  _teachClock = typeof fn === 'function' ? fn : () => (typeof performance !== 'undefined' ? performance.now() / 1000 : Date.now() / 1000);
+}
+/** Call when a teaching card CLOSES. */
+export function noteTeachingCard() { _teachAt = _teachClock(); }
+/** May a teaching card open now, or is it too soon after the last one? */
+export function teachingCardReady(gap = TEACH_GAP_S) { return (_teachClock() - _teachAt) >= gap; }
+/** Seconds since the last teaching card closed (Infinity if none this race). */
+export function sinceTeachingCard() { return _teachClock() - _teachAt; }
+export { TEACH_GAP_S };
 
 // Small helper used across UI modules: h('div.panel.row', {onclick}, ...children)
 export function h(sel, props, ...kids) {
