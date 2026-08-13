@@ -597,6 +597,7 @@ try {
       step: a.music._step,
     });
     const out = {};
+    const volumeWas = a.getMasterVolume();
     try {
       // ---- 1. plain: music playing, tab hidden, tab back -------------------
       a.playMusic('race', { theme: 'oasis' });
@@ -643,6 +644,12 @@ try {
       try { a.modal.pop('quiz'); } catch { /* */ }
       a.setMuted(false, false);
       bus.emit('audio:resume');
+      // Put the mix back EXACTLY as found: this probe moves the master volume,
+      // and every level measured after it would otherwise be measured through
+      // 0.62 instead of the shipped 0.75 — a silent 17% shift across the rest of
+      // the gate, which is precisely the kind of hidden common-mode bias D34 is
+      // about. (`persist:false` throughout, so the save is never touched.)
+      a.setMasterVolume(volumeWas, false);
       a.stopMusic(0.1);
     }
   }, SUSPEND_WINDOW);

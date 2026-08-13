@@ -660,6 +660,8 @@ ok('…nor does the next RACE, on the same save', !(await vis('.qzint-scrim')) &
    count, a deferral that comes back) and never the wording: D42.
    ────────────────────────────────────────────────────────────────────────── */
 const TEACH_GAP_S = 15;      // ui/style.js
+const URGENT_GAP_S = 6;      // quiz.js — the escalated gap, i.e. the FLOOR
+const URGENT_AFTER = 2;      // quiz.js — deferrals before the floor applies
 const WINDOW_S = 90;         // "the first ninety seconds"
 const DRIVE_S = 95;
 const READ_S = 1.2;          // the child looks at the card before dismissing it
@@ -778,12 +780,27 @@ ok('…and it precedes the countdown (nothing has run yet)',
 ok('…and the countdown follows it', afterIntro?.phase==='countdown', afterIntro?.phase);
 ok('the race really did run inside the window', p.raceTime > 40, `${p.raceTime.toFixed(1)}s of race`);
 
-const gaps = cards.slice(1).map((c,i)=>({ from:cards[i].kind, to:c.kind, gap:c.open-cards[i].close }));
-const tooClose = gaps.filter(g=>g.gap < TEACH_GAP_S-0.05);
-ok(`no teaching card opens within ${TEACH_GAP_S}s of the previous one closing`,
-   cards.length>1 && tooClose.length===0,
+// The intro card is the CURTAIN, not an in-race card: it closes before the
+// countdown, casts no shadow (introcard.js, round 2) and is therefore excluded
+// from the pair-gap rule — the countdown plus the drive to the first token is
+// what separates it from whatever comes first. Round 1 gave it the full 15s and
+// that DELETED the first-token explainer, which is what 11a now pins below.
+const inRace = cards.filter(c=>c.kind!=='ic');
+const gaps = inRace.slice(1).map((c,i)=>({ from:inRace[i].kind, to:c.kind, gap:c.open-inRace[i].close }));
+// The FLOOR, not the nominal gap: a box that has already stood aside
+// URGENT_AFTER times opens on URGENT_GAP_S rather than never (quiz.js), so a
+// legitimate gap in a real race can be as short as that. The nominal 15s is
+// asserted directly, at a provoked beacon, in 11d — asserting it here would
+// only be asserting track geometry, since track 0's beacons are ~22s apart and
+// no pair of them is ever closer than 15s whatever the constant says.
+const tooClose = gaps.filter(g=>g.gap < URGENT_GAP_S-0.05);
+ok(`no in-race teaching card opens within the ${URGENT_GAP_S}s floor of the previous one closing`,
+   inRace.length>1 && tooClose.length===0,
    tooClose.length ? tooClose.map(g=>`${g.from}→${g.to} ${g.gap.toFixed(2)}s`).join(', ')
                    : `min ${Math.min(...gaps.map(g=>g.gap)).toFixed(1)}s · ` + gaps.map(g=>g.gap.toFixed(1)+'s').join(' '));
+ok('…and the curtain is separated from the first in-race card by the countdown',
+   !!icEv && !!inRace[0] && inRace[0].open - icEv.close > 3,
+   inRace[0] ? `${(inRace[0].open-icEv.close).toFixed(1)}s to the ${NAME[inRace[0].kind]}` : 'no in-race card');
 ok(`at most ${MAX_CARDS} teaching cards in the first ${WINDOW_S}s`, inWin.length<=MAX_CARDS, `${inWin.length}`);
 ok(`…and at most ${MAX_OPENERS} of them are one-time/opening cards`, openers.length<=MAX_OPENERS,
    openers.map(e=>NAME[e.kind].trim()).join(' + ') || 'none');
@@ -791,18 +808,26 @@ ok(`…and at most ${MAX_OPENERS} of them are one-time/opening cards`, openers.l
 ok('the first-box explainer was reached', !!evAll.find(e=>e.kind==='qint'),
    evAll.find(e=>e.kind==='qint') ? `at ${evAll.find(e=>e.kind==='qint').open.toFixed(1)}s` : 'never appeared');
 
-// The token explainer's deferral, measured at the event that triggers it: the
-// child picked a token up while the intro card had just closed, and no card
-// opened on its heels.
+// ── THE FIRST-TOKEN EXPLAINER MUST LAND (round 2) ──────────────────────────
+// Round 1's cadence did not postpone this card, it DELETED it: measured over a
+// complete first race, the intro card closed at 1.7s, the first token was
+// picked up 7.5s later — inside the curtain's 15s shadow — and every later
+// pickup fell inside a question box's shadow, because trackbuild lays the token
+// rows along the same racing line as the beacons. The child reached the flag
+// with `garageTokenIntroSeen` still unset, never having been told what a token
+// is. These four lines are the gate on that: the card lands on the first
+// pickup, and by the end of the window it is not still owed.
 const tokEv = evAll.find(e=>e.kind==='tok');
 const sincePick = picks.length ? picks[0]-icEv.close : NaN;
-ok('a token was picked up inside the intro card\'s shadow', picks.length>0 && sincePick < TEACH_GAP_S,
-   `first pickup ${picks[0]?.toFixed(1)}s, ${sincePick.toFixed(1)}s after the card closed`);
-ok('…and the first-token explainer did NOT open on its heels',
-   !tokEv || tokEv.open - icEv.close >= TEACH_GAP_S-0.05,
-   tokEv ? `opened at ${tokEv.open.toFixed(1)}s` : 'deferred');
-ok('…and its one-time flag was left unburned, so it is still owed',
-   flagAtPickup===false, `flag at the first pickup: ${flagAtPickup}`);
+ok('a token is picked up early in the first race', picks.length>0 && sincePick < TEACH_GAP_S,
+   `first pickup ${picks[0]?.toFixed(1)}s, ${sincePick.toFixed(1)}s after the curtain closed`);
+ok('…and the first-token explainer opens ON that pickup, not later or never',
+   !!tokEv && Math.abs(tokEv.open - picks[0]) < 1,
+   tokEv ? `pickup ${picks[0].toFixed(2)}s → card ${tokEv.open.toFixed(2)}s` : 'never appeared');
+ok('…and its one-time flag is written exactly then', flagAtPickup===true,
+   `flag at the first pickup: ${flagAtPickup}`);
+ok('…so the explainer is NOT still owed at the end of the window',
+   (await tokenFlag())===true, `garageTokenIntroSeen: ${await tokenFlag()}`);
 
 /* ── 11b. the paired positive: the SAME pickup fires it when nothing is due ──
    A negative assertion alone would pass just as happily against a token
@@ -859,6 +884,70 @@ ok('…and the very next beacon opens one once the gap has passed', reopened,
    reopened ? `box at ${rq.t.toFixed(1)}s` : 'no box in 40s of driving');
 ok('…so a deferred question is postponed, never dropped',
    reopened && (await evalp(()=>window.__EV.filter(e=>e.kind==='box').length))>0);
+
+/* ── 11d. THE MAGNITUDE, and the escalation floor ───────────────────────────
+   11a's pair-gap check is satisfied by TRACK GEOMETRY — track 0's beacons are
+   ~22s apart, so no pair of them is ever closer than 15s whether the constant
+   is 15, 5 or absent — and 11c's frozen clock only proves "some nonzero gap is
+   enforced": it catches teachingCardReady(0.25) and passes anything from ~3s
+   up. Mutating quiz.js to teachingCardReady(5) therefore left this whole file
+   printing "all modal checks passed".
+   So the magnitude is asserted where it can only come from the constant: a
+   beacon driven through at a KNOWN `since`, strictly between the escalated
+   floor and the nominal gap. At since≈8s a first-time beacon must defer (8 <
+   15) — a 5s constant opens a box there instead — and once it has stood aside
+   URGENT_AFTER times the SAME 8s must let one through (8 > 6), which is the
+   floor that stops a deferral from becoming a deletion.                     */
+const PROBE_SINCE = 8;
+console.log(`\n     11d. a beacon provoked at since≈${PROBE_SINCE}s (between the ${URGENT_GAP_S}s floor and the ${TEACH_GAP_S}s gap)`);
+await bootFresh({ introCard:false });
+let warmed = 0;
+for (let i=0; i<160 && warmed===0; i++) {
+  await drive(0.5);
+  const st = await probe();
+  if (st.qint) { await drive(READ_S); await tap('Escape'); await wait(60); }
+  else if (st.box) { await drive(READ_S); await tap('Digit1'); await wait(60);
+                     await drive(1); await tap('Space'); await wait(60); await drive(3); }
+  warmed = await evalp(()=>window.__EV.filter(e=>e.kind==='box' && e.close!=null).length);
+}
+ok('[magnitude] a question box opened and closed first', warmed>0, `${warmed} box episode(s)`);
+// Jump BOTH clocks (performance.now's stand-in and engine.time, which is what
+// harness.js hands setTeachingClock) forward to put `since` exactly on the
+// probe point, then hold them there so it stays there for the whole drive.
+const jump = await evalp(t=>{
+  const closed = window.__EV.filter(e=>e.kind==='box' && e.close!=null).pop();
+  const since = window.__T - closed.close;
+  const d = t - since;
+  if (d > 0) { window.__T += d; window.__DEBUG.engine.time += d; }
+  window.__EV.length = 0; window.__DEF.length = 0;
+  window.__driveHeld = (secs, stopOnDefer) => { const F=1/60, D=window.__DEBUG,
+    t0=D.engine.time, T0=window.__T;
+    for (let i=0,n=Math.round(secs/F); i<n; i++) {
+      D.advance(F); D.engine.time = t0; window.__T = T0; window.__sample();
+      if (D.engine.active.quiz.phase!=='idle') break;
+      if (stopOnDefer && window.__DEF.length>0) break;
+    } };
+  return { since:+since.toFixed(2), moved:+d.toFixed(2), ok:d>0 };
+}, PROBE_SINCE);
+ok('[magnitude] the clock was placed on the probe point and held', jump.ok===true,
+   `since was ${jump.since}s, moved +${jump.moved}s`);
+await evalp(()=>window.__driveHeld(60, true));
+const m1 = await evalp(()=>({ defs: window.__DEF.map(d=>({ since:+d.since.toFixed(2), gap:d.gap })),
+  boxes: window.__EV.filter(e=>e.kind==='box').length }));
+const d1 = m1.defs[0];
+ok(`[magnitude] the first beacon at since≈${PROBE_SINCE}s DEFERS — a ${TEACH_GAP_S}s gap, not a 5s one`,
+   m1.boxes===0 && m1.defs.length===1 && d1.since > URGENT_GAP_S+0.5 && d1.since < TEACH_GAP_S-0.5,
+   m1.boxes ? `a box OPENED at since ${d1?.since ?? '?'}s` : `deferred at since ${d1?.since}s (required gap ${d1?.gap}s)`);
+// …and the same 8s lets a box through once the card has been refused enough
+// times. Without this the gate would be satisfied by a cadence that never opens
+// anything at all, which is the round-1 bug wearing the gate's own clothes.
+await evalp(()=>window.__driveHeld(90, false));
+const m2 = await evalp(()=>({ defs: window.__DEF.length,
+  boxes: window.__EV.filter(e=>e.kind==='box').length,
+  gaps: window.__DEF.map(d=>d.gap), phase: window.__DEBUG.engine.active.quiz.phase }));
+ok(`[magnitude] …and after ${URGENT_AFTER} refusals the SAME ${PROBE_SINCE}s opens one (the floor)`,
+   m2.boxes===1 && m2.defs>=URGENT_AFTER,
+   `${m2.defs} deferrals (required gaps ${m2.gaps.join(',')}) then ${m2.boxes} box`);
 
 ok('no page errors', errs.length===0, errs[0]||'');
 console.log('  ' + '─'.repeat(74));

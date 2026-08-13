@@ -50,11 +50,25 @@
  * Average glyph advance of the bold Hebrew face, in em. Sizing is ANALYTIC —
  * `measureText` needs a real font and a real canvas, so anything that decides a
  * size inside a draw callback is invisible to a gate and can silently shrink to
- * nothing (D38) or silently overflow (this wave). Measured against the shipping
- * face at 1024 px, the worst real line came in at 0.52 em/char; 0.55 keeps the
- * model on the pessimistic side of the truth.
+ * nothing (D38) or silently overflow (this wave).
+ *
+ * THE MODEL MUST DESCRIBE THE FONT THAT ACTUALLY RENDERS, NOT THE ONE THIS
+ * MACHINE HAPPENS TO HAVE. Measured in real Chrome at 1024 px over every phrase
+ * in this file (bold, worst line = 'שכבה נסתרת'):
+ *
+ *     "Arial Hebrew"          0.555 em/char   ← macOS, the first name in the stack
+ *     "Noto Sans Hebrew"      0.473 em/char   ← where it is installed
+ *     generic `sans-serif`    0.603 em/char   ← Windows / Linux / Android / ChromeOS
+ *
+ * The generic fallback is what most judges and every school laptop will render,
+ * and it is 8.6% wider than the face the old 0.55 was fitted to — so the model
+ * was arithmetic about a font that was probably not the one on screen. 0.62
+ * keeps it on the pessimistic side of the WIDEST fallback, not of the local one.
+ * Nothing ever overflowed (drawWorldText clips and shrinks); what was wrong was
+ * the number the legibility table was computed from. Board widths were bought
+ * back by the same 12% in trackbuild so the metres-per-character stayed put.
  */
-export const TEXT_ADV_EM = 0.55;
+export const TEXT_ADV_EM = 0.62;
 /** Cap height of the Hebrew face as a fraction of the em box. */
 export const TEXT_CAP_EM = 0.70;
 /** Fraction of the tile WIDTH the text may occupy. */
@@ -240,8 +254,9 @@ export function drawWorldText(ctx, line, box, style = {}) {
 
 // --- atlas geometry, stated once so a gate can re-derive a tile from a UV ----
 //
-// 2 x 8 = 16 tiles, so a 14-board lap never shows the same line twice. Tiles are
-// 4:1 (rows/cols) and the boards are built to the same aspect — see the note on
+// 2 x 8 = 16 tiles of capacity against SIGN_LINES = 12 authored lines, so a lap
+// never shows the same line twice and the atlas has headroom. Tiles are 4:1
+// (rows/cols) and the boards are built to the same aspect — see the note on
 // aspect matching at the top of this file.
 export const SIGN_COLS = 2;
 export const SIGN_ROWS = 8;
@@ -249,16 +264,33 @@ export const SIGN_ROWS = 8;
 export const SIGN_TILE_ASPECT = SIGN_ROWS / SIGN_COLS;
 /** Longest line the boards are designed to set at full size. */
 export const SIGN_MAX_CHARS = 14;
+/**
+ * HOW MANY LINES A TRACK AUTHORS — and, because placement is now tied to it,
+ * how many boards the high tier puts on the ground.
+ *
+ * It used to be 16 against a 14-board lap, and placement walked the list in
+ * order and stopped when it ran out of boards. So the last two lines of every
+ * track were never placed at the high tier, the last six never at medium and
+ * the last ten never at LOW — and the tail is exactly where the glossary echoes
+ * and the payoff live (see the note on the curriculum below). Nothing tied the
+ * two numbers together and nothing gated it.
+ *
+ * Now: the list length IS the board budget, the brief's 8-12 per track is met
+ * with room, and a tier that can only carry M < SIGN_LINES boards SAMPLES the
+ * list evenly instead of truncating it (trackbuild's `placeSignage`), so the
+ * first line, a middle line and the payoff reach the ground on every tier.
+ */
+export const SIGN_LINES = 12;
 /** Cap height of the Hebrew face as a fraction of the em box (D38's name). */
 export const SIGN_CAP_EM = TEXT_CAP_EM;
 
 /**
  * THE CURRICULUM, IN THE ORDER A CHILD MEETS IT.
  *
- * `lines[i]` is drawn on the i-th board a driver passes after the start line
- * (placeSignage walks `t` forward from startT and takes tiles in order, and
- * tests/signage.test.mjs pins that the order on the ground is this order). So
- * the list is a sequence, not a bag:
+ * `lines[i]` is the i-th step of a track's lesson, and the boards on the ground
+ * carry the list IN ORDER along the lap (placeSignage assigns tiles in
+ * increasing order from the start line, and tests/signage.test.mjs re-derives
+ * that order from the built UV buffer). So the list is a sequence, not a bag:
  *
  *   * the first few boards are concrete and need no vocabulary at all;
  *   * the middle ones name the idea the track is about;
@@ -267,33 +299,45 @@ export const SIGN_CAP_EM = TEXT_CAP_EM;
  *     ענן) and the quiz topics in race/quizdata.js — so a board is a reminder
  *     of something met, not a new word thrown at speed.
  *
+ * `payoff` names the word the last board exists to land: it is a word the
+ * GLOSSARY teaches, it appears on exactly one board — the last one — and the
+ * placement rule guarantees that board reaches the ground on every quality
+ * tier. That is the one claim in this comment a gate can check without asking
+ * the list to vouch for itself, and it is what makes the order load-bearing
+ * rather than decorative: reverse the list and the payoff lands on board one.
+ *
  * Every line is 2–3 words and <= SIGN_MAX_CHARS characters. That is optics, not
  * style: see the identity at the top of this file. All original copy; no real
  * companies, no quotations.
+ *
+ * House voice (D27/D41): plural address, gender-neutral, no imperatives, and no
+ * term whose everyday sense a child would read instead of the AI one — which is
+ * why there is no משקל here (kilograms), no שדה (grass), and no calque of an
+ * English IT phrase (חלוקת עומס, כוח לפי דרישה) that means nothing at eight.
  */
 export const TRACK_SIGNS = {
   // ── נווה הנתונים — data ───────────────────────────────────────────────────
   // concrete ("what is data") → how a collection is judged → the glossary words
-  // נתונים / אימון / טוקן.
+  // נתונים / טוקן / אימון / מודל שפה.
   oasis: {
     skin: { bg: '#efdcb8', edge: '#c4402f', fg: '#38200f', lit: 0 },
+    payoff: 'מודל שפה',
     lines: [
       'נתונים זה מידע', 'אוספים דוגמאות', 'תמונות ומילים', 'מספרים וטבלאות',
-      'מיון לפי סוג', 'דוגמה טובה', 'עוד דוגמאות', 'פחות טעויות',
-      'נתונים נקיים', 'נתונים חסרים', 'דפוס חוזר', 'מאגר נתונים',
-      'אוסף אימון', 'ככה לומד מודל', 'אוספים טוקנים', 'מודדים ומשפרים',
+      'דוגמה טובה', 'פחות טעויות', 'דפוס חוזר', 'נתונים נקיים',
+      'מאגר נתונים', 'נתוני אימון', 'אוספים טוקנים', 'אימון מודל שפה',
     ],
   },
   // ── עיר הנוירונים — neural networks ───────────────────────────────────────
   // one neuron → many → layers → what travels between them → how the thing
-  // learns → the glossary words נוירון / אימון / מודל שפה.
+  // learns → the glossary words נוירון / מודל שפה.
   circuit: {
     skin: { bg: '#0d1236', edge: '#ff5fae', fg: '#8ff6ff', lit: 1.25 },
+    payoff: 'מודל שפה',
     lines: [
       'נוירון קטן', 'הרבה נוירונים', 'רשת נוירונים', 'שכבה על שכבה',
-      'קלט אל פלט', 'נדלק או כבוי', 'אות עובר הלאה', 'שכבה נסתרת',
-      'חיבורים חזקים', 'משקלים לומדים', 'טעות מלמדת', 'סיבוב אימון',
-      'מתאמנים שוב', 'זיהוי דפוסים', 'רשת עמוקה', 'זה מודל שפה',
+      'מספרים נכנסים', 'דולק או כבוי', 'אות עובר הלאה', 'שכבה נסתרת',
+      'החיבור משתנה', 'טעות מלמדת', 'רשת עמוקה', 'זה מודל שפה',
     ],
   },
   // ── פסגת הענן — cloud computing ───────────────────────────────────────────
@@ -304,11 +348,11 @@ export const TRACK_SIGNS = {
     // white plateau under a pale dawn sky, and an ivory-on-ivory board was
     // invisible as a SHAPE before it was ever unreadable as text.
     skin: { bg: '#2c3350', edge: '#ffc247', fg: '#f7f1e6', lit: 0.5 },
+    payoff: 'מודלים',
     lines: [
       'מחשב במקום אחר', 'ענן זה מחשבים', 'שרת רחוק', 'אלפי מחשבים',
-      'מרכז נתונים', 'אחסון בענן', 'העלאה והורדה', 'הכול מגובה',
-      'גיבוי אוטומטי', 'זמין מכל מקום', 'תשובה מהירה', 'כוח לפי דרישה',
-      'חלוקת עומס', 'רשת עולמית', 'חיבור מאובטח', 'שם רצים מודלים',
+      'מרכז נתונים', 'עבודה מתחלקת', 'זמין מכל מקום', 'תשובה מהירה',
+      'רשת עולמית', 'חיבור מאובטח', 'אימון בענן', 'שם רצים מודלים',
     ],
   },
 };

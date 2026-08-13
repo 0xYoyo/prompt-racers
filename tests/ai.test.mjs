@@ -215,6 +215,39 @@ console.log('\n=== 2. NO-ENGAGEMENT CLEAN DRIVING DOES NOT WIN ===');
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE 40-SEED CELLS (Wave 5). Five seeds is enough for the cells where the
+// answer is 40-of-40 or 0-of-40; it is NOT enough for any cell where the
+// outcome is a fight, and every assertion about race 2 with an upgraded kart is
+// exactly such a cell. Measured on four DISJOINT 40-seed sets (1-40, 41-80,
+// 81-120, 121-160), the shipped code reads:
+//
+//   cell                        set A   set B   set C   set D   pooled
+//   race 2 tier-2, 100%          2.17    2.35    2.27    2.08    2.22  (12% wins)
+//   race 2 tier-3, 100%          1.63    1.63    1.90    1.57    1.68  (35% wins)
+//   race 2 stock,  100%          3.73    3.85    3.85    3.75    3.79  (0% wins)
+//   race 3 tier-2, 100%          1.10    1.10    1.13    1.02    1.09  (92% wins)
+//
+// while the five shipped SEEDS put race-2 tier-2 at exactly 2.00 with exactly
+// 1 win — dead on both bounds of the assertion that used to live in 2b, which
+// duly went red on two of four alternate five-seed sets. The bounds below are
+// set from the pooled figure with margin, and each was checked to hold on all
+// four sets. The seed set is the first forty integers: chosen by construction,
+// so it cannot be quietly re-picked to make a number come out.
+const S40 = Array.from({ length: 40 }, (_, i) => i + 1);
+const T2 = { engine: 2, tyres: 2, frame: 2, turbo: 2 };
+const T3 = { engine: 3, tyres: 3, frame: 3, turbo: 3 };
+const _cells = new Map();
+const cell40 = (R, pace, parts = null, tag = '') => {
+  const key = `${R.n}|${pace}|${tag}`;
+  if (!_cells.has(key)) {
+    const p = S40.map(seed => race({ track: R.track, difficulty: R.difficulty, pace, seed, parts }).pos);
+    const m = p.reduce((a, b) => a + b, 0) / p.length;
+    _cells.set(key, { p, mean: m, wins: p.filter(x => x === 1).length, best: Math.min(...p) });
+  }
+  return _cells.get(key);
+};
+
 // --- 2b. ...but a garage upgrade wins it -------------------------------------
 // The other half of "winnable, just earned". If a rebalance ever makes the field
 // unbeatable, this is what says so. Tier 2 is a good-but-not-perfect prompt, and
@@ -222,26 +255,45 @@ console.log('\n=== 2. NO-ENGAGEMENT CLEAN DRIVING DOES NOT WIN ===');
 console.log('\n=== 2b. A DECENT GARAGE UPGRADE WINS IT BACK ===');
 {
   const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
-  const T2 = { engine: 2, tyres: 2, frame: 2, turbo: 2 };
   console.log(`  opponents' own championship tier: race 1 ${aiPartTier(1)}, race 2 ${aiPartTier(2)}, race 3 ${aiPartTier(3)}`);
   for (const R of RACES) {
-    const runs = SEEDS.map(seed => race({ track: R.track, difficulty: R.difficulty, pace: 1.00, seed, parts: T2 }));
-    const p = runs.map(r => r.pos), wins = runs.filter(r => r.pos === 1).length;
-    const stock = mean(results[1.00].find(c => c.R.n === R.n).runs.map(r => r.pos));
-    console.log(`  race ${R.n}: places ${p.join(' ')}  mean ${f(mean(p), 1)}  (stock ${f(stock, 1)} -> +${f(stock - mean(p), 1)} places)`);
-    assert(wins >= 1 && mean(p) <= 2.0,
-      `race ${R.n}: a tier-2 kart is fighting for the win ` +
-      `(${wins}/${runs.length} seeds won, mean place ${f(mean(p), 1)} <= 2.0)`);
-    assert(mean(p) <= stock - 0.8,
-      `race ${R.n}: the upgrade is worth ${f(stock - mean(p), 1)} places over stock (>= 0.8)`);
+    // Races 1 and 3 are 40-of-40 wins on every seed set measured, so five seeds
+    // answer them. Race 2 is a fight and gets the 40-seed cell.
+    const fight = R.n === 2;
+    const c = fight ? cell40(R, 1.00, T2, 't2') : (() => {
+      const p = SEEDS.map(seed => race({ track: R.track, difficulty: R.difficulty, pace: 1.00, seed, parts: T2 }).pos);
+      return { p, mean: mean(p), wins: p.filter(x => x === 1).length };
+    })();
+    const stock = fight ? cell40(R, 1.00, null, 'stock').mean
+      : mean(results[1.00].find(x => x.R.n === R.n).runs.map(r => r.pos));
+    console.log(`  race ${R.n}: mean ${f(c.mean)} over ${c.p.length} seeds, ${c.wins} wins ` +
+      `(stock ${f(stock)} -> +${f(stock - c.mean)} places)`);
+    if (fight) {
+      // Pooled 2.22 over 160 seeds, worst set 2.35, best 2.08; wins 2-9 per 40.
+      // The bound is 2.60, not the 2.00 this used to carry: 2.00 is BELOW the
+      // true mean, so the old assertion was passing on seed luck and would have
+      // gone red for the next person to touch these constants.
+      assert(c.wins >= 1 && c.mean <= 2.60,
+        `race 2: a tier-2 kart is fighting for the win ` +
+        `(${c.wins}/${c.p.length} seeds won, mean place ${f(c.mean)} <= 2.60)`);
+      // ...and not a walkover either: if a future change hands race 2 to anyone
+      // holding a receipt, this side goes red. Measured floor 2.08 over 40.
+      assert(c.mean >= 1.60,
+        `race 2: a tier-2 kart still has to race for it (mean place ${f(c.mean)} >= 1.60)`);
+      assert(c.mean <= stock - 1.00,
+        `race 2: the upgrade is worth ${f(stock - c.mean)} places over stock (>= 1.00)`);
+    } else {
+      assert(c.wins >= 1 && c.mean <= 2.0,
+        `race ${R.n}: a tier-2 kart is fighting for the win ` +
+        `(${c.wins}/${c.p.length} seeds won, mean place ${f(c.mean, 1)} <= 2.0)`);
+      assert(c.mean <= stock - 0.8,
+        `race ${R.n}: the upgrade is worth ${f(stock - c.mean, 1)} places over stock (>= 0.8)`);
+    }
   }
-  // Race 2 is the one a tier-2 kart only fights for rather than wins outright,
-  // which is the intended shape: on the hardest of the three for a reference
-  // driver, the last step has to come from the quiz or the garage. The other
-  // half of that promise — a FULLY-spent garage must still close race 2, or the
-  // championship is unwinnable — is asserted in section 3b instead of here,
-  // because on five seeds it is a coin flip: the same code measures 3/5 and 4/5
-  // depending on which five, while over 21 seeds it is a stable 48%.
+  // The other half of race 2's promise — a FULLY-spent garage must still close
+  // it, or the championship is unwinnable — is asserted in section 3b, on the
+  // same 40 seeds, for the same reason: on five seeds it is a coin flip (the
+  // shipped code measures 3/5 and 4/5 depending on which five).
 }
 
 // --- 3. the championship still escalates ------------------------------------
@@ -303,65 +355,112 @@ console.log('\n=== 3. THE CHAMPIONSHIP STILL ESCALATES ===');
 // five gate seeds race 1 and race 2 both read mean 3.0 at 100% pace and the
 // only assertions about them were one-sided bounds.
 //
-// Measured on the SAME 21 seeds, before (circuit 0.96) -> after (0.98):
-//   race 2, stock, 100%          3.19 (best 2nd) -> 3.62 (best 3rd)
-//   race 2, tier-3, 100%         1.14, 18/21 wins -> 1.52, 10/21 wins
-//   race 1 / race 3, stock 100%  2.33 / 3.71 (untouched: the constant is
-//                                keyed by track and race N -> track N)
-// Twenty-one seeds rather than five because both cells that carry the bug are
-// coin flips at five: the tier-3 win count reads 3/5 or 4/5 on the same code.
-console.log('\n=== 3b. RACE 2 IS THE MIDDLE RUNG (21 seeds, both axes) ===');
+// Measured on S40 (seeds 1-40), before (circuit 0.96) -> after (0.98), with the
+// same figure on three further disjoint 40-seed sets in brackets:
+//   race 2, stock, 100%    3.17 -> 3.73   [3.13/3.15/2.80 -> 3.85/3.85/3.75]
+//   race 2, tier-3, 100%   1.23, 31/40 wins -> 1.63, 16/40   [pre-fix 1.27/1.35/1.30
+//                          (65-78% wins) -> 1.63/1.90/1.57 (20-43%)]
+//   race 1 / race 3 stock  2.25 / 3.90, byte-identical before and after (the
+//                          constant is keyed by track, and race N -> track N)
+// Forty seeds, not five and not twenty-one: an earlier draft of this section
+// quoted the tier-3 cell as "48% wins" from a 21-seed set, and three alternate
+// 21-seed sets read 29%. The honest pooled figure over 160 seeds is 35%, and
+// the per-40 spread is 20-43% — which is why the bound below is 60%, not 50%.
+console.log('\n=== 3b. RACE 2 IS THE MIDDLE RUNG (40 seeds, both axes) ===');
 {
-  const S21 = [3, 11, 19, 41, 57, 2, 7, 23, 31, 47, 61, 5, 13, 29, 37, 53, 67, 71, 79, 83, 97];
   const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
-  const T3 = { engine: 3, tyres: 3, frame: 3, turbo: 3 };
-  const cell = (R, pace, parts = null) => {
-    const p = S21.map(seed => race({ track: R.track, difficulty: R.difficulty, pace, seed, parts }).pos);
-    return { p, mean: mean(p), wins: p.filter(x => x === 1).length, best: Math.min(...p) };
-  };
   const [R1, R2, R3] = RACES;
-  const c1 = cell(R1, 1.00), c2 = cell(R2, 1.00), c3 = cell(R3, 1.00);
-  const c2t3 = cell(R2, 1.00, T3);
-  const e1 = cell(R1, 0.85), e2 = cell(R2, 0.85), e3 = cell(R3, 0.85);
-  const show = (n, c) => console.log(`  ${n}: mean ${f(c.mean)}  best ${c.best}  wins ${c.wins}/${S21.length}  [${c.p.join(' ')}]`);
-  show('race 1 stock 100%', c1); show('race 2 stock 100%', c2); show('race 3 stock 100%', c3);
-  show('race 2 TIER-3 100%', c2t3);
-  console.log(`  85% ladder over 21 seeds: ${f(e1.mean)}  ->  ${f(e2.mean)}  ->  ${f(e3.mean)}`);
+  const c1 = cell40(R1, 1.00, null, 'stock');
+  const c2 = cell40(R2, 1.00, null, 'stock');
+  const c3 = cell40(R3, 1.00, null, 'stock');
+  const c2t2 = cell40(R2, 1.00, T2, 't2');
+  const c2t3 = cell40(R2, 1.00, T3, 't3');
+  const c3t2 = cell40(R3, 1.00, T2, 't2');
+  const show = (n, c) => console.log(`  ${n}: mean ${f(c.mean)}  best ${c.best}  wins ${c.wins}/${S40.length}`);
+  show('race 1 stock  100%', c1); show('race 2 stock  100%', c2); show('race 3 stock  100%', c3);
+  show('race 2 TIER-2 100%', c2t2); show('race 2 TIER-3 100%', c2t3); show('race 3 TIER-2 100%', c3t2);
+  const e85 = results[0.85].map(({ runs }) => mean(runs.map(r => r.pos)));
 
-  // (i) the reported failure, direct: race 2 must be a clear step DOWN the
-  // order from race 1 for the same clean, unengaged, stock driver. Pre-fix 0.86.
-  assert(c2.mean - c1.mean >= 1.05,
+  // Which of these bite the pre-fix bug is stated per assertion, because a
+  // section where only some of the checks are catchers and the rest are guards
+  // is exactly the kind of thing that gets mis-read as "six proofs".
+  //
+  // (i) CATCHER. The reported failure, direct: race 2 must be a clear step DOWN
+  // the order from race 1 for the same clean, unengaged, stock driver.
+  // Pre-fix 0.78-0.93 across the four seed sets; after 1.48-1.73.
+  assert(c2.mean - c1.mean >= 1.20,
     `race 2 is strictly harder than race 1 for a stock clean driver ` +
-    `(${f(c1.mean)} -> ${f(c2.mean)}, gap ${f(c2.mean - c1.mean)} >= 1.05 places)`);
-  // (ii) and lands where the brief wants it: 3rd-4th, never a podium handed out
-  // for driving alone. Pre-fix 3.19 with 2nd places on 4 of the 21 seeds.
+    `(${f(c1.mean)} -> ${f(c2.mean)}, gap ${f(c2.mean - c1.mean)} >= 1.20 places)`);
+  // (ii) CATCHER. And it lands where the brief wants it: 3rd-4th, never a podium
+  // handed out for driving alone. Pre-fix 2.80-3.17, with outright WINS on two
+  // of the four sets; after 3.73-3.85 and no win in 160 seeds.
   assert(c2.wins === 0 && c2.mean >= 3.40,
     `race 2 with no engagement is a 3rd-4th finish, not a podium fight ` +
     `(mean ${f(c2.mean)} >= 3.40, ${c2.wins} wins)`);
-  // (iii) the other end of the same requirement: race 2 must stay BELOW the
-  // finale. If a future rebalance overshoots this constant, race 2 becomes the
-  // hardest race in the championship and the curve is broken the other way.
-  assert(c2.mean <= c3.mean + 0.25,
-    `race 2 is still easier than the finale (race 2 ${f(c2.mean)} <= race 3 ${f(c3.mean)} + 0.25)`);
-  // (iv) THE SPECIFIC PLAYTEST COMPLAINT: a well-upgraded kart driven cleanly,
-  // with zero quiz engagement, must not simply collect race 2. Pre-fix a tier-3
-  // kart won 18 of 21 seeds (86%) at mean 1.14 — the race was a formality for
-  // anyone who had spent in the garage.
-  assert(c2t3.mean >= 1.35 && c2t3.wins <= 13,
+  // (iii) GUARD, green against the pre-fix bug. The other end of the same
+  // requirement: race 2 must stay BELOW the finale for a stock driver. Trips on
+  // an over-hardening mutant (circuit 1.02+), not on the bug.
+  assert(c2.mean <= c3.mean + 0.35,
+    `race 2 is still easier than the finale for a stock driver ` +
+    `(race 2 ${f(c2.mean)} <= race 3 ${f(c3.mean)} + 0.35)`);
+  // (iv) CATCHER, and the specific playtest complaint: a well-upgraded kart
+  // driven cleanly, with zero quiz engagement, must not simply collect race 2.
+  // Pre-fix a tier-3 kart won 26-31 of every 40 seeds (65-78%) at mean 1.23-1.35;
+  // after, 8-17 of 40 (20-43%) at 1.57-1.90. Both halves of the bound bite on
+  // all four seed sets; the mean bound is 1.45 rather than 1.50 because the
+  // pre-fix cell reaches 1.35 on one of them.
+  assert(c2t3.mean >= 1.45 && c2t3.wins <= 24,
     `race 2 is not a formality for a well-upgraded clean driver ` +
-    `(tier-3 mean ${f(c2t3.mean)} >= 1.35, ${c2t3.wins}/${S21.length} wins <= 13)`);
-  // (v) ...but a FULLY-spent garage must still close it, or the championship is
-  // unwinnable for the child who did everything the game asked. This is the
-  // assertion moved out of section 2b, where five seeds could not measure it.
-  assert(c2t3.wins >= 5 && c2t3.mean <= 2.20,
-    `race 2 is still won by a fully-spent garage (tier-3 ${c2t3.wins}/${S21.length} wins >= 5, ` +
+    `(tier-3 mean ${f(c2t3.mean)} >= 1.45, ${c2t3.wins}/${S40.length} wins <= 24 (60%))`);
+  // (v) GUARD, green against the pre-fix bug — it fails the OTHER way, on an
+  // over-hardened field (it trips at circuit 1.04 and on the reverted-pace
+  // mutant). A fully-spent garage must still close race 2, or the championship
+  // is unwinnable for the child who did everything the game asked. Measured
+  // 8-17 wins per 40; the bound is 4 so that normal seed-to-seed spread cannot
+  // flap it.
+  assert(c2t3.wins >= 4 && c2t3.mean <= 2.20,
+    `race 2 is still won by a fully-spent garage (tier-3 ${c2t3.wins}/${S40.length} wins >= 4, ` +
     `mean ${f(c2t3.mean)} <= 2.20)`);
-  // (vi) the struggling child's ladder, on the same 21 seeds. The hold-back
-  // floor deliberately flattens this axis (D33b), so the margin here is small
-  // by design — it is a shape guard, not the assertion that catches this bug.
-  assert(e2.mean >= e1.mean + 0.75 && e2.mean <= e3.mean - 0.55,
+  // (vi) GUARD, green against the pre-fix bug. The struggling child's ladder.
+  // The hold-back floor deliberately flattens this axis (D33b), so the margin
+  // here is small by design and it is measured on the five-seed sweep already
+  // taken at the top of this file rather than on 40 fresh races.
+  assert(e85[1] >= e85[0] + 0.75 && e85[1] <= e85[2] - 0.55,
     `at 85% race 2 still sits between the other two ` +
-    `(${f(e1.mean)} -> ${f(e2.mean)} -> ${f(e3.mean)})`);
+    `(${f(e85[0])} -> ${f(e85[1])} -> ${f(e85[2])})`);
+
+  // (vii) PINS A KNOWN-WRONG SHAPE. READ THIS BEFORE "FIXING" IT.
+  // ------------------------------------------------------------------------
+  // On the axis an engaged child is actually on — a kart with garage parts in
+  // it — the championship is INVERTED, and this assertion pins that rather than
+  // claiming it is right. Measured on S40 (four disjoint 40-seed sets agree):
+  //
+  //     kart                  race 1        race 2         race 3
+  //     tier-2 all slots      1.00 (100%)   2.22 (12%)     1.09 (92%)
+  //     tier-3 all slots      1.00 (100%)   1.68 (35%)     1.00 (100%)
+  //     eng3/tyre2/frame1     1.00 (100%)   2.23 (11%)     1.79 (37%)
+  //
+  // So the child who spends in the garage — the entire lesson of the game —
+  // meets the wall in the middle and coasts through the finale. This is
+  // PRE-EXISTING: at circuit 0.96 it was already 1.82 (race 2) against 1.09
+  // (race 3), a 0.73-place inversion; Wave 5's race-2 fix widened it to 1.13.
+  // It was left open deliberately, because closing it means making race 3
+  // harder and Wave 5's brief froze races 1 and 3 as approved. GAPS.md carries
+  // the measured lever (the finale's opponents on tier-3 parts).
+  //
+  // A GREEN TICK HERE DOES NOT MEAN THE CURVE IS CORRECT. It means the curve is
+  // still as wrong as it was when this was measured. Whoever fixes race 3 will
+  // see this go red: that is the intended signal — re-derive the numbers above,
+  // then flip this into a real ladder assertion (race 3 tier-2 >= race 2 tier-2).
+  const inversion = c2t2.mean - c3t2.mean;
+  console.log(`  KNOWN-WRONG upgraded ladder: race 2 tier-2 ${f(c2t2.mean)} vs race 3 tier-2 ` +
+    `${f(c3t2.mean)} (inverted by ${f(inversion)} places)`);
+  assert(inversion >= 0.60 && inversion <= 1.60,
+    `the upgraded-kart inversion is UNCHANGED at ${f(inversion)} places ` +
+    `(race 2 ${f(c2t2.mean)} vs race 3 ${f(c3t2.mean)}; pinned 0.60..1.60 — see the note above)`);
+  assert(c3t2.wins >= 28,
+    `race 3 is still a walkover for an upgraded kart (${c3t2.wins}/${S40.length} wins >= 28) ` +
+    `— pinned, not endorsed`);
 }
 
 // --- 4. the band stays inside its hard bound --------------------------------

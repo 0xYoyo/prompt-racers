@@ -78,10 +78,12 @@
 // Bus events emitted (payload shape at emitResult() below):
 //   quiz:open  quiz:correct  quiz:wrong  quiz:timeout  quiz:close
 //   quiz:deferred — a beacon was driven through but the box did NOT open,
-//   because a teaching card closed less than TEACH_GAP_S ago (Wave 5). Nothing
-//   is lost: the beacon respawns and the question comes at the next box. It is
-//   emitted so a gate can prove a deferral actually happened rather than
-//   inferring it from a card that simply never fired.
+//   because a teaching card closed less than the applicable gap ago (Wave 5).
+//   Nothing is lost: the beacon respawns and the question comes at the next
+//   box. It is emitted so a gate can prove a deferral actually happened rather
+//   than inferring it from a card that simply never fired. Payload:
+//   { since, gap, deferrals, reason } — `gap` is the gap that was actually
+//   required, which is TEACH_GAP_S until the escalation below shortens it.
 // ═════════════════════════════════════════════════════════════════════════════
 import * as THREE from 'three';
 import { bus } from '../core/bus.js';
@@ -89,7 +91,7 @@ import { makeRng } from '../core/rng.js';
 import { save } from '../core/save.js';
 import {
   h, injectStyles, pushModal, popModal, modalOpen,
-  teachingCardReady, noteTeachingCard, sinceTeachingCard,
+  teachingCardReady, noteTeachingCard, sinceTeachingCard, TEACH_GAP_S,
 } from '../ui/style.js';
 import { registerStrings, t, num, getLang } from '../ui/i18n.js';
 import { QUESTIONS, questionsForDifficulty, tiersForDifficulty, bankStats } from './quizdata.js';
@@ -148,7 +150,11 @@ registerStrings({
     'quiz.intro.kicker': 'חדש על המסלול',
     'quiz.intro.title': 'תיבת שאלה',
     'quiz.intro.1': 'כל תיבה היא שאלה אחת על AI — תשובה נכונה נותנת <b>טורבו</b> ו<b>טוקנים למוסך</b>.',
-    'quiz.intro.2': 'תשובה שלא קלעה לא עולה כלום, אז אוספים כל תיבה בדרך.',
+    // Evaluative, not directive — and deliberately the SAME register as the
+    // English line below it. Hebrew said "אז אוספים כל תיבה בדרך" (an
+    // instruction) while English said "worth grabbing" (a judgement): two
+    // voices in one game, invisible to anyone reading only one build (D27).
+    'quiz.intro.2': 'תשובה שלא קלעה לא עולה כלום, אז שווה לאסוף כל תיבה בדרך.',
     'quiz.intro.go': 'קדימה לשאלה! (רווח)',
   },
   en: {
@@ -200,6 +206,22 @@ const COOLDOWN_S = 10;
 // It is a pacing rule, never a punishment — the reward for answering is more
 // questions, not fewer.
 const COOLDOWN_IGNORED_S = 24;
+
+// ── CADENCE ESCALATION (Wave 5, round 2) ────────────────────────────────────
+// A question box that keeps meeting the teaching-card gap must not be starved.
+// The shadows and the beacons are not independent: a box episode occupies ~5s
+// and then casts TEACH_GAP_S of shadow, ~20 of every ~22s beacon cycle on track
+// 0, and trackbuild lays the beacons along the same racing line every lap — so
+// "wait for a clear window" can mean "wait for the whole race". A card that has
+// already stood aside URGENT_AFTER times therefore opens on the SHORTER gap
+// below instead of never: the point of the cadence is that cards do not arrive
+// on each other's heels, not that they stop arriving.
+//
+// 6s is the smallest gap that still reads as two separate moments rather than
+// one slideshow (a box episode's own 3·2·1 hand-back is 2.16s of it), and it is
+// only ever reached after two full-length refusals.
+const URGENT_GAP_S = 6;
+const URGENT_AFTER = 2;
 
 // The world is FROZEN, not slowed, for the whole sequence (Wave 3). This is a
 // TIME SCALE, applied by race.js to its own accumulator (see the seam note at
@@ -890,6 +912,9 @@ export function createQuizSystem(engine, opts = {}) {
   let phaseT = 0;            // seconds in the current phase (REAL time)
   let beat = -1;             // last countdown beat emitted during `resume`
   let cooldown = 0;
+  // How many beacons in a row have stood aside for the teaching-card cadence.
+  // Drives the escalation above; reset the moment a box actually opens.
+  let cadenceDeferrals = 0;
   let scale = 1;             // the time scale handed back to race.js
   let shown = null;          // { data, order, correctSlot, limit }
   const asked = [];          // ids opened by THIS system, in order (see quiz:open)
@@ -1235,9 +1260,23 @@ export function createQuizSystem(engine, opts = {}) {
         // the question simply arrives at the next box (D15/D18's rule for the
         // quiz, applied to a second reason for waiting). The save flag is
         // untouched, so the explainer is still owed and still comes.
-        if (!teachingCardReady()) {
-          bus.emit('quiz:deferred', { since: sinceTeachingCard(), reason: 'cadence' });
+        //
+        // ESCALATION (round 2). Deferring forever is the same thing as
+        // dropping: box episodes and beacons are NOT independent — an episode
+        // is ~5s of screen plus TEACH_GAP_S of shadow, ~20 of every ~22s
+        // beacon cycle, and the beacons sit on the racing line the child is
+        // already following. So a box that has stood aside URGENT_AFTER times
+        // opens on URGENT_GAP_S instead. The gap that is actually applied is
+        // reported on the event, so a gate can tell a full-length refusal from
+        // an escalated one.
+        const gap = cadenceDeferrals >= URGENT_AFTER ? URGENT_GAP_S : TEACH_GAP_S;
+        if (!teachingCardReady(gap)) {
+          cadenceDeferrals++;
+          bus.emit('quiz:deferred', {
+            since: sinceTeachingCard(), gap, deferrals: cadenceDeferrals, reason: 'cadence',
+          });
         } else {
+          cadenceDeferrals = 0;
           openQuestion();
         }
       }

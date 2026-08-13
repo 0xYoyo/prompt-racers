@@ -51,6 +51,34 @@ const browser = await puppeteer.launch({
   args: a.gpu ? GPU_ARGS : SW_ARGS,
 });
 
+// --shot mode: a screenshot at an arbitrary devicePixelRatio. tools/shot.mjs
+// forces deviceScaleFactor 1, at which `min(dpr,2)` and `min(dpr,1.5)` are the
+// same number — so the high-tier dpr cap cannot be judged from its output at
+// all. This exists only to photograph that one difference.
+if (a.shot) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: W, height: H, deviceScaleFactor: DPR });
+  await page.goto('file://' + htmlPath, { waitUntil: 'load', timeout: 60000 });
+  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  const scene = a.scene || 'race';
+  await page.evaluate((s, o) => window.__DEBUG.goto(s, o), scene, {
+    track: TRACKS[0], lang: 'he', quality: TIERS[0] || 'high', seed: SEED, visit: 1,
+  });
+  if (+(a.t || 0) > 0) await page.evaluate(t => window.__DEBUG.advance(t), +a.t);
+  await page.evaluate(() => window.__DEBUG.renderOnce());
+  const meta = await page.evaluate(() => {
+    const e = window.__DEBUG.engine, g = e.renderer.getContext();
+    return { pr: e.renderer.getPixelRatio(), buf: `${g.drawingBufferWidth}x${g.drawingBufferHeight}`, q: e.q.name, dpr: devicePixelRatio };
+  });
+  await new Promise(r => setTimeout(r, 350));
+  const out = resolve(root, a.shot === true ? 'shots/perfprobe.png' : a.shot);
+  mkdirSync(dirname(out), { recursive: true });
+  await page.screenshot({ path: out, type: 'png' });
+  console.log(`wrote ${out}  ${W}x${H} @dpr${DPR}  scene=${scene} q=${meta.q} pixelRatio=${meta.pr} buffer=${meta.buf} devicePixelRatio=${meta.dpr}`);
+  await browser.close();
+  process.exit(0);
+}
+
 const pct = (arr, p) => {
   if (!arr.length) return NaN;
   const s = [...arr].sort((x, y) => x - y);
@@ -87,18 +115,27 @@ try {
       const r = await page.evaluate(async (secs, warm) => {
         const e = window.__DEBUG.engine;
         const info = e.renderer.info;
-        const frames = [], calls = [], tris = [];
-        e._headless = false;
-        e._last = performance.now();
+        const gl = e.renderer.getContext();
+        const frames = [], work = [], calls = [], tris = [];
+        // The engine's own rAF loop is vsync-locked, so on a fast machine wall
+        // frame time only ever reads back the display's refresh interval and
+        // measures nothing. Drive the step+draw manually and time it directly;
+        // `gl.finish()` folds the GPU's own cost for that frame back into the
+        // number, which is what a weaker machine would be paying.
         const t0 = performance.now();
         let last = t0;
         await new Promise(done => {
           const tick = () => {
-            const now = performance.now();
-            const dt = now - last; last = now;
-            const el = (now - t0) / 1000;
+            const w0 = performance.now();
+            const dt = w0 - last; last = w0;
+            e.step(1 / 60);
+            e.draw();
+            gl.finish();
+            const w1 = performance.now();
+            const el = (w1 - t0) / 1000;
             if (el > warm) {
               frames.push(dt);
+              work.push(w1 - w0);
               calls.push(info.render.calls);
               tris.push(info.render.triangles);
             }
@@ -107,10 +144,9 @@ try {
           };
           requestAnimationFrame(tick);
         });
-        e._headless = true;
-        const g = e.renderer.getContext();
+        const g = gl;
         return {
-          frames, calls, tris,
+          frames, work, calls, tris,
           pixelRatio: e.renderer.getPixelRatio(),
           bufW: g.drawingBufferWidth, bufH: g.drawingBufferHeight,
           shadows: e.renderer.shadowMap.enabled,
@@ -121,8 +157,9 @@ try {
 
       rows.push({
         tier, track,
-        med: pct(r.frames, 0.5), p95: pct(r.frames, 0.95),
-        fps: 1000 / pct(r.frames, 0.5),
+        med: pct(r.work, 0.5), p95: pct(r.work, 0.95),
+        wall: pct(r.frames, 0.5),
+        fps: 1000 / pct(r.work, 0.5),
         calls: Math.round(r.calls.reduce((x, y) => x + y, 0) / Math.max(1, r.calls.length)),
         callsMax: Math.max(...r.calls),
         tris: Math.round(r.tris.reduce((x, y) => x + y, 0) / Math.max(1, r.tris.length)),
@@ -142,7 +179,7 @@ try {
 console.log(`\n  PERFPROBE  ${LABEL}   ${W}x${H} @dpr${DPR}  seed=${SEED}  ${SECS - WARM}s/sample`);
 console.log(`  rasteriser: ${gpuName}`);
 console.log('  ' + '─'.repeat(96));
-console.log('  tier    track  q       pr    buffer      shadows  frame ms med   p95     ~fps   calls  tris');
+console.log('  tier    track  q       pr    buffer      shadows  step+draw med   p95     ~fps   calls  tris');
 for (const r of rows) {
   console.log(`  ${r.tier.padEnd(7)} ${String(r.track).padEnd(6)} ${r.qname.padEnd(7)} ${String(r.pr).padEnd(5)} ${r.buf.padEnd(11)} ${String(r.shadows).padEnd(8)} ${f2(r.med).padStart(9)} ${f2(r.p95).padStart(7)} ${f2(r.fps).padStart(7)} ${String(r.calls).padStart(6)} ${String(r.tris).padStart(8)}`);
 }

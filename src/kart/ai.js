@@ -332,23 +332,34 @@ export function difficulty01(d) {
 // geometries. A child's is not: `circuit` is the plainest, widest geometry in
 // the game and the one a human drives closest to the optimal line on, so a
 // handicap sized against the machine over-pays on exactly that track. Measured
-// (41 seeds, autopilot player, 3 laps, race 2 = circuit d2, place out of 8):
+// (autopilot player, 3 laps, race 2 = circuit d2, place out of 8; the 100%
+// figures are pooled over 160 seeds — four DISJOINT 40-seed sets, because every
+// upgraded cell here is a fight and a five- or twenty-one-seed reading of one
+// swings by 20 percentage points):
 //
-//   circuit pace   stock 100%       tier-2 100%      tier-3 100%     85% stock
-//   0.96 (before)  3.20  best 2nd   1.78  24% wins   1.29  71% wins   5.05
-//   0.98 (now)     3.83  best 3rd   2.32   7% wins   1.71  32% wins   5.24
+//   circuit pace   stock 100%       tier-2 100%      tier-3 100%     85% stock*
+//   0.96 (before)  3.06  best 1st   1.82  26% wins   1.29  71% wins   5.05
+//   0.98 (now)     3.79  best 2nd   2.22  12% wins   1.68  35% wins   5.27
+//   (* 85% column is 41 seeds; that axis is flat by design — see D33b)
 //
 // i.e. race 2 stopped being a race a clean driver could podium in with no
 // engagement at all, and stopped being a formality for a well-upgraded one.
 // Race 1 (oasis) and race 3 (cloud) are bit-for-bit unmoved: this constant is
 // keyed by track id and the championship maps race N -> track N.
-// Alternatives measured and rejected, both because they broke the RANK order
-// rather than the gap: `aiPartTier` race 2 -> tier 2 put race 2 (4.00) above
-// race 3 (3.80) at 100% and left a fully-spent garage unable to win it; a
-// quartic `slotStretch` falloff (race-2 stretch 1.20 -> 1.05) moved the 85%
-// child twice as far as the 100% one (5.00 -> 5.60) while leaving the tier-3
-// walkover the complaint is about untouched (1.20, 4/5 wins). Values above
-// 0.99 tie or pass race 3 at 100% and are the punishing side of the target.
+// Alternatives measured and rejected (5 seeds, so read as directions rather
+// than as figures), both because they broke the RANK order rather than the gap:
+// `aiPartTier` race 2 -> tier 2 put race 2 (4.00) above race 3 (3.80) at 100%
+// and left a fully-spent garage unable to win it; a quartic `slotStretch`
+// falloff (race-2 stretch 1.20 -> 1.05) moved the 85% child twice as far as the
+// 100% one (5.00 -> 5.60) while leaving the tier-3 walkover the complaint is
+// about untouched (1.20, 4/5 wins). Values above 0.99 tie or pass race 3 at
+// 100% and are the punishing side of the target.
+//
+// NOT fixed here, and pinned rather than claimed: on the upgraded axis the
+// championship is inverted (race 2 tier-2 2.22 against race 3 tier-2 1.09).
+// That is pre-existing — 1.82 vs 1.09 before this change — and closing it means
+// making race 3 harder, which Wave 5's brief froze. tests/ai.test.mjs (3b vii)
+// pins the number; GAPS.md carries the measured lever.
 const AI_PACE = 1.00;
 const TRACK_PACE = { oasis: 1.03, circuit: 0.98, cloud: 1.00 };
 const paceForDifficulty = () => AI_PACE;

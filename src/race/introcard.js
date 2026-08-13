@@ -44,14 +44,32 @@
 //     scrim swallows pointer events and it takes Escape in the CAPTURE phase, so
 //     Escape dismisses the card instead of falling through to input.js and
 //     opening the pause menu over it.
-// ── TEACHING-CARD CADENCE (Wave 5; primitive in ui/style.js) ────────────────
-// This card is the FIRST teaching card of every race and is never itself
-// deferred for cadence — it is the curtain going up, and rule 1 of the Wave-5
-// onboarding pass is that it stays exactly where it is, pre-countdown, every
-// race. What it must do is START the clock: it calls `noteTeachingCard()` when
-// it CLOSES, so the first-token explainer and the first-question-box explainer
-// cannot fire on its heels. Without this line the card is invisible to the
-// cadence and the first ninety seconds go back to being a slideshow.
+// ── TEACHING-CARD CADENCE: THIS CARD IS THE CURTAIN, NOT A CARD ─────────────
+// (Wave 5, round 2; primitive in ui/style.js.)
+// This card is never itself deferred for cadence — it stays exactly where it
+// is, pre-countdown, every race. What changed in round 2 is the OTHER half: it
+// no longer calls `noteTeachingCard()` when it closes, so it casts no shadow.
+//
+// Round 1 had it start the clock, and that deleted the first-token explainer
+// outright. Measured on a complete first race: the intro card closes at 1.7s,
+// the first token is picked up at 9.2s — 7.5s later, inside a 15s shadow — so
+// the explainer deferred; and every later pickup fell inside a question box's
+// shadow instead, because trackbuild lays the token rows along the same racing
+// line as the beacons, so pickups CORRELATE with box episodes rather than being
+// independent of them. A child finished race 1 and walked into the garage with
+// `garageTokenIntroSeen` still unset, never having been told what a token is.
+//
+// A 1.7s welcome does not earn a 15s quiet zone, and it is the cheapest card in
+// the game spending the most valuable window in the race. It does not need one
+// either: it closes BEFORE the countdown, so the 3·2·1 plus the drive to the
+// first token is the buffer — nothing in the race can even fire until the world
+// starts moving (the quiz self-gates on `ctx.racing`, and tokens are only
+// collected while `racing`). The first pickup is 7.5s after the card in
+// practice, which is the gap this shadow was pretending to enforce anyway.
+//
+// The in-race cards still space THEMSELVES: the token explainer and every box
+// episode call `noteTeachingCard()` when they close, so nothing lands on the
+// heels of anything that mattered. Gated by tools/modaltest.mjs section 11.
 // NOTE for the lead: pause.js refuses to open over `modalHas('token') ||
 // modalHas('meet')` by name. 'intro' is not in that list. In practice the pause
 // menu is unreachable while the card is up (Escape is taken in capture, the
@@ -60,7 +78,7 @@
 // should still be added to that list when pause.js is next touched.
 import * as THREE from 'three';
 import { getTrack, TRACKS } from '../track/trackdef.js';
-import { h, injectStyles, pushModal, popModal, modalOpen, noteTeachingCard } from '../ui/style.js';
+import { h, injectStyles, pushModal, popModal, modalOpen } from '../ui/style.js';
 import { registerStrings, t, num, getLang } from '../ui/i18n.js';
 import { applyTheme } from '../gfx/sky.js';
 import { buildTrack } from '../track/trackbuild.js';
@@ -84,15 +102,19 @@ const PACK = {
     'intro.know': 'הידעתם?',
     'intro.go': 'יוצאים לדרך',
     'intro.hint': 'רווח או נגיעה במסך',
+    // "מהדוגמאות" is the concrete noun that NAMES training data, on the card
+    // whose whole job is teaching what data is; "שווה לה" keeps someone the
+    // small clean oasis is worth more TO. The em dash is the joint every one of
+    // the three facts now uses between its claim and its elaboration.
     'intro.fact.oasis':
-      'נתונים הם המים של הבינה המלאכותית: היא לומדת רק ממה שמראים לה. ' +
-      'נווה קטן ונקי שווה יותר מאגם ענק ובוצי.',
+      'נתונים הם המים של הבינה המלאכותית — היא לומדת רק מהדוגמאות שמראים לה. ' +
+      'נווה קטן ונקי שווה לה יותר מאגם ענק ובוצי.',
     'intro.fact.circuit':
       'מאחורי כל תשובה של בינה מלאכותית עומדת רשת נוירונים — מיליוני חיבורים זעירים שנדלקים יחד, ' +
       'כמו רחובות בעיר בלילה. אף אחד מהם לא יודע את התשובה לבד.',
     'intro.fact.cloud':
-      'הענן הוא פשוט מחשבים ענקיים במקום אחר בעולם. ' +
-      'הפרומפט שלכם טס אליהם, נענה שם וחוזר — הכול בשנייה אחת.',
+      'הענן הוא פשוט מחשבים ענקיים במקום אחר בעולם — ' +
+      'הפרומפט שלכם טס אליהם, נענה שם וחוזר, והכול בשנייה אחת.',
   },
   en: {
     'intro.welcome': 'Welcome to',
@@ -101,14 +123,14 @@ const PACK = {
     'intro.go': "Let's go",
     'intro.hint': 'Space or tap the screen',
     'intro.fact.oasis':
-      'Data is the water an AI grows on: it only ever learns from what it is shown. ' +
-      'A small clean oasis is worth more than a huge muddy lake.',
+      'Data is the water an AI grows on — it only ever learns from the examples it is shown. ' +
+      'A small clean oasis is worth more to it than a huge muddy lake.',
     'intro.fact.circuit':
       'Behind every AI answer stands a neural network — millions of tiny connections lighting up together, ' +
       'like streets across a city at night. Not one of them knows the answer alone.',
     'intro.fact.cloud':
-      'The cloud is just enormous computers somewhere else in the world. ' +
-      'Your prompt flies over, gets answered there and comes back — all in about a second.',
+      'The cloud is just enormous computers somewhere else in the world — ' +
+      'your prompt flies over, gets answered there and comes back, all in about a second.',
   },
 };
 registerStrings(PACK);
@@ -293,9 +315,8 @@ export function createIntroCard(o = {}) {
     removeEventListener('keydown', onKey, true);
     root.remove();
     release();                                   // popModal('intro')
-    // The cadence clock starts HERE, at the close, not at the open: a child who
-    // reads the card for twenty seconds must not spend the next card's budget.
-    noteTeachingCard();
+    // NO noteTeachingCard() here — deliberately, and this is the single most
+    // load-bearing line in the file. See the CURTAIN note in the header.
     o.onSkip?.(source);
   }
 

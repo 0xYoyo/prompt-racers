@@ -27,7 +27,7 @@ import { dressTrack } from '../gfx/props.js';
 // of each. Re-exported below so the long-standing import sites keep working.
 import {
   TRACK_SIGNS, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS, SIGN_CAP_EM,
-  signLayout, signUV, signTileIndex, drawWorldText,
+  SIGN_LINES, signLayout, signUV, signTileIndex, drawWorldText,
 } from './signdata.js';
 
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -445,7 +445,7 @@ export function enforceSignOrientation(group, spline, opts = {}) {
 // because trackbuild has been their import site since D38.
 export {
   TRACK_SIGNS, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS, SIGN_CAP_EM,
-  signLayout, signUV, signTileIndex,
+  SIGN_LINES, signLayout, signUV, signTileIndex,
 };
 
 /** Sixteen themed sign faces baked into one atlas — one draw call for the lap. */
@@ -1173,22 +1173,46 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
   const _ray = new THREE.Raycaster();
   const _eye = new THREE.Vector3(), _dir = new THREE.Vector3();
   /**
-   * Would a driver reading this board see a mast through the middle of it?
+   * Would a driver reading this board see a mast through it?
+   *
    * Probes the two spots the board is actually read from — roughly 45 m and 28 m
-   * back up the racing line, at chase-camera eye height.
+   * back up the racing line, at chase-camera eye height — against FIVE points on
+   * the board: its centre and its four inner corners. Centre-only was the bug:
+   * a canopy roof and two support beams crossed the top-left of the oasis
+   * 'פחות טעויות' board while its centre ray flew clean between them, so the
+   * candidate passed and a third of the line was behind a prop. A board is a
+   * rectangle; testing it as a point is testing something else.
+   *
+   * The corners are pulled 20% in from the true edge: a ray grazing the very
+   * corner of a board is not what makes a line unreadable, and probing the exact
+   * corner would reject candidates for a prop that clips a millimetre of frame.
    */
-  function signOccluded(occl, t, centre) {
+  function signOccluded(occl, t, centre, u = null, w = 0, h = 0) {
     if (!occl.length) return false;
+    const probes = [centre];
+    if (u && w > 0 && h > 0) {
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          probes.push({
+            x: centre.x + u.x * sx * w * 0.40,
+            y: centre.y + sy * h * 0.40,
+            z: centre.z + u.z * sx * w * 0.40,
+          });
+        }
+      }
+    }
     for (const back of [45, 28]) {
       const rt = ((t - back / L) % 1 + 1) % 1;
       const rp = spline.offsetPoint(rt, 0);
       _eye.set(rp.x, rp.y + 3.25, rp.z);
-      _dir.set(centre.x - _eye.x, centre.y - _eye.y, centre.z - _eye.z);
-      const dist = _dir.length();
-      if (dist < 1) continue;
-      _ray.set(_eye, _dir.multiplyScalar(1 / dist));
-      _ray.near = 0.5; _ray.far = dist - 1.0;
-      if (_ray.intersectObjects(occl, false).length) return true;
+      for (const q of probes) {
+        _dir.set(q.x - _eye.x, q.y - _eye.y, q.z - _eye.z);
+        const dist = _dir.length();
+        if (dist < 1) continue;
+        _ray.set(_eye, _dir.multiplyScalar(1 / dist));
+        _ray.near = 0.5; _ray.far = dist - 1.0;
+        if (_ray.intersectObjects(occl, false).length) return true;
+      }
     }
     return false;
   }
@@ -1198,7 +1222,12 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     const density = q.propDensity ?? 1;
     // high 1.0 -> ~84 m apart, medium 0.7 -> ~122 m, low 0.35 -> ~210 m
     const step = density >= 0.9 ? 84 : density >= 0.6 ? 122 : 210;
-    const nSign = Math.max(3, Math.round(L / step));
+    // THE BOARD BUDGET IS TIED TO THE LIST. It never was: `round(L / step)` was
+    // taken on its own and the tiles were then handed out in list order, so the
+    // tail of every curriculum — the glossary echoes and the payoff — simply
+    // never reached the ground. Capping at the list length also means no lap can
+    // show a line twice, which used to depend on 16 > 14 holding by luck.
+    const nSign = Math.max(3, Math.min(SIGNS.lines.length, Math.round(L / step)));
     const srng = makeRng(3300 + def.points.length * 17 + Math.round(L));
     const panels = new MB(false);
     const posts = new MB(false);
@@ -1210,17 +1239,42 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     // no other track can have.
     const maxOut = SKY_TRACK ? 17 : 34;
     const occl = signOccluders();
-    let placed = 0;
+    // Candidates first, tiles second. Which LINE a board carries cannot be
+    // decided inside this loop any more: it depends on how many boards survive
+    // the ground/occlusion search, and that is only known once the loop ends.
+    const spots = [];
     for (let i = 0; i < nSign; i++) {
-      const t = ((startT + (i + 0.5) / nSign + srng.range(-0.006, 0.006)) % 1 + 1) % 1;
+      // NUDGE, DON'T DROP. A candidate whose ground is missing or whose view is
+      // blocked used to be abandoned, so a tier that asked for twelve boards
+      // shipped ten and two authored lines reached nobody. It now tries the same
+      // slot a third of a spacing forward and back before giving up, which keeps
+      // the board budget honest without disturbing the even spacing round the lap
+      // or the outward spread that gives the mid-ground its depth.
+      let spot = null;
+      for (const nudge of [0, 0.34, -0.34]) {
+        spot = trySpot(i, (i + 0.5 + nudge) / nSign);
+        if (spot) break;
+      }
+      if (spot) spots.push(spot);
+    }
+
+    function trySpot(i, frac) {
+      const t = ((startT + frac + srng.range(-0.006, 0.006)) % 1 + 1) % 1;
       // keep the start/finish complex clear — the gantry is the read there
-      if (Math.abs(((t - startT + 1.5) % 1) - 0.5) < 0.018) continue;
+      if (Math.abs(((t - startT + 1.5) % 1) - 0.5) < 0.018) return null;
       const side = i % 2 === 0 ? 1 : -1;
       const w = spline.widthAt(t);
       // On the low tier only the mid-ground boards survive: they are the ones
       // doing the depth work, and the barrier already carries sponsor boards.
       const mid = density < 0.6 ? true : i % 3 !== 0;
-      const pw = mid ? 13.0 : 6.8, ph = pw / SIGN_TILE_ASPECT;
+      // WIDER BY 12% THAN WAVE 4's 13.0 / 6.8, and for a measured reason:
+      // TEXT_ADV_EM went 0.55 -> 0.62 so the model describes the widest fallback
+      // font rather than the one this build machine happens to have installed.
+      // Cap height is 0.4 * boardWidth / characters (D38), so the honest model
+      // costs 11% of every glyph unless the metres are bought back here. They
+      // are: the boards on the ground are unchanged in apparent size, and the
+      // legibility table is now true on a school laptop as well as on a Mac.
+      const pw = mid ? 14.6 : 7.6, ph = pw / SIGN_TILE_ASPECT;
       // Cloud Peak wants its boards ON the drop, standing against open sky; the
       // ground tracks want them spread through the mid-ground band for depth.
       //
@@ -1240,6 +1294,13 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // prop stands between the board and a driver reading it. Both used to be
       // "skip the sign", which is why the tracks quietly lost boards and why one
       // circuit board ended up bisected by a lamp mast.
+      const tan = spline.tangentAt(t), right = spline.rightAt(t);
+      // Face the centreline, angled back down the track so a driver arriving at
+      // speed gets a square-on read rather than a sliver.
+      const n = new THREE.Vector3(
+        -side * right.x - 0.62 * tan.x, 0, -side * right.z - 0.62 * tan.z).normalize();
+      const U = signUAxis(n);
+
       let put = null;
       for (const out of [wanted, wanted * 0.78, wanted * 0.58, wanted * 0.4, 1.8]) {
         const p = spline.offsetPoint(t, side * (w + RUNOFF + out));
@@ -1247,27 +1308,42 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
         if (gy < p.y - (mid ? 1.6 : 0.8)) continue;      // perched on the drop
         const bottom = mid ? (SKY_TRACK ? 4.2 : 3.0) : 1.9;
         const cy = gy + bottom + ph / 2;
-        if (signOccluded(occl, t, { x: p.x, y: cy, z: p.z })) continue;
+        // Read from where the driver is LEVEL WITH THE BOARD, which on a curve
+        // is not the parameter the board was hung off: offsetting 25 m outward
+        // round a bend slides the nearest point on the racing line several
+        // metres along. Using the anchor's `t` put the probe eye in the wrong
+        // place on exactly the corners where props cluster.
+        const tc = spline.closestT({ x: p.x, y: cy, z: p.z }).t;
+        // The whole rectangle, not just its centre — see signOccluded.
+        if (signOccluded(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph)) continue;
         put = { p, gy, cy };
         break;
       }
-      if (!put) continue;
+      if (!put) return null;
       const { p, gy, cy } = put;
-      const tan = spline.tangentAt(t), right = spline.rightAt(t);
-      // Face the centreline, angled back down the track so a driver arriving at
-      // speed gets a square-on read rather than a sliver.
-      const n = new THREE.Vector3(
-        -side * right.x - 0.62 * tan.x, 0, -side * right.z - 0.62 * tan.z).normalize();
-      addSignPanel(panels, { x: p.x, y: cy, z: p.z }, n, pw, ph, signUV(placed), 0.10);
+      return { p, gy, cy, n, U, pw, ph };
+    }
+
+    // ── WHICH LINE GOES ON WHICH BOARD ────────────────────────────────────────
+    // Order-preserving and spanning, at every quality tier. `M` boards survived
+    // and the track authored `N` lines; board j carries line round(j*(N-1)/(M-1)),
+    // which is strictly increasing for M <= N and always includes line 0 and line
+    // N-1. So a child on the LOW tier meets an opening line, a middle line and
+    // the payoff rather than the first six lines and nothing else — which is what
+    // "take tiles in list order until you run out of boards" gave them, and it
+    // deleted the glossary echoes the tail of every list exists for.
+    const N = SIGNS.lines.length;
+    const M = spots.length;
+    spots.forEach((s, j) => {
+      const tile = M > 1 ? Math.round(j * (N - 1) / (M - 1)) : 0;
+      addSignPanel(panels, { x: s.p.x, y: s.cy, z: s.p.z }, s.n, s.pw, s.ph, signUV(tile), 0.10);
       // legs, at the panel's own ends
-      const U = signUAxis(n);
-      const legH = cy + ph / 2 - gy;
+      const legH = s.cy + s.ph / 2 - s.gy;
       for (const s2 of [-1, 1]) {
-        posts.box(p.x + U.x * s2 * pw * 0.40, gy + legH / 2, p.z + U.z * s2 * pw * 0.40,
+        posts.box(s.p.x + s.U.x * s2 * s.pw * 0.40, s.gy + legH / 2, s.p.z + s.U.z * s2 * s.pw * 0.40,
           0.20, legH, 0.20, 0.8);
       }
-      placed++;
-    }
+    });
     if (panels.count) {
       const atlas = signAtlas(def.theme, Math.min(S, 512) * 2);
       const gP = panels.geometry(); geos.push(gP);
@@ -1677,7 +1753,7 @@ function previewSignsFor(engine, id) {
     // board is both in frame and closest.
     const FOV = 62, DIST = 5.5, HGT = 3.25;
     const half = Math.tan((FOV * Math.PI / 180) / 2) * (16 / 9);
-    let bestT = 0, bestScore = 0;
+    let bestT = 0, bestScore = 0, bestBoard = null;
     const tmp = new THREE.Vector3();
     for (let i = 0; i < 600; i++) {
       const t = i / 600;
@@ -1688,13 +1764,17 @@ function previewSignsFor(engine, id) {
         const fwd = tmp.x * fr.tan.x + tmp.z * fr.tan.z;
         if (fwd < 8) continue;
         const side = Math.abs(tmp.x * -fr.tan.z + tmp.z * fr.tan.x);
-        if (side > fwd * half * 0.8) continue;               // outside the frame
+        // WELL inside the frame, not merely inside it. At 0.8 of the half-width
+        // the chosen board sat against the screen edge with its far half off it
+        // on two of three tracks — and this preview exists so a human can answer
+        // "can a child read this?", which a half-cropped board cannot be asked.
+        if (side > fwd * half * 0.45) continue;
         // Ignore anything nearer than 20 m: a board at arm's length proves
         // nothing about the roadside curriculum, and framing one is how the
         // sizing miss went unnoticed. This frame is about the MID-GROUND read.
         if (tmp.length() < 20) continue;
         const score = 1 / tmp.length();
-        if (score > bestScore) { bestScore = score; bestT = t; }
+        if (score > bestScore) { bestScore = score; bestT = t; bestBoard = p; }
       }
     }
     const fr = sp.frameAt(bestT);
@@ -1702,8 +1782,14 @@ function previewSignsFor(engine, id) {
     camera.position.set(fr.pos.x - fr.tan.x * DIST, fr.pos.y + HGT, fr.pos.z - fr.tan.z * DIST);
     const near = sp.offsetPoint((bestT + 9 / sp.length) % 1, 0);
     const far = sp.offsetPoint((bestT + 24 / sp.length) % 1, 0);
-    camera.lookAt(near.x * 0.76 + far.x * 0.24, near.y * 0.76 + far.y * 0.24 + 0.15,
+    const aim = new THREE.Vector3(
+      near.x * 0.76 + far.x * 0.24, near.y * 0.76 + far.y * 0.24 + 0.15,
       near.z * 0.76 + far.z * 0.24);
+    // Then bias the aim a THIRD of the way towards the board itself. The pose
+    // stays the chase camera's (same seat, same height, same forward lean); only
+    // where it is looking moves, which is what a child does at a sign anyway.
+    if (bestBoard) aim.lerp(bestBoard, 0.34);
+    camera.lookAt(aim);
     rig.setShadowFocus(near);
   });
 }

@@ -31,6 +31,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ---- headless canvas stub: the procedural textures need a 2D context --------
+/**
+ * Glyph advance the stub charges, in em per character. See the note on
+ * `measureText` below; it is real-Chrome measurement, not a guess, and it is
+ * asserted against the shipping TEXT_ADV_EM further down.
+ */
+const STUB_ADV = 0.62;
+/** Widest em/char any candidate face measured in real Chrome (generic fallback). */
+const WIDEST_MEASURED_ADV = 0.6033;
 function stubCanvas() {
   const state = {};
   const ctx = new Proxy(state, {
@@ -50,13 +58,21 @@ function stubCanvas() {
           // FONT-AWARE, and deliberately pessimistic. The old stub returned
           // `chars * 8` whatever the font, which made the real-font clamp inside
           // drawWorldText a no-op here and left the gate unable to see the bug
-          // this wave existed to fix. Measured against the shipping bold Hebrew
-          // face at 1024 px, the widest real line came in at 0.52 em/char; 0.60
-          // keeps the model on the far side of the truth, so a line that fits
-          // HERE fits in a browser with room to spare.
+          // this wave existed to fix.
+          //
+          // THE NUMBER HAS TO DESCRIBE THE WIDEST FONT THAT COULD RENDER, not
+          // the one this machine has. Measured in real Chrome at 1024 px over
+          // every authored world phrase, bold, worst line 'שכבה נסתרת':
+          //     "Arial Hebrew"       0.555 em/char  (macOS)
+          //     "Noto Sans Hebrew"   0.473 em/char  (where installed)
+          //     generic sans-serif   0.603 em/char  (Windows/Linux/Android)
+          // The old 0.60 sat BELOW the generic fallback, so a line could fit
+          // here and be 0.5% wider than the stub believed on a school laptop.
+          // 0.62 matches TEXT_ADV_EM and clears the widest measured fallback,
+          // and STUB_ADV below re-pins that agreement so the two cannot drift.
           return (s) => {
             const m = /(\d+(?:\.\d+)?)px/.exec(String(t.font || '16px'));
-            return { width: String(s).length * 0.60 * (m ? +m[1] : 16) };
+            return { width: String(s).length * STUB_ADV * (m ? +m[1] : 16) };
           };
         default:
           return () => {};
@@ -72,13 +88,17 @@ if (typeof globalThis.document === 'undefined') {
 
 const THREE = await import('three');
 const { buildTrack, auditTrackClearance, signUAxis, enforceSignOrientation, TEXT_MESHES, TRACK_SIGNS,
-  signLayout, signUV, signTileIndex, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS } =
-  await import('../src/track/trackbuild.js');
+  signLayout, signUV, signTileIndex, SIGN_COLS, SIGN_ROWS, SIGN_TILE_ASPECT, SIGN_MAX_CHARS,
+  SIGN_LINES } = await import('../src/track/trackbuild.js');
 const { TRACKS, getTrack } = await import('../src/track/trackdef.js');
 const SIGNDATA = await import('../src/track/signdata.js');
 const { WORLD_TEXT_STATS, resetWorldTextStats, fitText, allWorldPhrases,
   BRAND_BOARDS, HOLO_BOARDS, BRAND_BOARD_W, BRAND_BOARD_H, BRAND_TILE_ASPECT,
-  HOLO_BOARD_W, HOLO_BOARD_H, HOLO_TILE_ASPECT } = SIGNDATA;
+  HOLO_BOARD_W, HOLO_BOARD_H, HOLO_TILE_ASPECT, TEXT_ADV_EM, TEXT_CAP_EM } = SIGNDATA;
+// The glossary the world boards echo. Imported for one reason only: it is the
+// ONE anchor in this file that lives outside the data under test, so an
+// assertion tied to it cannot be satisfied by editing the phrase list.
+const BADGES = await import('../src/core/badges.js');
 
 // Everything below is measured on the ONE shared drawing path, so the counters
 // have to start from a clean slate before the first track is built.
@@ -263,8 +283,15 @@ console.log('\n  ONE TEXT PATH — every letter in the world drawn by signdata.j
   const MESH_OF = { signage: 'signage', boards: 'boards', 'holo-signs': 'holo-signs', gantry: 'gantry-board' };
 
   ok('the shared path drew the world text of all three tracks',
-    draws.length >= 3 * 16 + BRAND_BOARDS.length + HOLO_BOARDS.length + 3,
+    draws.length >= 3 * SIGN_LINES + BRAND_BOARDS.length + HOLO_BOARDS.length + 3,
     `${draws.length} lines drawn`);
+  // The font model and the stub that stands in for a browser here must agree,
+  // and BOTH must sit on the far side of the widest face that could render. This
+  // is the assertion that would have caught the model being fitted to the one
+  // font that happened to be installed on the machine that wrote it.
+  ok('the width model is pessimistic against the widest measured font',
+    TEXT_ADV_EM >= WIDEST_MEASURED_ADV && STUB_ADV >= WIDEST_MEASURED_ADV,
+    `model ${TEXT_ADV_EM} em/char, stub ${STUB_ADV}, widest measured ${WIDEST_MEASURED_ADV} (generic sans-serif)`);
   ok('all four lettered consumers go through it',
     ['signage', 'boards', 'holo-signs', 'gantry'].every(p => prefixes.has(p)),
     [...prefixes].sort().join(', '));
@@ -445,11 +472,63 @@ for (let i = 0; i < TRACKS.length; i++) {
   // board, and the progression is decoration. Derived from the built UV buffer,
   // not from the placement code, so it holds however the boards get placed.
   const order = boardOrder(track, def);
-  const wrong = order.filter((b, k) => b.tile !== k);
+  const back = order.filter((b, k) => k > 0 && b.tile <= order[k - 1].tile);
   ok(`${def.id}: boards carry the authored lines IN ORDER along the lap`,
-    order.length >= 6 && wrong.length === 0,
-    wrong.length ? `board ${wrong[0].pos} of ${order.length} shows line ${wrong[0].tile}`
+    order.length >= 6 && back.length === 0,
+    back.length ? `board ${back[0].pos} of ${order.length} shows line ${back[0].tile}, after ${order[back[0].pos - 1].tile}`
       : `${order.length} boards, tiles ${order.map(b => b.tile).join(',')} from the start line`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE WHOLE LIST REACHES THE GROUND — at EVERY quality tier.
+//
+// The gap this closes. `placeSignage` sized its board count from the lap length
+// alone (`round(L / step)`) and then handed out atlas tiles in list order, first
+// come first served. Nothing tied the two numbers together and nothing checked
+// them against each other, so the last two lines of every track never reached
+// the high tier, the last six never reached medium and the last TEN never
+// reached low — and it is the tail of each list that carries the payoff and the
+// glossary echoes (`זה מודל שפה` is glos.llm.term; `שם רצים מודלים` is the last
+// sentence of glos.cloud.def). A child on a school laptop met the first six
+// lines of a twelve-line lesson and none of the conclusion.
+//
+// The check that would have caught it, and now does: at every tier the sequence
+// on the ground must be STRICTLY INCREASING (the progression is a sequence),
+// must START at line 0 and END at the last line (it spans the whole list), and
+// must not skip more than one "stride" anywhere (it samples evenly rather than
+// taking a clump). Derived from the built UV buffers of a real build at each
+// tier, not from the placement arithmetic.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n  CURRICULUM COVERAGE — every tier gets the whole lesson\n  ' + '─'.repeat(78));
+const TIERS = [
+  ['high', engineAt(1, 512)],
+  ['medium', engineAt(0.7, 512)],
+  ['low', engineAt(0.35, 256)],
+];
+for (const def of TRACKS) {
+  const N = (TRACK_SIGNS[def.theme] || TRACK_SIGNS.oasis).lines.length;
+  for (const [tier, eng] of TIERS) {
+    const tr = buildTrack(def.id, eng, { audit: false });
+    const tiles = boardOrder(tr, def).map(b => b.tile);
+    const rising = tiles.every((v, k) => k === 0 || v > tiles[k - 1]);
+    const stride = Math.ceil((N - 1) / Math.max(1, tiles.length - 1));
+    const gap = tiles.reduce((m, v, k) => (k ? Math.max(m, v - tiles[k - 1]) : m), 0);
+    ok(`${def.id}/${tier}: the placed lines span the whole authored list`,
+      tiles.length >= 3 && rising && tiles[0] === 0 && tiles[tiles.length - 1] === N - 1 &&
+      gap <= stride + 1,
+      `${tiles.length} of ${N} lines: [${tiles.join(',')}]${rising ? '' : ' NOT RISING'} biggest gap ${gap} (stride ${stride})`);
+    // ...and the tier that can carry them all must carry them all. This is the
+    // assertion that ties the list length to the board budget: author a
+    // thirteenth line without widening the budget and this goes red, rather
+    // than the line silently never being built.
+    if (tier === 'high') {
+      const set = new Set(tiles);
+      const missing = [...Array(N).keys()].filter(k => !set.has(k));
+      ok(`${def.id}/high: EVERY authored line is on the ground`, missing.length === 0,
+        missing.length ? `lines ${missing.join(',')} never placed` : `all ${N} placed`);
+    }
+    tr.dispose();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -474,6 +553,32 @@ for (let i = 0; i < TRACKS.length; i++) {
 // how it shrank to 0.13 em without anyone noticing.
 // ─────────────────────────────────────────────────────────────────────────────
 const CAM = { dist: 5.5, height: 3.25, fov: 62, W: 1600, H: 900, samples: 400 };
+
+/**
+ * Cap height, as a fraction of the board's height, OF THE SIZE THE SHIPPING CODE
+ * ACTUALLY SETTLED ON — keyed 'signage:<theme>:<line index>' out of the draw log
+ * that `drawWorldText` writes as it letters the atlas.
+ *
+ * The legibility table below used to be computed from `signLayout`, the ANALYTIC
+ * model. That is the same shape of mistake as D38's "the size was decided where
+ * no gate could see it", one step further along: the size was now visible, but
+ * the gate was reading the PROPOSAL rather than the settlement. Whenever the
+ * real-font clamp shrinks a line — which is exactly what happens when the font
+ * on the machine is wider than the model — every number in the table would have
+ * been an overstatement, and nothing here would have said so.
+ *
+ * The minimum across atlas sizes, because the same theme is baked at 1024 px on
+ * the high tier and 512 px on the low one and the px floor rounds differently.
+ */
+const drawnCapFrac = (() => {
+  const m = new Map();
+  for (const d of WORLD_TEXT_STATS.draws) {
+    if (!d.key.startsWith('signage:')) continue;
+    const prev = m.get(d.key);
+    if (prev === undefined || d.capFrac < prev) m.set(d.key, d.capFrac);
+  }
+  return m;
+})();
 
 /** Every sign panel of a built track, in world space, with its glyph size. */
 function signPanels(track) {
@@ -506,9 +611,15 @@ function signPanels(track) {
       // Which atlas tile, and therefore which line of copy, is on this face?
       const col = Math.round(u0 * SIGN_COLS);
       const row = SIGN_ROWS - 1 - Math.round(v0 * SIGN_ROWS);
-      const line = lines[(row * SIGN_COLS + col) % lines.length] ?? '';
+      const tile = row * SIGN_COLS + col;
+      const line = lines[tile % lines.length] ?? '';
       const h = hi - lo;
-      out.push({ c, n, h, line, cap: signLayout(line, SIGN_TILE_ASPECT).capFrac * h });
+      // The size the DRAWING settled on, not the size the model proposed. Falls
+      // back to the analytic layout only if the atlas was never drawn (it always
+      // is, and `drawn caps come from the shipping path` below pins that).
+      const capFrac = drawnCapFrac.get(`signage:${theme}:${tile}`)
+        ?? signLayout(line, SIGN_TILE_ASPECT).capFrac;
+      out.push({ c, n, h, line, tile, cap: capFrac * h, analytic: signLayout(line, SIGN_TILE_ASPECT).capFrac * h });
     }
   });
   return out;
@@ -566,11 +677,10 @@ console.log('\n  LEGIBILITY — can a kid actually READ a sign at racing speed?\
 console.log('    chase cam ' + CAM.dist + ' m back, ' + CAM.height + ' m up, fov ' + CAM.fov +
   ', ' + CAM.W + 'x' + CAM.H + ', ' + CAM.samples + ' samples/lap\n');
 for (let i = 0; i < TRACKS.length; i++) {
-  const def = TRACKS[i], { best, boards } = capHeightProfile(built[i]);
+  const def = TRACKS[i], { best, boards, panels: panelsOf } = capHeightProfile(built[i]);
   const max = Math.max(...best), med = median(best);
   const pct14 = best.filter(v => v >= 14).length / best.length;
   const boardMed = median(boards);
-  const reach14 = boards.filter(v => v >= 14).length / boards.length;
   console.log(`    ${def.id.padEnd(8)} median-best ${med.toFixed(1)} px | max ${max.toFixed(1)} px | ` +
     `${(pct14 * 100).toFixed(0)}% of lap >= 14 px | per-board best: median ${boardMed.toFixed(1)} px`);
 
@@ -586,8 +696,23 @@ for (let i = 0; i < TRACKS.length; i++) {
   // readable at its own best moment, and nearly all of them must get close.
   ok(`${def.id}: the median board becomes readable (>=18 px at its best)`,
     boardMed >= 18, `median board peaks at ${boardMed.toFixed(1)} px`);
-  ok(`${def.id}: nearly every board is readable at some point (>=85% reach 14 px)`,
-    reach14 >= 0.85, `${(reach14 * 100).toFixed(0)}% of ${boards.length} boards`);
+  // PER BOARD, with no aggregate to hide behind. This was `>=85% reach 14 px`,
+  // and 85% of 14 boards is twelve — so two boards a lap could sit permanently
+  // under D38's floor and the gate would call it fine. It did: circuit's
+  // 'סיבוב אימון' peaked at 12.5 px on every lap of its life, and nothing said
+  // so, because the one number printed was an average. A floor that a named
+  // exception may sit under is a decision; a floor that anonymous boards fall
+  // through is a hole. EXEMPT is empty, and if it ever is not, the line that is
+  // under the floor has to be written down here by hand.
+  const EXEMPT = new Set([]);
+  const shortfall = boards
+    .map((v, k) => ({ px: v, line: panelsOf[k * 2]?.line || '?' }))
+    .filter(b => b.px < 14 && !EXEMPT.has(b.line));
+  ok(`${def.id}: EVERY board is readable at some point on the lap (>=14 px cap)`,
+    shortfall.length === 0,
+    shortfall.length
+      ? shortfall.map(b => `"${b.line}" peaks at ${b.px.toFixed(1)} px`).join(' | ')
+      : `${boards.length} boards, worst peaks at ${Math.min(...boards).toFixed(1)} px`);
 
   // Ambient, not incidental: a readable board should be on screen for a real
   // share of the lap, not for one corner of it. (Round 1: 0-1%.)
@@ -640,6 +765,71 @@ for (let i = 0; i < TRACKS.length; i++) {
   hi.dispose(); lo.dispose();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTHING STANDS IN FRONT OF A BOARD — checked as a RECTANGLE, not as a point.
+//
+// `signOccluded` walks a candidate inward until the view is clear, and it used
+// to ray-test the board's CENTRE only. A board is 14.6 m x 3.65 m: a canopy roof
+// and two of its beams crossed the top-left of oasis's 'פחות טעויות' while the
+// centre ray flew clean between them (shots/w5c-crop-mid4k.png), and the
+// placement code called that clear. This re-runs the same question on the BUILT
+// track — centre plus four inner corners, from the two distances a board is read
+// from — so the fix cannot quietly regress to a point test.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n  OCCLUSION — the whole board is visible, not just its middle\n  ' + '─'.repeat(78));
+for (let i = 0; i < TRACKS.length; i++) {
+  const def = TRACKS[i], track = built[i];
+  const { spline } = track;
+  const L = spline.length;
+  // Tall, cheap geometry — the same deliberately name-free rule the placement
+  // uses, restated here rather than imported so the gate is not the code.
+  const blockers = [];
+  const bb = new THREE.Box3();
+  track.group.updateMatrixWorld(true);
+  track.group.traverse(o => {
+    if (!o.isMesh || !o.geometry || /^signage/.test(o.name)) return;
+    const g = o.geometry;
+    const tris = (g.index ? g.index.count : (g.attributes.position?.count || 0)) / 3;
+    if (tris < 1 || tris > 20000) return;
+    bb.setFromObject(o);
+    if (bb.max.y - bb.min.y < 3) return;
+    blockers.push(o);
+  });
+  const ray = new THREE.Raycaster();
+  const blocked = [];
+  for (const p of signPanels(track)) {
+    const u = signUAxis(p.n);
+    const t = spline.closestT(p.c).t;
+    const probes = [p.c];
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        probes.push(new THREE.Vector3(
+          p.c.x + u.x * sx * (p.h * SIGN_TILE_ASPECT) * 0.40,
+          p.c.y + sy * p.h * 0.40,
+          p.c.z + u.z * sx * (p.h * SIGN_TILE_ASPECT) * 0.40));
+      }
+    }
+    for (const back of [45, 28]) {
+      const rp = spline.offsetPoint(((t - back / L) % 1 + 1) % 1, 0);
+      const eye = new THREE.Vector3(rp.x, rp.y + 3.25, rp.z);
+      for (const q of probes) {
+        const dir = q.clone().sub(eye);
+        const d = dir.length();
+        if (d < 1) continue;
+        ray.set(eye, dir.multiplyScalar(1 / d));
+        ray.near = 0.5; ray.far = d - 1.0;
+        const hit = ray.intersectObjects(blockers, false);
+        if (hit.length) {
+          blocked.push(`"${p.line}" blocked from ${back} m back by ${hit[0].object.name || '(unnamed)'}`);
+        }
+      }
+    }
+  }
+  ok(`${def.id}: no board is blocked at its centre OR its corners`, blocked.length === 0,
+    blocked.length ? [...new Set(blocked)].slice(0, 3).join(' | ')
+      : `${signPanels(track).length / 2} boards x 5 points x 2 read distances clear`);
+}
+
 console.log('\n  COPY — ambient curriculum, short enough to be READ\n  ' + '─'.repeat(78));
 // Length is optics, not style: cap height is 0.4 * boardWidth / characters, so
 // every extra character costs the board ~7% of its legibility. A 24-character
@@ -652,10 +842,133 @@ for (const [theme, set] of Object.entries(TRACK_SIGNS)) {
     return w < 2 || w > 3 || l.length > SIGN_MAX_CHARS || !/[֐-׿]/.test(l);
   });
   const longest = [...set.lines].sort((a, b) => b.length - a.length)[0];
-  ok(`${theme}: ${SIGN_COLS * SIGN_ROWS} Hebrew signs, 2-3 words, <= ${SIGN_MAX_CHARS} chars`,
-    set.lines.length === SIGN_COLS * SIGN_ROWS && bad.length === 0,
+  ok(`${theme}: ${SIGN_LINES} Hebrew signs, 2-3 words, <= ${SIGN_MAX_CHARS} chars`,
+    set.lines.length === SIGN_LINES && bad.length === 0,
     bad.length ? bad.join(' | ') : `longest "${longest}" = ${longest.length}`);
   ok(`${theme}: no duplicate copy`, new Set(set.lines).size === set.lines.length);
+}
+ok(`the atlas has a tile for every authored line`, SIGN_LINES <= SIGN_COLS * SIGN_ROWS,
+  `${SIGN_LINES} lines in ${SIGN_COLS}x${SIGN_ROWS} = ${SIGN_COLS * SIGN_ROWS} tiles`);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT THE BOARDS SAY — the half of the gate that was missing entirely.
+//
+// Everything above this line checks the MECHANISM: geometry, fit, order, size.
+// A critic mutated the exported phrase data before importing this file (ESM
+// singletons, no source edit) and got three green runs that each shipped
+// something the project forbids:
+//
+//   * every track's curriculum REVERSED — the payoff on board one, the opening
+//     line at the flag. Green, because "IN ORDER" compares a tile index to a lap
+//     position and both reversed together.
+//   * real company names on two world boards. Green: tools/verify.mjs's sweep
+//     does not reach these strings, and nothing here looked.
+//   * two lines replaced with non-words. Green, because "every phrase drawn is
+//     an authored phrase" validates the draws against the array they were drawn
+//     FROM — it is circular, and can only ever catch a drawing bug.
+//
+// The three assertions below are the ones those mutants fail. Each is anchored
+// OUTSIDE the phrase list — on the glossary in core/badges.js, on a list of real
+// trademarks, and on a lexicon that has to be edited deliberately — because an
+// assertion that reads only the data under test cannot judge it.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n  CONTENT — the boards say what the curriculum says they say\n  ' + '─'.repeat(78));
+{
+  const norm = (s) => String(s).replace(/[־‐-―-]/g, ' ').replace(/\s+/g, ' ').trim();
+  const words = (s) => norm(s).split(' ').filter(Boolean);
+  const phrases = allWorldPhrases();
+
+  // ── 1. THE PAYOFF LANDS LAST ───────────────────────────────────────────────
+  // Each track declares the word its last board exists to deliver. Three things
+  // are asserted, and reversing the list breaks all three: the word is one the
+  // GAME'S GLOSSARY teaches (external anchor — core/badges.js, which no mutation
+  // of the phrase list can reach); it appears on exactly ONE board; and that
+  // board is the last one. Note what is deliberately NOT asserted: which words
+  // the other eleven boards use. D42 — gate the property, anchor one string.
+  const glossary = Object.entries(BADGES.GLOSSARY_STRINGS.he)
+    .filter(([k]) => /\.(term|def)$/.test(k)).map(([, v]) => v).join(' \n ');
+  for (const [theme, set] of Object.entries(TRACK_SIGNS)) {
+    const payoff = set.payoff || '';
+    const hits = set.lines.map((l, i) => [l, i]).filter(([l]) => norm(l).includes(norm(payoff)));
+    ok(`${theme}: the payoff word "${payoff}" is a word the glossary teaches`,
+      !!payoff && glossary.includes(payoff),
+      payoff ? `found in GLOSSARY_STRINGS.he` : 'no payoff declared');
+    ok(`${theme}: the payoff is on exactly one board, and it is the LAST one`,
+      hits.length === 1 && hits[0][1] === set.lines.length - 1,
+      hits.length === 1
+        ? `line ${hits[0][1]} of ${set.lines.length}: "${hits[0][0]}"`
+        : `${hits.length} boards carry it: ${hits.map(h => `[${h[1]}] "${h[0]}"`).join(' ')}`);
+  }
+
+  // ── 2. NO REAL TRADEMARKS ANYWHERE IN THE WORLD ────────────────────────────
+  // "All-original content" is a contest rule, and a disqualifying one. The brand
+  // boards and holo billboards are invented identities on purpose; this is what
+  // stops the next agent (or a well-meant "make it feel real" edit) from putting
+  // a real logo on a barrier. Whole-word matching over the normalised phrase, so
+  // 'ברק אנרגיה' is not tripped by a substring of somebody's trademark.
+  const TRADEMARKS = [
+    // Hebrew transliterations a Hebrew-first game would actually reach for.
+    ['קוקה', 'קולה'], ['קולה'], ['מקדונלדס'], ['מקדונלד'], ['בורגר', 'קינג'], ['פפסי'],
+    ['נייקי'], ['אדידס'], ['פומה'], ['גוגל'], ['אפל'], ['מיקרוסופט'], ['אמזון'],
+    ['פייסבוק'], ['אינסטגרם'], ['טיקטוק'], ['יוטיוב'], ['נטפליקס'], ['סמסונג'],
+    ['אינטל'], ['אנבידיה'], ['טסלה'], ['פרארי'], ['מרצדס'], ['טויוטה'], ['יונדאי'],
+    ['פורד'], ['שברולט'], ['פורשה'], ['רד', 'בול'], ['שופרסל'], ['אלביט'], ['לגו'],
+    ['דיסני'], ['פוקימון'], ['נינטנדו'], ['מריו'], ['סוני'], ['אוסם'], ['תנובה'],
+    // ...and the Latin ones, for the English build and for any future ASCII copy.
+    ['coca'], ['cola'], ['pepsi'], ['mcdonalds'], ['nike'], ['adidas'], ['google'],
+    ['apple'], ['microsoft'], ['amazon'], ['facebook'], ['netflix'], ['samsung'],
+    ['intel'], ['nvidia'], ['tesla'], ['ferrari'], ['mercedes'], ['toyota'], ['ford'],
+    ['redbull'], ['shell'], ['disney'], ['pokemon'], ['nintendo'], ['lego'],
+    ['openai'], ['chatgpt'], ['gemini'], ['copilot'],
+  ];
+  const ipHits = [];
+  for (const p of phrases) {
+    const w = words(p.line).map(x => x.toLowerCase());
+    for (const brand of TRADEMARKS) {
+      for (let i = 0; i + brand.length <= w.length; i++) {
+        if (brand.every((b, k) => w[i + k] === b)) ipHits.push(`${p.source}[${p.index}] "${p.line}" ~ ${brand.join(' ')}`);
+      }
+    }
+  }
+  ok('no real company or product name on any world board', ipHits.length === 0,
+    ipHits.length ? ipHits.slice(0, 4).join(' | ')
+      : `${phrases.length} phrases swept against ${TRADEMARKS.length} trademarks`);
+
+  // ── 3. EVERY WORD IS A WORD ────────────────────────────────────────────────
+  // The lexicon is a SEPARATE artifact from the phrase list on purpose: it is
+  // the second signature on every word that reaches a child's eye. Adding a word
+  // to a board means adding it here too, which is a moment to ask whether an
+  // eight-year-old knows it (D41 rejected שדה, סף הפעלה and משאב לפי מידה at
+  // exactly that moment). Swapping a line for `קרשט בלגמ` — the critic's mutant,
+  // and equally a mojibake or a half-copied paste — fails here and cannot be
+  // made to pass by editing the copy alone.
+  const LEXICON = new Set([
+    // — the roadside curriculum —
+    'או', 'אוספים', 'אות', 'אחר', 'אימון', 'אלפי', 'בינה', 'במקום', 'בענן',
+    'דוגמאות', 'דוגמה', 'דולק', 'דפוס', 'החיבור', 'הלאה', 'הרבה', 'וטבלאות',
+    'ומילים', 'זה', 'זמין', 'חוזר', 'חיבור', 'טובה', 'טוקנים', 'טעויות', 'טעות',
+    'כבוי', 'מאגר', 'מאובטח', 'מהירה', 'מודל', 'מודלים', 'מחשב', 'מחשבים',
+    'מידע', 'מכל', 'מלמדת', 'מספרים', 'מקום', 'מרכז', 'משתנה', 'מתחלקת',
+    'נוירון', 'נוירונים', 'נכנסים', 'נסתרת', 'נקיים', 'נתוני', 'נתונים', 'עבודה',
+    'עובר', 'עולמית', 'על', 'עמוקה', 'ענן', 'פחות', 'קטן', 'רחוק', 'רצים', 'רשת',
+    'שכבה', 'שם', 'שפה', 'שרת', 'תמונות', 'תשובה',
+    // — the invented racing-series identities (barrier boards, holo billboards) —
+    'טורבו', 'ברק', 'אנרגיה', 'נחל', 'אלגו', 'גיר', 'מנוע', 'פרומפט', 'טק',
+    'דאטה', 'סיטי', 'אקספרס', 'פיקסל', 'אור',
+  ]);
+  const strange = [];
+  for (const p of phrases) {
+    for (const w of words(p.line)) if (!LEXICON.has(w)) strange.push(`${p.source}[${p.index}] "${w}" in "${p.line}"`);
+  }
+  ok('every word on every world board is in the approved lexicon', strange.length === 0,
+    strange.length ? strange.slice(0, 5).join(' | ')
+      : `${new Set(phrases.flatMap(p => words(p.line))).size} distinct words, all approved`);
+  // ...and the lexicon must not rot into a rubber stamp: a word nobody uses any
+  // more is a word nobody re-read when it was added.
+  const used = new Set(phrases.flatMap(p => words(p.line)));
+  const stale = [...LEXICON].filter(w => !used.has(w));
+  ok('the lexicon carries no words the boards stopped using', stale.length === 0,
+    stale.length ? stale.join(' ') : `${LEXICON.size} words, all in use`);
 }
 
 console.log('\n  TRACK 2 RENAME — display names change, the saved id does not\n  ' + '─'.repeat(78));

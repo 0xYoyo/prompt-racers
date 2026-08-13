@@ -943,3 +943,110 @@ The general rule for this project, where copy is revised by a smoothing pass eve
 **gate the behaviour, and name at most one string as an anchor.** A gate is allowed to know
 that a headline changes when you win; it is not allowed to know which words that headline
 uses.
+
+# WAVE 5
+
+## D43 — Race 2 was calibrated against a machine, and the fix is one constant
+Race 2 was not merely easier than intended, it was easier than race 1: measured at HEAD on
+40 fresh seeds, a clean 100% stock driver meant **2.92 on race 2 against 2.20 on race 1**,
+and won a seed outright. A well-upgraded kart with **zero quiz engagement** won race 2 on
+**63–71% of seeds** at tier 3 and ~24% at tier 2. The player's report — "winnable by clean
+driving alone regardless of upgrade" — was exact.
+
+The cause is in `TRACK_PACE`, the per-track calibration D33 introduced. It sizes each
+track's field against the **reference autopilot**, a machine whose skill is flat across
+geometries. A human's is not: `circuit` is the plainest, widest track in the game and the
+one a person drives closest to optimal on, so a −4% handicap sized against a machine
+over-pays precisely there. `TRACK_PACE.circuit` **0.96 → 0.98**, and nothing else.
+
+That constant is keyed by track id, and the championship maps race N → track N, so the
+blast radius is race 2 alone — verified rather than assumed: `TRACK_PACE` is read at one
+site, `createAIField` has one caller, and `circuit` is reachable only as championship
+race 2 (free play routes to the garage, the menu backdrop hard-codes track 0, racer-select
+previews are kart models rather than races). **Races 1 and 3 are bit-identical per seed,
+before and after, in all 12 measured cells.**
+
+Measured on four disjoint 40-seed sets (160 seeds), before → after:
+
+| cell | before | after |
+|---|---|---|
+| race 2 stock 100% | 2.92, best 1st, 1 win | **3.79, best 3rd, 0/160 wins** |
+| race 2 tier-2 100% | 1.85, 25% wins | 2.22, 12% wins |
+| race 2 tier-3 100% | 1.38, 63% wins | 1.68, 35% wins |
+| race 2 stock 85% | 5.05 | 5.20 |
+| races 1 / 3, every cell | — | unchanged, bit-identical |
+
+Two alternatives were measured and rejected rather than argued away, which is the D33b
+discipline: giving race 2's field tier-2 parts **inverted the curve** (race 2 stock 4.00,
+above race 3's 3.80) and made a fully-spent garage win only 1 seed in 5; and stretching the
+slot table moved the *struggling* child twice as far as the fast one (85%: 5.00 → 5.60,
+compressing the race-2/race-3 rung) while leaving the reported failure untouched at tier 3.
+`BAND_CATCH` was not touched, per D33.
+
+**A gate can be turned into a coin flip by a change that does not touch it.** The critic
+found that section 2b's pre-existing "a tier-2 kart is fighting for the win" assertion read
+**exactly 2.00 against a ≤2.0 bound and exactly 1 win against a ≥1 bound** after this
+change — passing by seed luck, and failing on two of four alternate 5-seed sets. The round-1
+builder had moved a *different* assertion out of 2b for being a 5-seed coin flip and left in
+one its own change had just converted into another. Both now run on `S40` (seeds 1..40,
+chosen by construction so the set cannot be re-picked to make a number come out), with
+bounds derived from the pooled 160-seed truth and re-verified green on three disjoint
+40-seed sets. **A balance assertion that sits exactly on its bound is not passing, it is
+about to fail.**
+
+Every assertion in the new section is now labelled **CATCHER** or **GUARD**: (i)(ii)(iv)
+fail against the pre-fix constant, (iii)(v)(vi) are other-direction guards that are green
+against the bug and say so in their own comments. An earlier draft quoted the tier-3 win
+rate as 48% from a 21-seed set; three alternate 21-seed sets read 29% and 160 seeds read
+35%. The number in the source comment is now the pooled one. **D33's lesson, restated: a
+balance measurement is only valid against the field it was taken on — and against the seed
+set it was taken on.**
+
+## D44 — The championship is inverted for an upgraded kart, and the fix is forbidden this wave
+The critic's finding, on the axis every engaged child is actually on:
+
+| kart | race 1 | race 2 | race 3 |
+|---|---|---|---|
+| tier-2 all slots | 1.00 (100% wins) | **2.22 (12%)** | **1.09 (92%)** |
+| tier-3 all slots | 1.00 (100%) | 1.68 (35%) | 1.00 (100%) |
+| realistic partial garage | 1.00 (100%) | 2.23 (11%) | 1.79 (37%) |
+
+A child who buys upgrades — which is the entire lesson of the game — hits the wall in the
+middle and coasts through the finale. The inversion is **pre-existing** (0.73 places at
+`circuit 0.96`) and D43 widened it to 1.07. Closing it means making race 3 harder, and the
+Wave-5 brief says races 1 and 3 are approved and must not be touched. That instruction is
+taken as binding, so this is **pinned rather than fixed**.
+
+Pinned by two assertions bounding the *current, wrong* numbers, under a comment block that
+says in as many words: **a green tick here does not mean the curve is correct, it means the
+curve is still as wrong as it was when this was measured**, with instructions to flip it
+into a real ladder assertion (`race 3 tier-2 ≥ race 2 tier-2`) once race 3 is fixed. The
+alternative — leaving the hole ungated — is how a shape regression becomes a playtest
+surprise two waves later.
+
+**The lever is measured and ready** (see GAPS.md): giving race 3's field tier-3 parts is one
+line, closes the inversion from 1.07 to 0.07 places, and keeps a fully-spent garage winning
+the finale 40/40. It costs D33b's approved race-3 stock number (3.90 → 4.90) and puts an
+85% child last on one seed in forty, which is why it needs a playtest verdict rather than an
+agent's judgement. Two alternatives were measured: `TRACK_PACE.cloud → 1.03` buys less
+inversion per unit of collateral, and pairing a pace cut with the parts lever **fully
+cancels** the fix because pace dominates that cell — the two levers are not separable.
+
+## D45 — Two harness traps that look exactly like game bugs
+Both cost agents ~40 minutes each this wave, and both were independently rediscovered by a
+second agent, so they are written down rather than remembered.
+
+**A driver that spins `D.advance()` inside one `page.evaluate` loop starves the page's own
+timers and rAF.** The quiz freeze then never releases: the race sits at `phase=racing`,
+`paused=false`, no modal visible, kart speed pinned, progress stuck at ~0.06 laps, on every
+track including race 1. It presents as a total gameplay freeze in the built game and is
+purely an artifact of the driver. One `await new Promise(r => setTimeout(r, 0))` per step
+fixes it. The dismissal list must also include `.qzint-scrim` and `.ic-scrim`, tested with
+flowtest's `present()` (display/visibility, not opacity — see the Wave-2 note on CSS
+transitions never settling under the harness).
+
+**A `.tmp/` backup restored by an `EXIT` trap silently reverted a later edit.** The gate
+caught it within one run because an aspect assertion went red. The lesson is not to stop
+using `.tmp/` copies — that is the git-safe method CLAUDE.md mandates — but that a restore
+hook armed early and firing late will undo work done in between: refresh the backup after
+every accepted edit, or arm the trap only around the mutation itself.
