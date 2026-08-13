@@ -416,8 +416,8 @@ export function scoreFreeText(text, slotKey = 'engine', ctx = {}) {
  * enough to make a visit turn a profit.
  */
 /*
- * Wave 5 — the caps went back UP, 4 → 7 guided and 7 → 10 expert (rates 0.045 →
- * 0.08 and 0.075 → 0.115), and this is the ONE constant that moved to make the
+ * Wave 5 — the caps went back UP, 4 → 7 guided and 7 → 8 expert (rates 0.045 →
+ * 0.08 and 0.075 → 0.095), and this is the ONE constant that moved to make the
  * top tier of the garage reachable at all. The measurement, taken end to end on
  * the built game across four player profiles × three races × three seeds:
  *
@@ -447,27 +447,45 @@ export function scoreFreeText(text, slotKey = 'engine', ctx = {}) {
  * The ceiling is DERIVED from the top ask rather than typed beside it. D39's
  * finding was that "capped below the spend" rotted into "half a race's income"
  * without anyone editing the line it was written on; a cap that reads off
- * MAX_COST cannot rot that way.
+ * MAX_COST cannot rot that way. A third of the top ask for guided, one more than
+ * that for expert — both pinned in tests/economy.test.mjs against the derivation
+ * AND against drift, because "< half the top ask" alone let the cap grow 29%
+ * without a gate noticing.
+ *
+ * EXPERT IS ONLY ONE TOKEN ABOVE GUIDED, which is a change of intent from D39's
+ * "expert pays ~1.75×". The reason is the `spend` clamp below: expert mode
+ * charges only for the part row, so the expert rebate is measured against a
+ * 4-token spend and a bigger ceiling buys nothing once the clamp is wired up.
+ * The real incentive to leave the training wheels is the score itself, which
+ * free text alone can push past 90.
  */
-// A third of the most expensive ask for guided, just under half for expert.
-// `(MAX_COST - 1) / 2` rather than `MAX_COST / 2` so the expert cap is STRICTLY
-// below half however MAX_COST moves — the invariant asserted in
-// tests/economy.test.mjs is "< half the top ask", and it should be structurally
-// true rather than true by one lucky remainder.
-//
-// EXPERT IS DELIBERATELY BARELY ABOVE GUIDED NOW, and that is a change of intent
-// from D39's "expert pays ~1.75×". The reason is a seam in garage.js (not owned
-// here, reported to the lead): expert mode charges only for the PART row — free
-// text replaces the three priced rows — so an expert build spends 4 and refunds
-// its rebate against that 4. The rebate is a rebate in guided mode and a net
-// PROFIT in expert mode, so scaling it up scales up a farm. Raising expert 7 → 8
-// keeps it ahead of guided without widening a hole this file cannot close; the
-// real incentive to leave the training wheels is the score itself, which free
-// text alone can push past 90.
 export const REBATE_CAP = Math.floor(MAX_COST / 3);              // 7
 export const REBATE_CAP_EXPERT = REBATE_CAP + 1;                 // 8
 
-export function tokenReward(score, expert = false) {
+/**
+ * @param {number} score   the garage's 0–100 quality score
+ * @param {boolean} expert free-text mode
+ * @param {number} [spend] what the child actually paid for this build. Optional
+ *   only so existing call sites keep working; PASS IT.
+ *
+ * THE REBATE MUST NEVER EXCEED THE SPEND IT REBATES. That is D17's rule stated
+ * properly, and until Wave 5 it was only true by arithmetic coincidence on the
+ * guided price curve. It is false in EXPERT mode: garage.js computes
+ * `spent() = costOf(st.sel)` and expert mode's `st.sel` carries only the part
+ * row, so an expert build spends 4 whatever the child writes. Typing the game's
+ * own placeholder example scores 92 and refunded 8 — a net +4 conjured out of
+ * nothing every visit, and at a garage entered with the floored 4-token wallet
+ * it handed over a free tier-3 part AND left the child richer than they arrived.
+ * It also routed around D40's "prompt-80 needs a wallet of 17" entirely.
+ *
+ * Clamping here rather than at the call site is deliberate: this is the function
+ * that owns the rule, and a call site that forgets is exactly how the rule rotted
+ * the first time. `spend` is honoured whenever it is a finite non-negative
+ * number, so passing 0 legitimately means "this build was free, so is the rebate".
+ */
+export function tokenReward(score, expert = false, spend = Infinity) {
   const raw = score * (expert ? 0.095 : 0.08);
-  return Math.min(expert ? REBATE_CAP_EXPERT : REBATE_CAP, Math.round(raw));
+  const cap = expert ? REBATE_CAP_EXPERT : REBATE_CAP;
+  const paid = Number.isFinite(spend) && spend >= 0 ? spend : Infinity;
+  return Math.max(0, Math.min(cap, paid, Math.round(raw)));
 }

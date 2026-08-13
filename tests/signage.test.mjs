@@ -94,7 +94,8 @@ const { TRACKS, getTrack } = await import('../src/track/trackdef.js');
 const SIGNDATA = await import('../src/track/signdata.js');
 const { WORLD_TEXT_STATS, resetWorldTextStats, fitText, allWorldPhrases,
   BRAND_BOARDS, HOLO_BOARDS, BRAND_BOARD_W, BRAND_BOARD_H, BRAND_TILE_ASPECT,
-  HOLO_BOARD_W, HOLO_BOARD_H, HOLO_TILE_ASPECT, TEXT_ADV_EM, TEXT_CAP_EM } = SIGNDATA;
+  HOLO_BOARD_W, HOLO_BOARD_H, HOLO_TILE_ASPECT, TEXT_ADV_EM, TEXT_BODY_EM,
+  TEXT_ASCENT_EM, SIGN_LINES_MIN, SIGN_LINES_MAX } = SIGNDATA;
 // The glossary the world boards echo. Imported for one reason only: it is the
 // ONE anchor in this file that lives outside the data under test, so an
 // assertion tied to it cannot be satisfied by editing the phrase list.
@@ -303,9 +304,10 @@ console.log('\n  ONE TEXT PATH — every letter in the world drawn by signdata.j
   // both the fix and the gate.
   const MESH_OF = { signage: 'signage', boards: 'boards', 'holo-signs': 'holo-signs', gantry: 'gantry-board' };
 
+  const AUTHORED_LINES = Object.values(TRACK_SIGNS).reduce((n, s2) => n + s2.lines.length, 0);
   ok('the shared path drew the world text of all three tracks',
-    draws.length >= 3 * SIGN_LINES + BRAND_BOARDS.length + HOLO_BOARDS.length + 3,
-    `${draws.length} lines drawn`);
+    draws.length >= AUTHORED_LINES + BRAND_BOARDS.length + HOLO_BOARDS.length + 3,
+    `${draws.length} lines drawn (${AUTHORED_LINES} authored curriculum lines)`);
   // The font model and the stub that stands in for a browser here must agree,
   // and BOTH must sit on the far side of the widest face that could render. This
   // is the assertion that would have caught the model being fitted to the one
@@ -411,17 +413,48 @@ console.log('\n  ONE TEXT PATH — every letter in the world drawn by signdata.j
     wrapped.fontFrac > fitText(long, 1.0, { maxRows: 1 }).fontFrac,
     `${wrapped.fontFrac.toFixed(3)} vs ${fitText(long, 1.0, { maxRows: 1 }).fontFrac.toFixed(3)} em`);
 
-  // D38's floor, applied to the two board families that never had one. Cap
-  // height in metres, and what that is in pixels at the distance each is read
-  // from (px = 547 * capMetres / distance at 1600x900, fov 62).
-  const capOf = (line, aspect, hM, opts) => fitText(line, aspect, opts).capFrac * hM;
-  const brandCaps = BRAND_BOARDS.map(b => capOf(b.he, BRAND_TILE_ASPECT, BRAND_BOARD_H));
-  const holoCaps = HOLO_BOARDS.map(b => capOf(b.he, HOLO_TILE_ASPECT, HOLO_BOARD_H, { fitH: 0.60 }));
-  const minBrand = Math.min(...brandCaps), minHolo = Math.min(...holoCaps);
-  ok('barrier boards clear the legibility floor (>=0.30 m of cap)', minBrand >= 0.30,
-    `smallest ${minBrand.toFixed(3)} m = ${(547 * minBrand / 12).toFixed(1)} px read at 12 m`);
-  ok('holo billboards clear the legibility floor (>=0.60 m of cap)', minHolo >= 0.60,
-    `smallest ${minHolo.toFixed(3)} m = ${(547 * minHolo / 30).toFixed(1)} px read at 30 m`);
+  // THE MODEL OF THE LETTER BODY IS PINNED, the way the width model is.
+  // `TEXT_ADV_EM` has been gated against real-Chrome measurement since D38;
+  // `TEXT_CAP_EM = 0.70` was asserted nowhere, and it is not a cap height at
+  // all — it is roughly the ascender of ל, a letter in 14 of 36 authored lines.
+  // Measured in real Chrome, bold, per letter, the BODY is 0.518-0.524 em on
+  // Arial Hebrew, 0.549-0.553 on Noto Sans Hebrew and 0.584-0.596 on the
+  // generic fallback. A legibility figure must use the SMALLEST of those, so it
+  // states the worst a child sees; that is what TEXT_BODY_EM is for, and every
+  // px number printed below is computed from it.
+  const MEASURED_BODY_EM = { arialHebrew: [0.518, 0.524], noto: [0.549, 0.553], generic: [0.584, 0.596] };
+  const smallestFace = Math.max(...Object.values(MEASURED_BODY_EM).map(r => r[0]).slice(0, 1));
+  ok('the letter-body model is the SMALLEST measured face, and is pinned to it',
+    TEXT_BODY_EM >= MEASURED_BODY_EM.arialHebrew[0] && TEXT_BODY_EM <= MEASURED_BODY_EM.arialHebrew[1] &&
+    TEXT_BODY_EM < MEASURED_BODY_EM.noto[0] && TEXT_BODY_EM < MEASURED_BODY_EM.generic[0],
+    `model ${TEXT_BODY_EM} em, measured Arial Hebrew ${MEASURED_BODY_EM.arialHebrew.join('-')}, ` +
+    `Noto ${MEASURED_BODY_EM.noto.join('-')}, generic ${MEASURED_BODY_EM.generic.join('-')}`);
+  ok('the layout height reserves more than the letter body (ascenders fit)',
+    TEXT_ASCENT_EM > TEXT_BODY_EM * 1.2,
+    `layout ${TEXT_ASCENT_EM} em vs body ${TEXT_BODY_EM} em — the old single 0.70 overstated ink by ` +
+    `${((TEXT_ASCENT_EM / TEXT_BODY_EM - 1) * 100).toFixed(0)}%`);
+  void smallestFace;
+
+  // D38's floor, applied to the two board families that never had one, and
+  // RESTATED IN TRUE INK rather than re-derived from the flattering constant.
+  // Ink height in metres, and what that is in pixels at the distance each is
+  // read from (px = 547 * inkMetres / distance at 1600x900, fov 62).
+  const inkOf = (line, aspect, hM, opts) => fitText(line, aspect, opts).inkFrac * hM;
+  const brandInk = BRAND_BOARDS.map(b => inkOf(b.he, BRAND_TILE_ASPECT, BRAND_BOARD_H));
+  const holoInk = HOLO_BOARDS.map(b => inkOf(b.he, HOLO_TILE_ASPECT, HOLO_BOARD_H, { fitH: 0.60 }));
+  const minBrand = Math.min(...brandInk), minHolo = Math.min(...holoInk);
+  // THESE TWO FLOORS ARE LOWER THAN THE CURRICULUM'S, ON PURPOSE AND SAY SO.
+  // A barrier board and a holo billboard carry ONE invented brand name, glanced
+  // at while a child reads the track ahead; a roadside board carries a sentence
+  // the game is trying to teach, and its floor is 14 px of ink at the distance
+  // it is designed to be read from (FLOOR_INK, below). These are set just under
+  // the measured worst of each family so that shrinking a board or lengthening
+  // a name goes red — they pin what exists, they do not certify it as readable
+  // prose.
+  ok('barrier boards clear the brand-glance floor (>=0.28 m of ink)', minBrand >= 0.28,
+    `smallest ${minBrand.toFixed(3)} m ink = ${(547 * minBrand / 12).toFixed(1)} px read at 12 m`);
+  ok('holo billboards clear the brand-glance floor (>=0.60 m of ink)', minHolo >= 0.60,
+    `smallest ${minHolo.toFixed(3)} m ink = ${(547 * minHolo / 30).toFixed(1)} px read at 30 m`);
 }
 
 /**
@@ -574,6 +607,30 @@ for (const def of TRACKS) {
 // how it shrank to 0.13 em without anyone noticing.
 // ─────────────────────────────────────────────────────────────────────────────
 const CAM = { dist: 5.5, height: 3.25, fov: 62, W: 1600, H: 900, samples: 400 };
+/**
+ * THE FLOOR, RESTATED IN TRUE INK — and deliberately NOT re-derived downwards.
+ *
+ * D38 set the floor at 14 px of "cap height", computed with a constant that was
+ * an ascender: 14 of those is 14 x 0.749 = 10.5 px of letter body, which is
+ * within a pixel and a half of the 8.7 px this project has always called
+ * "texture, not text". Translating the old number into ink would therefore have
+ * enshrined the bug. The floor is 14 px OF INK — the same figure, now measuring
+ * the thing it always claimed to measure, which makes it a 34% tightening.
+ */
+const FLOOR_INK = 14;
+/**
+ * FIRST SIGHT, 45 m back up the racing line — and this one is NOT a read floor.
+ *
+ * It says only that a board is already TEXT rather than texture when it comes
+ * into view: 10 px of ink, against the 7.6-8.7 px this project has twice called
+ * texture. It is not a claim that a child reads the line from there. The read
+ * floor is the 28 m assertion, 14 px, and the lap-peak assertions after it.
+ * Measured worst at first sight, on 17.6 m boards: 11.5 px (oasis
+ * 'נתונים זה מידע', 14 characters — the longest the copy rules allow). Clearing
+ * 14 px at 45 m as well would take a ~21 m board or an 11-character limit, and
+ * is written down in the report rather than quietly assumed away.
+ */
+const FLOOR_INK_FAR = 10;
 
 /**
  * Cap height, as a fraction of the board's height, OF THE SIZE THE SHIPPING CODE
@@ -591,12 +648,12 @@ const CAM = { dist: 5.5, height: 3.25, fov: 62, W: 1600, H: 900, samples: 400 };
  * The minimum across atlas sizes, because the same theme is baked at 1024 px on
  * the high tier and 512 px on the low one and the px floor rounds differently.
  */
-const drawnCapFrac = (() => {
+const drawnInkFrac = (() => {
   const m = new Map();
   for (const d of WORLD_TEXT_STATS.draws) {
     if (!d.key.startsWith('signage:')) continue;
     const prev = m.get(d.key);
-    if (prev === undefined || d.capFrac < prev) m.set(d.key, d.capFrac);
+    if (prev === undefined || d.inkFrac < prev) m.set(d.key, d.inkFrac);
   }
   return m;
 })();
@@ -638,9 +695,9 @@ function signPanels(track) {
       // The size the DRAWING settled on, not the size the model proposed. Falls
       // back to the analytic layout only if the atlas was never drawn (it always
       // is, and `drawn caps come from the shipping path` below pins that).
-      const capFrac = drawnCapFrac.get(`signage:${theme}:${tile}`)
-        ?? signLayout(line, SIGN_TILE_ASPECT).capFrac;
-      out.push({ c, n, h, line, tile, cap: capFrac * h, analytic: signLayout(line, SIGN_TILE_ASPECT).capFrac * h });
+      const inkFrac = drawnInkFrac.get(`signage:${theme}:${tile}`)
+        ?? signLayout(line, SIGN_TILE_ASPECT).inkFrac;
+      out.push({ c, n, h, line, tile, ink: inkFrac * h, analytic: signLayout(line, SIGN_TILE_ASPECT).inkFrac * h });
     }
   });
   return out;
@@ -680,7 +737,7 @@ function capHeightProfile(track) {
       if (!frustum.containsPoint(p.c)) continue;
       const d = cam.position.distanceTo(p.c);
       if (d > 700) continue;
-      const v = p.cap * kPx / d;
+      const v = p.ink * kPx / d;
       if (v > perPanel[i]) perPanel[i] = v;
       px = Math.max(px, v);
     }
@@ -694,21 +751,56 @@ function capHeightProfile(track) {
 
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 
+/**
+ * WHAT THE BOARD IS WORTH AT THE DISTANCES IT IS DESIGNED TO BE READ FROM.
+ *
+ * The profile above scores each board at its PEAK over the lap, and a peak is
+ * not a read: it happens far closer than either distance placement sizes the
+ * boards for, and it is what let four boards a lap ship at 12.3 px near and
+ * 7.6-8.7 px far while the table printed 20-plus. So this measures the two eye
+ * positions `signBlockedProbes` uses — 45 m and 28 m back up the racing line,
+ * chase-camera eye height — and reports the ink each board offers there.
+ */
+function readInkPx(track) {
+  const { spline } = track;
+  const L = spline.length;
+  const kPx = (CAM.H / 2) / Math.tan((CAM.fov * Math.PI / 180) / 2);
+  const rows = [];
+  const panels = signPanels(track);
+  for (let i = 0; i < panels.length; i += 2) {
+    const p = panels[i];
+    const t = spline.closestT(p.c).t;
+    const at = {};
+    for (const back of [45, 28]) {
+      const rp = spline.offsetPoint(((t - back / L) % 1 + 1) % 1, 0);
+      const d = Math.hypot(p.c.x - rp.x, p.c.y - (rp.y + CAM.height), p.c.z - rp.z);
+      at[back] = p.ink * kPx / d;
+    }
+    rows.push({ line: p.line, near: at[28], far: at[45] });
+  }
+  return rows;
+}
+
 console.log('\n  LEGIBILITY — can a kid actually READ a sign at racing speed?\n  ' + '─'.repeat(78));
 console.log('    chase cam ' + CAM.dist + ' m back, ' + CAM.height + ' m up, fov ' + CAM.fov +
   ', ' + CAM.W + 'x' + CAM.H + ', ' + CAM.samples + ' samples/lap\n');
 for (let i = 0; i < TRACKS.length; i++) {
   const def = TRACKS[i], { best, boards, panels: panelsOf } = capHeightProfile(built[i]);
   const max = Math.max(...best), med = median(best);
-  const pct14 = best.filter(v => v >= 14).length / best.length;
+  const pct14 = best.filter(v => v >= FLOOR_INK).length / best.length;
   const boardMed = median(boards);
-  console.log(`    ${def.id.padEnd(8)} median-best ${med.toFixed(1)} px | max ${max.toFixed(1)} px | ` +
-    `${(pct14 * 100).toFixed(0)}% of lap >= 14 px | per-board best: median ${boardMed.toFixed(1)} px`);
+  const reads = readInkPx(built[i]);
+  const worstNear = reads.reduce((a, b) => (b.near < a.near ? b : a));
+  const worstFar = reads.reduce((a, b) => (b.far < a.far ? b : a));
+  console.log(`    ${def.id.padEnd(8)} median-best ${med.toFixed(1)} | peak ${max.toFixed(1)} | ` +
+    `${(pct14 * 100).toFixed(0)}% of lap >= ${FLOOR_INK} px | board peaks: median ${boardMed.toFixed(1)}, ` +
+    `worst ${Math.min(...boards).toFixed(1)} | at the 28 m read: worst ${worstNear.near.toFixed(1)} ` +
+    `("${worstNear.line}") | at 45 m: worst ${worstFar.far.toFixed(1)} ("${worstFar.line}")`);
 
   // THE assertion the shipped sizing fails: somewhere on every lap, one sign must
-  // be big enough to read at 90 km/h. 18 px of cap height is roughly a 24 px
+  // be big enough to read at 90 km/h. 18 px of LETTER BODY is roughly a 34 px
   // font — about the smallest a child reads reliably off a moving board.
-  ok(`${def.id}: a sign reaches readable size on the lap (>=18 px cap)`,
+  ok(`${def.id}: a sign reaches readable size on the lap (>=18 px ink)`,
     max >= 18, `max ${max.toFixed(1)} px`);
 
   // ...and it must not be one freak board on one freak frame. Per BOARD, because
@@ -717,6 +809,24 @@ for (let i = 0; i < TRACKS.length; i++) {
   // readable at its own best moment, and nearly all of them must get close.
   ok(`${def.id}: the median board becomes readable (>=18 px at its best)`,
     boardMed >= 18, `median board peaks at ${boardMed.toFixed(1)} px`);
+
+  // AND AT THE DISTANCES THE BOARDS ARE DESIGNED FOR, not only at their peak.
+  // This is the assertion the near-size boards could never have passed: 12.3 px
+  // at the 28 m read and 7.6-8.7 px at 45 m, on 4 of 12 boards at high and
+  // medium, while the table printed their peaks and called them readable.
+  const badNear = reads.filter(r => r.near < FLOOR_INK);
+  ok(`${def.id}: every board clears ${FLOOR_INK} px of ink at the 28 m read`,
+    badNear.length === 0,
+    badNear.length ? badNear.map(r => `"${r.line}" ${r.near.toFixed(1)} px`).join(' | ')
+      : `worst "${worstNear.line}" at ${worstNear.near.toFixed(1)} px`);
+  // FIRST SIGHT, not a read — see FLOOR_INK_FAR. The number that says a child
+  // can read the board is the 28 m assertion above; this one only says the
+  // board is not still texture when it appears.
+  const badFar = reads.filter(r => r.far < FLOOR_INK_FAR);
+  ok(`${def.id}: every board is text, not texture, at first sight (>=${FLOOR_INK_FAR} px at 45 m)`,
+    badFar.length === 0,
+    badFar.length ? badFar.map(r => `"${r.line}" ${r.far.toFixed(1)} px`).join(' | ')
+      : `worst "${worstFar.line}" at ${worstFar.far.toFixed(1)} px`);
   // PER BOARD, with no aggregate to hide behind. This was `>=85% reach 14 px`,
   // and 85% of 14 boards is twelve — so two boards a lap could sit permanently
   // under D38's floor and the gate would call it fine. It did: circuit's
@@ -728,8 +838,8 @@ for (let i = 0; i < TRACKS.length; i++) {
   const EXEMPT = new Set([]);
   const shortfall = boards
     .map((v, k) => ({ px: v, line: panelsOf[k * 2]?.line || '?' }))
-    .filter(b => b.px < 14 && !EXEMPT.has(b.line));
-  ok(`${def.id}: EVERY board is readable at some point on the lap (>=14 px cap)`,
+    .filter(b => b.px < FLOOR_INK && !EXEMPT.has(b.line));
+  ok(`${def.id}: EVERY board is readable at some point on the lap (>=${FLOOR_INK} px ink)`,
     shortfall.length === 0,
     shortfall.length
       ? shortfall.map(b => `"${b.line}" peaks at ${b.px.toFixed(1)} px`).join(' | ')
@@ -737,7 +847,7 @@ for (let i = 0; i < TRACKS.length; i++) {
 
   // Ambient, not incidental: a readable board should be on screen for a real
   // share of the lap, not for one corner of it. (Round 1: 0-1%.)
-  ok(`${def.id}: readable signage recurs across the lap (>=15% of lap >= 14 px)`,
+  ok(`${def.id}: readable signage recurs across the lap (>=15% of lap >= ${FLOOR_INK} px)`,
     pct14 >= 0.15, `${(pct14 * 100).toFixed(0)}% of the lap`);
 
   // One lap, one reading of each line. The atlas held 8 tiles against 14 boards,
@@ -787,56 +897,81 @@ for (let i = 0; i < TRACKS.length; i++) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NOTHING STANDS IN FRONT OF A BOARD — checked as a RECTANGLE, not as a point.
+// NOTHING CUTS A LETTER OUT OF A WORD — the text band, sampled as a GRID, and
+// against EVERYTHING in the track.
 //
-// `signOccluded` walks a candidate inward until the view is clear, and it used
-// to ray-test the board's CENTRE only. A board is 14.6 m x 3.65 m: a canopy roof
-// and two of its beams crossed the top-left of oasis's 'פחות טעויות' while the
-// centre ray flew clean between them (shots/w5c-crop-mid4k.png), and the
-// placement code called that clear. This re-runs the same question on the BUILT
-// track — centre plus four inner corners, from the two distances a board is read
-// from — so the fix cannot quietly regress to a point test.
+// What this gate used to be, and why it printed "0 blocked" while the game was
+// shipping cut words on all three tracks at all three tiers:
+//
+//   * its blocker set was `tris <= 20000 && bboxHeight >= 3`, which excludes
+//     precisely the furniture between the racing line and the boards — measured
+//     on circuit, `barrier` is 1.99 m tall, `fence-rails` 1.76, `fence-posts`
+//     2.45, and `terrain` is 56 448 triangles. A knee-high guardrail 6 m from
+//     the eye covers a board 30 m away; "is the prop tall" is not the question.
+//   * it probed 5 points — the centre and four corners at +-0.40 — and the
+//     corners it probed are in the blank MARGIN, above and below the ink.
+//
+// Pixel proof of what got through: shots/w5c2-crop-circuit-wide.png (a two-rail
+// guardrail through the letter bodies of `אות עובר הלאה`, a mast splitting
+// `אות` from `עובר`), shots/w5c2-crop-oasis-medium.png (a fence rail through the
+// bottom of `מאגר נתונים`, a post blacking out the letter between the words),
+// shots/w5c2-crop-circuit-gantry.png (a lamp mast reading `טעות מל|מדת`).
+//
+// So: every mesh in the track except the signage itself, and a 9 x 3 grid over
+// the band the glyphs occupy (+-43% of the width — that is TEXT_FIT_W — and
+// +-22% of the height). Each of a board's two lettered faces is probed on its
+// own plane, because 10 cm decides whether a sight line slides along a
+// grandstand beam or crosses it.
+//
+// Deliberately NOT imported from trackbuild: this runs stock THREE.Raycaster
+// over the same meshes, while placement uses its own bucketed triangle index.
+// A bug in that index therefore shows up here as a board the placement thought
+// was clear, instead of as a blind spot the two share.
 // ─────────────────────────────────────────────────────────────────────────────
-console.log('\n  OCCLUSION — the whole board is visible, not just its middle\n  ' + '─'.repeat(78));
+console.log('\n  OCCLUSION — no furniture crosses the letters\n  ' + '─'.repeat(78));
+const PROBE_COLS = 9, PROBE_ROWS = 3, PROBE_X = 0.43, PROBE_Y = 0.22;
+// The window a board is read over, in metres back up the racing line. Three
+// points, not two: at 19 m a marshal-post canopy clipped the foot of the last
+// letter of circuit's `אות עובר הלאה` while 45 m and 28 m were both clean.
+const READ_BACKS = [45, 28, 19];
 for (let i = 0; i < TRACKS.length; i++) {
   const def = TRACKS[i], track = built[i];
   const { spline } = track;
   const L = spline.length;
-  // Tall, cheap geometry — the same deliberately name-free rule the placement
-  // uses, restated here rather than imported so the gate is not the code.
+  // EVERYTHING. Name-free, height-free, triangle-count-free: the only exclusion
+  // is the signage itself (its own panels and legs).
   const blockers = [];
-  const bb = new THREE.Box3();
   track.group.updateMatrixWorld(true);
   track.group.traverse(o => {
     if (!o.isMesh || !o.geometry || /^signage/.test(o.name)) return;
     const g = o.geometry;
     const tris = (g.index ? g.index.count : (g.attributes.position?.count || 0)) / 3;
-    if (tris < 1 || tris > 20000) return;
-    bb.setFromObject(o);
-    if (bb.max.y - bb.min.y < 3) return;
+    if (tris < 1) return;
     blockers.push(o);
   });
   const ray = new THREE.Raycaster();
   const blocked = [];
+  let probeCount = 0;
   for (const p of signPanels(track)) {
     const u = signUAxis(p.n);
     const t = spline.closestT(p.c).t;
-    const probes = [p.c];
-    for (const sx of [-1, 1]) {
-      for (const sy of [-1, 1]) {
-        probes.push(new THREE.Vector3(
-          p.c.x + u.x * sx * (p.h * SIGN_TILE_ASPECT) * 0.40,
-          p.c.y + sy * p.h * 0.40,
-          p.c.z + u.z * sx * (p.h * SIGN_TILE_ASPECT) * 0.40));
+    const w = p.h * SIGN_TILE_ASPECT;
+    const probes = [];
+    for (let a = 0; a < PROBE_COLS; a++) {
+      const sx = -PROBE_X + (2 * PROBE_X * a) / (PROBE_COLS - 1);
+      for (let b = 0; b < PROBE_ROWS; b++) {
+        const sy = -PROBE_Y + (2 * PROBE_Y * b) / (PROBE_ROWS - 1);
+        probes.push(new THREE.Vector3(p.c.x + u.x * sx * w, p.c.y + sy * p.h, p.c.z + u.z * sx * w));
       }
     }
-    for (const back of [45, 28]) {
+    for (const back of READ_BACKS) {
       const rp = spline.offsetPoint(((t - back / L) % 1 + 1) % 1, 0);
       const eye = new THREE.Vector3(rp.x, rp.y + 3.25, rp.z);
       for (const q of probes) {
         const dir = q.clone().sub(eye);
         const d = dir.length();
-        if (d < 1) continue;
+        if (d < 2) continue;
+        probeCount++;
         ray.set(eye, dir.multiplyScalar(1 / d));
         ray.near = 0.5; ray.far = d - 1.0;
         const hit = ray.intersectObjects(blockers, false);
@@ -846,26 +981,33 @@ for (let i = 0; i < TRACKS.length; i++) {
       }
     }
   }
-  ok(`${def.id}: no board is blocked at its centre OR its corners`, blocked.length === 0,
-    blocked.length ? [...new Set(blocked)].slice(0, 3).join(' | ')
-      : `${signPanels(track).length / 2} boards x 5 points x 2 read distances clear`);
+  ok(`${def.id}: nothing crosses the letters of any board`, blocked.length === 0,
+    blocked.length ? `${blocked.length} blocked probes: ` + [...new Set(blocked)].slice(0, 3).join(' | ')
+      : `${signPanels(track).length / 2} boards x ${PROBE_COLS}x${PROBE_ROWS} text-band points x 2 faces x ${READ_BACKS.length} read distances = ${probeCount} clear sight lines`);
 }
 
 console.log('\n  COPY — ambient curriculum, short enough to be READ\n  ' + '─'.repeat(78));
-// Length is optics, not style: cap height is 0.4 * boardWidth / characters, so
-// every extra character costs the board ~7% of its legibility. A 24-character
-// line on a 13 m board renders at 0.22 m of Hebrew — 6 px from the driver's
-// seat. This is the assertion that stops good copy from being written too long
-// to teach anything.
+// Length is optics, not style: INK height is 0.45 * boardWidth / characters
+// (TEXT_BODY_EM * TEXT_FIT_W), so every extra character costs the board ~7% of
+// its legibility. A 24-character line on a 17 m board renders at 0.32 m of
+// Hebrew — 7 px from the driver's seat at the distance it is read from. This is
+// the assertion that stops good copy from being written too long to teach
+// anything.
+// A RANGE, NOT A QUOTA (Wave 5 r3). This asserted `=== SIGN_LINES` for every
+// track, i.e. exactly twelve everywhere, which is how Cloud Peak came to carry
+// two filler lines between 'תשובה מהירה' and 'אימון בענן': its lesson is ten
+// steps long and the gate wanted twelve. The brief asks for 8-12 per track, the
+// atlas has 16 tiles, and placement samples whatever the list holds — so the
+// honest assertion is the range and the shape.
 for (const [theme, set] of Object.entries(TRACK_SIGNS)) {
   const bad = set.lines.filter(l => {
     const w = l.trim().split(/\s+/).length;
     return w < 2 || w > 3 || l.length > SIGN_MAX_CHARS || !/[֐-׿]/.test(l);
   });
   const longest = [...set.lines].sort((a, b) => b.length - a.length)[0];
-  ok(`${theme}: ${SIGN_LINES} Hebrew signs, 2-3 words, <= ${SIGN_MAX_CHARS} chars`,
-    set.lines.length === SIGN_LINES && bad.length === 0,
-    bad.length ? bad.join(' | ') : `longest "${longest}" = ${longest.length}`);
+  ok(`${theme}: ${SIGN_LINES_MIN}-${SIGN_LINES_MAX} Hebrew signs, 2-3 words, <= ${SIGN_MAX_CHARS} chars`,
+    set.lines.length >= SIGN_LINES_MIN && set.lines.length <= SIGN_LINES_MAX && bad.length === 0,
+    bad.length ? bad.join(' | ') : `${set.lines.length} lines, longest "${longest}" = ${longest.length}`);
   ok(`${theme}: no duplicate copy`, new Set(set.lines).size === set.lines.length);
 }
 ok(`the atlas has a tile for every authored line`, SIGN_LINES <= SIGN_COLS * SIGN_ROWS,
@@ -919,14 +1061,49 @@ console.log('\n  CONTENT — the boards say what the curriculum says they say\n 
       hits.length === 1
         ? `line ${hits[0][1]} of ${set.lines.length}: "${hits[0][0]}"`
         : `${hits.length} boards carry it: ${hits.map(h => `[${h[1]}] "${h[0]}"`).join(' ')}`);
+    // ...AND THE LESSON STARTS WHERE IT SAYS IT STARTS. The payoff check alone
+    // is green when lines 0..N-2 are reversed or shuffled with the payoff kept
+    // last — the critic's mutant, and a realistic merge accident. `opens` is the
+    // other anchor: the two ends of the sequence are pinned, in the data, where
+    // an author changing the opening line has to change it deliberately.
+    ok(`${theme}: the lesson opens on the line it declares ("${set.opens || ''}")`,
+      !!set.opens && set.lines[0] === set.opens,
+      set.opens ? `line 0 is "${set.lines[0]}"` : 'no opener declared');
+  }
+  // NO TWO TRACKS END ON THE SAME SENTENCE. The payoff check above is per track,
+  // so it stayed green while Data Oasis and Neuron City both finished on
+  // 'מודל שפה': a child who won two championships was rewarded twice with the
+  // identical last board, and nothing in the gate could see across a track
+  // boundary to say so.
+  {
+    const payoffs = Object.entries(TRACK_SIGNS).map(([theme, set]) => [theme, norm(set.payoff || '')]);
+    const dupes = payoffs.filter(([, p], i) => payoffs.findIndex(([, q]) => q === p) !== i);
+    const lastLines = Object.entries(TRACK_SIGNS).map(([theme, set]) => [theme, norm(set.lines[set.lines.length - 1])]);
+    const dupeLast = lastLines.filter(([, l], i) => lastLines.findIndex(([, m]) => m === l) !== i);
+    ok('no two tracks share a payoff word, or a last board',
+      dupes.length === 0 && dupeLast.length === 0,
+      dupes.length || dupeLast.length
+        ? `shared: ${[...dupes, ...dupeLast].map(d => d.join('=')).join(' ')}`
+        : payoffs.map(([t, p]) => `${t}:"${p}"`).join(' '));
   }
 
-  // ── 2. NO REAL TRADEMARKS ANYWHERE IN THE WORLD ────────────────────────────
-  // "All-original content" is a contest rule, and a disqualifying one. The brand
-  // boards and holo billboards are invented identities on purpose; this is what
-  // stops the next agent (or a well-meant "make it feel real" edit) from putting
-  // a real logo on a barrier. Whole-word matching over the normalised phrase, so
+  // ── 2. A NAMED-BRAND SWEEP, AND EXACTLY WHAT IT IS WORTH ───────────────────
+  // "All-original content" is a contest rule, and a disqualifying one. This is a
+  // whole-word blocklist of names this project might actually reach for, so
   // 'ברק אנרגיה' is not tripped by a substring of somebody's trademark.
+  //
+  // WHAT IT DOES NOT DO, stated because the old comment implied otherwise. A
+  // critic mutated the phrase data and got green runs on 'טורבו־פיקסל' and
+  // 'בינה־אור' — plausible product names spelled entirely from words the lexicon
+  // below already approves, which escape this list AND the lexicon check. In the
+  // same audit the list fired on nothing realistic: Volvo, IKEA, anthropic and
+  // claude were caught by the lexicon's unknown-word rule instead, and only
+  // because they happen to be spelled from words nobody authored. So this is a
+  // blocklist of names, not a detector of brands, and a new invented identity is
+  // still something a human has to look at. The names below were added after
+  // that audit — the AI labs a Hebrew AI game would reach for first, and the
+  // apps this audience uses — precisely because the lexicon must not be the only
+  // thing standing between the build and a real trademark.
   const TRADEMARKS = [
     // Hebrew transliterations a Hebrew-first game would actually reach for.
     ['קוקה', 'קולה'], ['קולה'], ['מקדונלדס'], ['מקדונלד'], ['בורגר', 'קינג'], ['פפסי'],
@@ -941,6 +1118,14 @@ console.log('\n  CONTENT — the boards say what the curriculum says they say\n 
     ['intel'], ['nvidia'], ['tesla'], ['ferrari'], ['mercedes'], ['toyota'], ['ford'],
     ['redbull'], ['shell'], ['disney'], ['pokemon'], ['nintendo'], ['lego'],
     ['openai'], ['chatgpt'], ['gemini'], ['copilot'],
+    // Added Wave 5 r3: the reaches this project is likeliest to make.
+    ['anthropic'], ['claude'], ['אנתרופיק'], ['קלוד'], ['ג׳מיני'], ['גמיני'],
+    ['בארד'], ['bard'], ['grok'], ['גרוק'], ['llama'], ['mistral'], ['deepseek'],
+    ['perplexity'], ['midjourney'], ['dalle'], ['sora'], ['huggingface'],
+    ['סירי'], ['siri'], ['alexa'], ['אלקסה'], ['whatsapp'], ['וואטסאפ'],
+    ['טלגרם'], ['telegram'], ['minecraft'], ['מיינקראפט'], ['roblox'], ['רובלוקס'],
+    ['fortnite'], ['פורטנייט'], ['spotify'], ['ספוטיפיי'], ['waze'], ['ווייז'],
+    ['volvo'], ['וולוו'], ['ikea'], ['איקאה'],
   ];
   const ipHits = [];
   for (const p of phrases) {
@@ -963,16 +1148,26 @@ console.log('\n  CONTENT — the boards say what the curriculum says they say\n 
   // exactly that moment). Swapping a line for `קרשט בלגמ` — the critic's mutant,
   // and equally a mojibake or a half-copied paste — fails here and cannot be
   // made to pass by editing the copy alone.
+  //
+  // AND WHAT IT IS NOT. It is a spelling check over a closed vocabulary. It has
+  // nothing to say about whether the approved words are put together into
+  // Hebrew: `רחוק שרת מלמדת`, `כבוי או מלמדת` and `טעות דולק` are all built from
+  // words below, and all three are green here — word order, verb agreement and
+  // gender agreement are not gated anywhere in this file. That is the largest
+  // hole left in the content gates and it is left open deliberately: the closed
+  // vocabulary is 60-odd words, and a morphology check worth trusting is a
+  // bigger artifact than the copy it would guard. Hebrew copy is reviewed by
+  // reading it.
   const LEXICON = new Set([
     // — the roadside curriculum —
     'או', 'אוספים', 'אות', 'אחר', 'אימון', 'אלפי', 'בינה', 'במקום', 'בענן',
-    'דוגמאות', 'דוגמה', 'דולק', 'דפוס', 'החיבור', 'הלאה', 'הרבה', 'וטבלאות',
-    'ומילים', 'זה', 'זמין', 'חוזר', 'חיבור', 'טובה', 'טוקנים', 'טעויות', 'טעות',
-    'כבוי', 'מאגר', 'מאובטח', 'מהירה', 'מודל', 'מודלים', 'מחשב', 'מחשבים',
+    'דוגמאות', 'דוגמה', 'דולק', 'החיבור', 'הלאה', 'הרבה', 'וטבלאות',
+    'ומילים', 'זה', 'זמין', 'חוזרת', 'טובה', 'טוקנים', 'טעויות', 'טעות',
+    'כבוי', 'לאימון', 'לומד', 'מאגר', 'מהירה', 'מודל', 'מודלים', 'מחשב', 'מחשבים',
     'מידע', 'מכל', 'מלמדת', 'מספרים', 'מקום', 'מרכז', 'משתנה', 'מתחלקת',
-    'נוירון', 'נוירונים', 'נכנסים', 'נסתרת', 'נקיים', 'נתוני', 'נתונים', 'עבודה',
-    'עובר', 'עולמית', 'על', 'עמוקה', 'ענן', 'פחות', 'קטן', 'רחוק', 'רצים', 'רשת',
-    'שכבה', 'שם', 'שפה', 'שרת', 'תמונות', 'תשובה',
+    'נוירון', 'נוירונים', 'נכנסים', 'נסתרת', 'נקיים', 'נתונים', 'עבודה',
+    'עובר', 'על', 'עמוקה', 'ענן', 'פחות', 'קטן', 'רחוק', 'רצים', 'רשת',
+    'שכבה', 'שם', 'שפה', 'שרת', 'תבנית', 'תמונות', 'תשובה',
     // — the invented racing-series identities (barrier boards, holo billboards) —
     'טורבו', 'ברק', 'אנרגיה', 'נחל', 'אלגו', 'גיר', 'מנוע', 'פרומפט', 'טק',
     'דאטה', 'סיטי', 'אקספרס', 'פיקסל', 'אור',
@@ -984,11 +1179,14 @@ console.log('\n  CONTENT — the boards say what the curriculum says they say\n 
   ok('every word on every world board is in the approved lexicon', strange.length === 0,
     strange.length ? strange.slice(0, 5).join(' | ')
       : `${new Set(phrases.flatMap(p => words(p.line))).size} distinct words, all approved`);
-  // ...and the lexicon must not rot into a rubber stamp: a word nobody uses any
-  // more is a word nobody re-read when it was added.
+  // BOOKKEEPING, NOT A GATE — labelled as such (D42). It keeps the lexicon from
+  // accumulating words no board uses, which is worth having; it catches no bug
+  // class, and it goes silent in the realistic case, an author who fixes a line
+  // and updates the lexicon in the same breath. Do not count it as a check that
+  // bites.
   const used = new Set(phrases.flatMap(p => words(p.line)));
   const stale = [...LEXICON].filter(w => !used.has(w));
-  ok('the lexicon carries no words the boards stopped using', stale.length === 0,
+  ok('bookkeeping: the lexicon carries no words the boards stopped using', stale.length === 0,
     stale.length ? stale.join(' ') : `${LEXICON.size} words, all in use`);
 }
 

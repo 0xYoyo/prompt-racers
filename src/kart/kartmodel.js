@@ -220,8 +220,12 @@ export function createKart(opts = {}) {
   // turns it on: the player's kart and every garage/menu kart stay unwelded.
   const MERGE = !!opts.merge;
   // Overridable only so the LOD preview rigs can build the welded kart's exact
-  // unwelded twin; the game never passes it.
-  const PLATES = opts.plates ?? (!LOW || MERGE);
+  // unwelded twin; the game never passes it. Every kart carries plates, including
+  // the player's own at נמוך: round 1 dropped them there on the argument that
+  // nobody reads the number on the kart they are sitting in, which left the player
+  // as the ONLY kart on track with blank plate mounts — and the chase camera looks
+  // straight at the rear one all race. Three planes, one geometry, one material.
+  const PLATES = opts.plates ?? true;
 
   const geos = [];   // owned geometries (disposed with the kart)
   const mats = [];   // owned materials
@@ -408,11 +412,10 @@ export function createKart(opts = {}) {
   mesh(G(new THREE.CylinderGeometry(0.06, 0.06, 0.05, LOW ? 6 : 12)), M.accent, steerPivot, [0, 0, 0.02], [Math.PI / 2, 0, 0]);
 
   /* ---------------- number plates -------------------------------- */
-  // Kept on the welded build even though it is a 'low' one: the three plates
-  // share a geometry and a material, so after the weld they are ONE draw call,
-  // and the rear number is the only thing that tells a child WHICH rival is in
-  // front of them. The player's own low-tier kart still drops them — nobody ever
-  // sees the number on the kart they are sitting in.
+  // Kept on every build including the 'low' one: the three plates share a geometry
+  // and a material, so they are one draw call unwelded and none of their own after
+  // the weld, and the rear number is the only thing that tells a child WHICH rival
+  // is in front of them — or which kart is theirs on a replay/results still.
   if (PLATES) {
     const numTex = numberPlateTexture(racerNumber(racer), col, col2);
     texs.push(numTex);
@@ -467,7 +470,14 @@ export function createKart(opts = {}) {
     const odd = tier === 0 && w.sx < 0 ? 0.88 : 1;
     const r = w.r * grow * odd, width = w.w * fat * (tier === 0 && w.sx > 0 ? 1.18 : 1);
     w.scaleR = r;
-    const seg = LOW ? 8 : 16;
+    // The tyre is the largest curved silhouette on the kart and the thing a child
+    // is closest to: at the standing start of EVERY race a rival's rear wheel sits
+    // ~3.5 m from the chase camera and fills ~150 px. An 8-gon at that size reads
+    // as a flat black octagon, not a tyre — the round-1 LOD's one real art
+    // regression. On a WELDED rival more segments cost triangles and ZERO extra
+    // draw calls, which is the whole point of the weld, so the low build buys the
+    // silhouette back and keeps the draw-call saving.
+    const seg = LOW ? 14 : 16;
     const tyreMat = tier === 0 ? (w.sx < 0 ? M.rust : M.frame) : M.tyre;
     const carc = new THREE.Mesh(G(new THREE.CylinderGeometry(r, r, width, seg)), tyreMat);
     carc.rotation.z = Math.PI / 2;
@@ -512,11 +522,15 @@ export function createKart(opts = {}) {
     const rimR = r * (tier === 3 ? 0.66 : tier === 2 ? 0.62 : 0.56);
     const rimMat = tier === 0 ? M.dark : tier === 3 ? M.chromeHi : M.rim;
     for (const s of [-1, 1]) {
-      const rim = new THREE.Mesh(G(new THREE.CylinderGeometry(rimR, rimR, width * 0.62, LOW ? 8 : 14)), rimMat);
+      // The rim face is a bright cream (or chrome) disc on a black tyre — the
+      // highest-contrast circle on the kart, so it shows facets sooner than the
+      // tyre does. 12 was still visibly polygonal at 3.5 m; the low build gets the
+      // full 14 and pays for it in triangles alone.
+      const rim = new THREE.Mesh(G(new THREE.CylinderGeometry(rimR, rimR, width * 0.62, 14)), rimMat);
       rim.rotation.z = Math.PI / 2;
       rim.position.x = s * width * 0.22;
       meshOpts(rim); g.add(rim);
-      const hub = new THREE.Mesh(G(new THREE.SphereGeometry(rimR * 0.42, LOW ? 6 : 10, LOW ? 4 : 8)),
+      const hub = new THREE.Mesh(G(new THREE.SphereGeometry(rimR * 0.42, LOW ? 8 : 10, LOW ? 6 : 8)),
         tier === 0 ? M.cardboard : tier === 3 ? M.gold : M.hub);
       hub.position.x = s * (width * 0.5 + 0.005);
       meshOpts(hub); g.add(hub);
@@ -867,10 +881,17 @@ export function createKart(opts = {}) {
     const trumpet = (x, y, zz, rTop, rBot, len, tilt = 0.1, lean = 0) => {
       // the tip of a raked+splayed stack moves; place the tip ring where it lands
       const ux = -Math.sin(lean), uy = Math.cos(lean) * Math.cos(tilt), uz = Math.cos(lean) * Math.sin(tilt);
-      const t = mesh(G(new THREE.CylinderGeometry(rTop, rBot, len, LOW ? 6 : 12, 1, true)), M.chromeOpen, g,
+      // A 6-sided trumpet with no tip ring is what the round-1 low build shipped,
+      // and at the 5 m a rival sits at on the starting grid the four stacks read as
+      // flat black hexagonal stubs — unfinished rather than simpler. The bore and
+      // the chrome lip ARE the trumpet, so the low build keeps both. Measured cost
+      // of the lip on a welded rival: +1 draw call at part tiers 1 and 2 (where
+      // M.chromeHi is not otherwise in the engine slot's weld) and +0 at tiers 0
+      // and 3. The extra sides cost triangles only, at every tier.
+      const t = mesh(G(new THREE.CylinderGeometry(rTop, rBot, len, LOW ? 10 : 12, 1, true)), M.chromeOpen, g,
         [x + ux * len / 2, y + uy * len / 2, zz + uz * len / 2], [tilt, 0, lean]);
       t.castShadow = shadows;
-      if (!LOW) mesh(G(new THREE.TorusGeometry(rTop, rTop * 0.16, 4, LOW ? 6 : 12)), M.chromeHi, g,
+      mesh(G(new THREE.TorusGeometry(rTop, rTop * 0.16, 4, LOW ? 8 : 12)), M.chromeHi, g,
         [x + ux * len, y + uy * len, zz + uz * len], [Math.PI / 2 + tilt, 0, lean]);
       return t;
     };
@@ -1011,12 +1032,12 @@ export function createKart(opts = {}) {
     // open-ended cones must be double-sided or the mouth renders as a hole
     const openOf = m => (m === M.gold ? M.goldOpen : M.chromeOpen);
     const megaphone = (x, y, z, rIn, rOut, len, tilt, m, ringMat, ringR) => {
-      const c = mesh(G(new THREE.CylinderGeometry(rOut, rIn, len, LOW ? 8 : 14, 1, true)), openOf(m), g, [x, y, z], [Math.PI / 2 + tilt, 0, 0]);
+      const c = mesh(G(new THREE.CylinderGeometry(rOut, rIn, len, LOW ? 12 : 14, 1, true)), openOf(m), g, [x, y, z], [Math.PI / 2 + tilt, 0, 0]);
       c.castShadow = shadows;
       // The mouth needs a dark bore or the lit backfaces make the pipe read as a
       // pale ring — a doughnut stuck to the side of the kart rather than a pipe.
       const ax = [0, -Math.sin(tilt), Math.cos(tilt)];
-      const bore = mesh(G(new THREE.CircleGeometry(rOut * 0.9, LOW ? 8 : 14)), M.dark, g,
+      const bore = mesh(G(new THREE.CircleGeometry(rOut * 0.9, LOW ? 12 : 14)), M.dark, g,
         [x + ax[0] * len * 0.36, y + ax[1] * len * 0.36, z + ax[2] * len * 0.36], [tilt, 0, 0]);
       bore.castShadow = false;
       if (ringMat && !LOW) mesh(G(new THREE.TorusGeometry(ringR ?? rOut, rOut * 0.16, 4, LOW ? 8 : 14)), ringMat, g,
@@ -1312,19 +1333,27 @@ export function createKart(opts = {}) {
     const buckets = new Map();
     const dead = [];
     const _m = () => new THREE.Matrix4();
+    // A hidden mesh is never welded. `visible` used to be part of the bucket key,
+    // which quietly baked anything hidden at build time into its own permanently
+    // invisible weld — and detached the ORIGINAL, so an update() that flips
+    // `visible` back on would toggle an orphan and change nothing on screen. The
+    // only such mesh today is the exhaust flame (also in `stop`), but the next one
+    // would be a silent art bug, so hidden is treated exactly like animated: left
+    // alone, still reachable, costing nothing to draw while it stays hidden.
+    const untouchable = o => stop.has(o) || o.isInstancedMesh || o.visible === false;
     const holdsDynamic = obj => {
       let f = false;
-      obj.traverse(o => { if (o !== obj && (stop.has(o) || o.isInstancedMesh)) f = true; });
+      obj.traverse(o => { if (o !== obj && untouchable(o)) f = true; });
       return f;
     };
     const collect = (obj, m) => {
       if (obj.isMesh && obj.geometry && obj.material) {
         const mm = obj.material;
-        const key = `${mm.uuid}|${obj.castShadow ? 1 : 0}|${obj.receiveShadow ? 1 : 0}|${obj.renderOrder}|${obj.visible ? 1 : 0}`;
+        const key = `${mm.uuid}|${obj.castShadow ? 1 : 0}|${obj.receiveShadow ? 1 : 0}|${obj.renderOrder}`;
         let b = buckets.get(key);
         if (!b) {
           b = { material: mm, castShadow: obj.castShadow, receiveShadow: obj.receiveShadow,
-            renderOrder: obj.renderOrder, visible: obj.visible, items: [] };
+            renderOrder: obj.renderOrder, items: [] };
           buckets.set(key, b);
         }
         b.items.push({ geo: obj.geometry, matrix: m });
@@ -1333,7 +1362,7 @@ export function createKart(opts = {}) {
     };
     const visit = (obj, m) => {
       for (const c of obj.children) {
-        if (stop.has(c) || c.isInstancedMesh) continue;
+        if (untouchable(c)) continue;
         c.updateMatrix();
         const cm = _m().multiplyMatrices(m, c.matrix);
         if (c.isMesh && !holdsDynamic(c)) { collect(c, cm); dead.push(c); }
@@ -1348,7 +1377,6 @@ export function createKart(opts = {}) {
       mesh2.castShadow = b.castShadow;
       mesh2.receiveShadow = b.receiveShadow;
       mesh2.renderOrder = b.renderOrder;
-      mesh2.visible = b.visible;
       mesh2.name = 'weld';
       frame.add(mesh2);
     }
@@ -1375,6 +1403,19 @@ export function createKart(opts = {}) {
   let chassisWelded = false;
 
   function weldStatics() {
+    // Load-bearing: each of these is reachable from a frame that gets welded, and
+    // dropping it from the set changes what you see or what moves.
+    //   driverPivot/headPivot/steerPivot  animated frames under bodyPivot
+    //   slotWeld                          the rebuildable half (see setParts)
+    //   arm shoulders, wheel axle/steer/spin   animated frames
+    //   wobblers, coreGlow                update() rotates/pulses/scales them; a
+    //                                     welded one is detached, so it freezes —
+    //                                     invisible in a still frame, wrong in motion
+    // Belt-and-braces, honestly narrow (D42): `contact` hangs off the ROOT group,
+    // which no weldFrame call ever traverses, and `flames` start hidden and are
+    // already protected by the hidden-mesh rule in weldFrame. Both are listed so
+    // that a future weld of the root, or a flame that starts visible, still cannot
+    // swallow them — neither is what protects them today.
     const stop = new Set([driverPivot, headPivot, steerPivot, contact, slotWeld]);
     for (const a of arms) stop.add(a.shoulder);
     for (const w of wheels) { stop.add(w.axle); stop.add(w.steer); stop.add(w.spin); }
@@ -1581,10 +1622,19 @@ export function createKart(opts = {}) {
 //     lost the string compare and bought mid detail (see normalizeLod).
 //   * the static weld — one draw call per material per animated frame instead
 //     of one per mesh. Lossless; see weldFrame.
+//
+// The two are INDEPENDENT, and that is the point: `{ lod: 'high', merge: true }`
+// is a supported, gated combination — the full-detail kart, welded. The weld is
+// proven lossless (same triangles, same vertices, same materials, same world
+// positions and normals as the unwelded build), so at בינוני and גבוה, where
+// there are draw calls to spare but no art to spare, a rival can take the whole
+// draw-call saving at zero cost to how it looks. Only the נמוך default also
+// drops detail. `shadows` defaults off for a rival at any detail level, and is
+// overridable for the same reason.
 export function createKartLOD(opts = {}) {
   return createKart(Object.assign({}, opts, {
     lod: normalizeLod(opts.lod) || 'low',
-    shadows: false,
+    shadows: opts.shadows ?? false,
     merge: opts.merge ?? true,
   }));
 }

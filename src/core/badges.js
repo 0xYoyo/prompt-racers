@@ -76,9 +76,14 @@
 // so it now needs a strong race or a saved-up visit. That is D17's lesson working
 // as intended, not a regression — but it makes `prompt-80` the hardest badge NOT
 // marked `hard`, and if the economy is thinned again it becomes unreachable
-// before any token threshold does. It is not gated here (the calibration feeds
-// the tracker synthetic `garage:built` scores); tools/garagetest.mjs owns the
-// affordability side.
+// before any token threshold does.
+//
+// WAVE 5 CLOSED THE TWO HOLES IN THAT NOTE. `prompt-80` was the last badge whose
+// number was a typed literal in four places with no derivation and no string
+// assertion, while D40's rule was enforced for both token badges: it now reads
+// its threshold from PROMPT_STEPS like everything else, tests/badges.test.mjs
+// ties those constants to the garage's real tier cuts, and tests/economy.test.mjs
+// re-runs the wallet derivation (17 buys an 84) instead of quoting it.
 // ═══════════════════════════════════════════════════════════════════════════
 import { bus } from './bus.js';
 import { save } from './save.js';
@@ -253,6 +258,29 @@ export const TOKEN_STEPS = { low: 20, high: 80 };
 export const DATA_TERM_TOKENS = 10;
 
 /**
+ * The three prompt-quality rungs, under the same rule as TOKEN_STEPS: the number
+ * a child READS on the card is built from the constant the badge tests, in both
+ * languages (D40). `prompt-80` was the last badge with a typed literal in four
+ * places — `test`, `progress`, and the Hebrew and English condition strings —
+ * and it is the badge GAPS names as the FIRST thing to check after an economy
+ * change, so it was the worst possible one to leave unpinned.
+ *
+ * These are NOT free numbers. `good` and `precise` are the garage's own tier
+ * cuts (scoring.js `tierForScore`: 30 / 55 / 80), i.e. "you built a tier-2 part"
+ * and "you built a tier-3 part"; `max` is above what a guided ask can reach at
+ * all, so only free text clears it. That correspondence is asserted in
+ * tests/badges.test.mjs against `tierForScore` itself rather than restated here,
+ * because this module deliberately imports no subsystem.
+ *
+ * What really gates `precise` is not the score but the WALLET: in real play the
+ * garage budget is the wallet (scenes.js), and enumerated against the real price
+ * list a wallet of 13 buys at most 63, 15 → 69, 16 → 75 and it takes exactly 17
+ * to reach the 84 that clears this badge. tests/economy.test.mjs owns that
+ * derivation and re-runs it rather than quoting it.
+ */
+export const PROMPT_STEPS = { good: 55, precise: 80, max: 90 };
+
+/**
  * @typedef {object} BadgeDef
  * @property {string} id
  * @property {'quiz'|'tokens'|'drift'|'prompt'|'champ'} group
@@ -291,12 +319,13 @@ export const BADGES = [
   { id: 'drift-top', group: 'drift', icon: 'boost', test: s => s.driftBoostsTop >= 1 },
 
   /* ── prompt quality (garage 0–100; cuts at 30/55/80) ─────────────────────── */
-  { id: 'prompt-good', group: 'prompt', icon: 'prompt', test: s => s.bestPromptScore >= 55,
-    progress: s => [s.bestPromptScore, 55] },
-  { id: 'prompt-80', group: 'prompt', icon: 'promptmax', test: s => s.bestPromptScore >= 80,
-    progress: s => [s.bestPromptScore, 80] },
+  { id: 'prompt-good', group: 'prompt', icon: 'prompt', test: s => s.bestPromptScore >= PROMPT_STEPS.good,
+    progress: s => [s.bestPromptScore, PROMPT_STEPS.good] },
+  { id: 'prompt-80', group: 'prompt', icon: 'promptmax', test: s => s.bestPromptScore >= PROMPT_STEPS.precise,
+    progress: s => [s.bestPromptScore, PROMPT_STEPS.precise] },
   { id: 'prompt-max', group: 'prompt', icon: 'crown', hard: true,
-    test: s => s.bestPromptScore >= 90, progress: s => [s.bestPromptScore, 90] },
+    test: s => s.bestPromptScore >= PROMPT_STEPS.max,
+    progress: s => [s.bestPromptScore, PROMPT_STEPS.max] },
   { id: 'prompt-expert', group: 'prompt', icon: 'expert', test: s => s.expertPrompts >= 1 },
 
   /* ── championship ────────────────────────────────────────────────────────── */
@@ -370,11 +399,11 @@ export const BADGE_STRINGS = {
     'badge.drift-top.name': 'טורבו סגול',
     'badge.drift-top.cond': 'מחזיקים החלקה עד הדרגה הגבוהה ביותר',
     'badge.prompt-good.name': 'פרומפט מסודר',
-    'badge.prompt-good.cond': 'כותבים לבורג פרומפט באיכות ‎55 ומעלה',
+    'badge.prompt-good.cond': `כותבים לבורג פרומפט באיכות ‎${PROMPT_STEPS.good} ומעלה`,
     'badge.prompt-80.name': 'פרומפט מדויק',
-    'badge.prompt-80.cond': 'כותבים לבורג פרומפט באיכות ‎80 ומעלה',
+    'badge.prompt-80.cond': `כותבים לבורג פרומפט באיכות ‎${PROMPT_STEPS.precise} ומעלה`,
     'badge.prompt-max.name': 'אלוף/ת הפרומפטים',
-    'badge.prompt-max.cond': 'מגיעים לאיכות ‎90 ומעלה — רק במצב מומחה',
+    'badge.prompt-max.cond': `מגיעים לאיכות ‎${PROMPT_STEPS.max} ומעלה — רק במצב מומחה`,
     'badge.prompt-expert.name': 'מצב מומחה',
     'badge.prompt-expert.cond': 'כותבים פרומפט במילים שלכם במצב מומחה',
     'badge.champ-finish.name': 'אליפות בכיס',
@@ -411,11 +440,11 @@ export const BADGE_STRINGS = {
     'badge.drift-top.name': 'Purple Boost',
     'badge.drift-top.cond': 'Hold a drift all the way to the top tier',
     'badge.prompt-good.name': 'Tidy Prompt',
-    'badge.prompt-good.cond': 'Write Boreg a prompt scoring 55 or more',
+    'badge.prompt-good.cond': `Write Boreg a prompt scoring ${PROMPT_STEPS.good} or more`,
     'badge.prompt-80.name': 'Precise Prompt',
-    'badge.prompt-80.cond': 'Write Boreg a prompt scoring 80 or more',
+    'badge.prompt-80.cond': `Write Boreg a prompt scoring ${PROMPT_STEPS.precise} or more`,
     'badge.prompt-max.name': 'Prompt Champion',
-    'badge.prompt-max.cond': 'Reach a quality of 90 or more — expert mode only',
+    'badge.prompt-max.cond': `Reach a quality of ${PROMPT_STEPS.max} or more — expert mode only`,
     'badge.prompt-expert.name': 'Expert Mode',
     'badge.prompt-expert.cond': 'Write a prompt in your own words in expert mode',
     'badge.champ-finish.name': 'Season Done',

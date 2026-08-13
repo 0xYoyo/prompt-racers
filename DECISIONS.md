@@ -1228,3 +1228,70 @@ as a class, because the fix for all three is the same: **know what you measured.
    it should be the first hypothesis, not the last.
 3. **A gate that exits non-zero while printing zero failure lines did not reach its
    assertions.** Worth knowing on sight; it means crash or timeout, never a real failure.
+
+## D50 — The cheap kart was never cheap, because `1 !== 'low'`
+95% of the game's draw calls were the eight karts: 847 in a frame, of which the world —
+road, kerbs, barriers, crowd, signage, props — was 31–56, because props.js already instances
+and merges properly. `race.js` selects a reduced build for AI karts with `lod: 1`, a
+**number**; every test inside `createKart` is `lod === 'low'`, a **string**. So the cheap
+path fell through to mid detail and each rival was **235 meshes against the player's own 144
+at נמוך** — the opponents cost more to draw than the hero kart the camera sits behind. It
+shipped that way from Wave 1.
+
+Nothing caught it for four waves for one reason: **nothing ever asserted that the cheap path
+was cheaper than the expensive one.** That is the same shape as the Wave-1 finding that the
+garage's upgrades never reached the physics because three subsystems spelled the four slots
+differently — a seam between modules where each side is individually correct. The assertion
+now exists and is the first one in the section.
+
+Fixed with `normalizeLod()` (numbers are the renderer's usual LOD vocabulary) plus an opt-in
+static weld, enabled only by `createKartLOD`, that concatenates everything not animated
+relative to its parent pivot into one indexed geometry per material per animated frame.
+Measured **847 → 292 draw calls (−65.5%)**, median `draw()` 1.0 → 0.4 ms. The round-1 report
+claimed −73% and 3.40 → 1.50 ms; those did not reproduce under an independent build and the
+corrected figures are the ones above.
+
+The weld is lossless in the sense that matters, verified by a critic rather than asserted:
+identical triangles (25,416), vertices (71,970) and material set, largest bounding sphere
+unchanged at 2.234 m so frustum culling does not shift, and 9–38 differing pixels out of
+1.44M across four rigs. The player's kart is structurally identical at all three tiers under
+a deep signature including material params and shadow flags, and **pixel-identical in six
+paired captures** including the real chase camera.
+
+**The art argument was wrong, and the correction is the useful part.** Round 1 defended a
+visible reduction at 3.5 m by arguing the game never shows an AI kart that close. Measured
+over real racing, the closest rival-to-chase-camera distance is **2.99–3.49 m, at t = 4.3 s —
+the standing start of every race** — with one rival filling the bottom third of the frame at
+5.16 m, and the menu backdrop parking one at ~4 m on the first screen a child ever sees. At
+those distances a rear wheel was a flat black octagon ~150 px across and the chrome intake
+trumpets were stubs with no bore: the critic's word was *unfinished*, which is exactly right
+and is a different thing from *simpler*.
+
+The fix costs almost nothing **because the weld already happened**: on a welded kart, segment
+counts buy back roundness in triangles rather than draw calls. Tyre carcass 8 → 14, rim 8 →
+14, hub 6×4 → 8×6, intake cone 6 → 10 with its chrome lip restored, exhaust 8 → 12. Total
+cost +1 mesh per rival and ~1k triangles, against 555 draw calls of headroom. What stays
+dropped at נמוך is honest tier content — tread blocks, sidewall rings, spokes — meshes rather
+than segments. **Roundness is cheap and detail is expensive; a low tier should spend its
+budget on the first.**
+
+Two gate lessons, both from mutants that were 18/18 green. The section asserted **quantities
+the weld cannot change** — triangle count, vertex count, material set — and never asserted
+the one thing that can go wrong: that every vertex lands where it did. Skipping
+`applyMatrix4` for items at local Y 0 turned wheels into slabs through the bodywork (4.97% of
+pixels) and flipping transformed normal Y inverted the shading (7.5%); both passed. One
+assertion matching world-space positions **and normals** against an unwelded twin closes both.
+Notably the builder rejected a quantised hash for it: welding re-associates the matrix
+multiplies, moving vertices by up to 5.3e-8 m, and this kart's round coordinates sit exactly
+on quantiser boundaries — 1852 of 72766 rows flipped cells over 53 **nanometres**. That gate
+would have been flaky by construction, and choosing the slower exact match over a hash that
+looked cleaner is the right instinct.
+
+And `visible` was in the weld's bucket key, which would have silently baked invisible any
+future part that starts hidden and is toggled by `update()`. Fixed properly — hidden meshes
+are excluded from the weld and stay reachable — rather than commented as a hazard.
+
+`{ lod: 'high', merge: true }` — weld with **no** detail drop — is now supported and gated at
+61 meshes against 235, with identical triangles, vertices, materials and vertex positions.
+That is what lets בינוני take the draw-call win at zero art cost; the tier selection itself
+lives in `race.js` and is the lead's wiring.

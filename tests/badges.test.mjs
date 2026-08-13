@@ -37,13 +37,16 @@ import { getTrack, gridSlots } from '../src/track/trackdef.js';
 import { KartBody, autopilotInput } from '../src/kart/kartphysics.js';
 import {
   BADGES, BADGE_IDS, GLOSSARY, GLOSSARY_IDS, ICONS, HARD_BADGE_IDS,
-  BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS, TOKEN_STEPS, DATA_TERM_TOKENS,
+  BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS, TOKEN_STEPS, DATA_TERM_TOKENS, PROMPT_STEPS,
   startBadgeTracker, getStats, evaluate, NEEDED_EVENTS, CONSUMED_EVENTS,
 } from '../src/core/badges.js';
 // THE ECONOMY, IMPORTED FROM ITS OWNERS. See the block below §"the measured
 // event stream" for why these are imports and not regexes any more.
 import { REWARD_TOKENS } from '../src/race/quiz.js';
 import { FINISH_TOKENS, TOKEN_CLUSTERS_PER_LAP } from '../src/race/race.js';
+// The prompt rungs are the GARAGE's tier cuts, so they are checked against the
+// garage's own function rather than against a second copy of the numbers.
+import { tierForScore } from '../src/garage/scoring.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = p => readFileSync(resolve(root, p), 'utf8');
@@ -509,6 +512,39 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
     && says('glos.data.hint', DATA_TERM_TOKENS),
     `"${BADGE_STRINGS.en['badge.tokens-50.cond']}" / "${BADGE_STRINGS.en['badge.tokens-200.cond']}"`
     + ` / "${GLOSSARY_STRINGS.en['glos.data.hint']}"`);
+
+  // ── the PROMPT rungs, under exactly the same rule (Wave 5) ────────────────
+  // `prompt-80` was the last badge with its number typed in four places — test,
+  // progress and both condition strings — and GAPS names it as the FIRST thing
+  // to check after an economy change. Same two-layer pin as the token badges: a
+  // string check that the child reads the number the badge tests, and a
+  // DERIVATION that says what those numbers mean.
+  ok('the prompt rungs read from PROMPT_STEPS in both languages',
+    says('badge.prompt-good.cond', PROMPT_STEPS.good)
+    && says('badge.prompt-80.cond', PROMPT_STEPS.precise)
+    && says('badge.prompt-max.cond', PROMPT_STEPS.max),
+    `"${BADGE_STRINGS.en['badge.prompt-80.cond']}" / "${BADGE_STRINGS.he['badge.prompt-80.cond']}"`);
+  // …and the badge tests really use them, not a literal that happens to match.
+  const badgeById = id => BADGES.find(b => b.id === id);
+  ok('…and the badge tests move with the constants',
+    badgeById('prompt-80').test({ bestPromptScore: PROMPT_STEPS.precise })
+    && !badgeById('prompt-80').test({ bestPromptScore: PROMPT_STEPS.precise - 1 })
+    && badgeById('prompt-good').test({ bestPromptScore: PROMPT_STEPS.good })
+    && !badgeById('prompt-good').test({ bestPromptScore: PROMPT_STEPS.good - 1 }),
+    `precise ${PROMPT_STEPS.precise}, good ${PROMPT_STEPS.good}`);
+  // THE DERIVATION. These are not free numbers: they are the garage's own tier
+  // cuts, so "precise prompt" means "you built a tier-3 part" and cannot drift
+  // away from what the child watched happen on the stat bars.
+  ok('the prompt rungs ARE the garage tier cuts (tier 2 and tier 3)',
+    tierForScore(PROMPT_STEPS.good) === 2 && tierForScore(PROMPT_STEPS.good - 1) === 1
+    && tierForScore(PROMPT_STEPS.precise) === 3 && tierForScore(PROMPT_STEPS.precise - 1) === 2,
+    `good ${PROMPT_STEPS.good} → tier ${tierForScore(PROMPT_STEPS.good)},`
+    + ` precise ${PROMPT_STEPS.precise} → tier ${tierForScore(PROMPT_STEPS.precise)}`);
+  // `prompt-max` must stay above the top of the tier ladder, or "expert mode
+  // only" stops being true and the hard badge becomes a guided one.
+  ok('…and prompt-max sits ABOVE the top tier cut, so free text is really needed',
+    PROMPT_STEPS.max > PROMPT_STEPS.precise,
+    `max ${PROMPT_STEPS.max} vs the tier-3 cut ${PROMPT_STEPS.precise}`);
 }
 
 {

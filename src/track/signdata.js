@@ -26,8 +26,12 @@
 // ── THE GOVERNING LAW (D38), restated because everything here obeys it ──────
 // While a line is width-limited,
 //
-//     capMetres = TEXT_CAP_EM * TEXT_FIT_W * boardWidthMetres / characters
-//               ≈ 0.4 * boardWidth / characters
+//     inkMetres = TEXT_BODY_EM * TEXT_FIT_W * boardWidthMetres / characters
+//               ≈ 0.3 * boardWidth / characters
+//
+// (D38 wrote this identity with a 0.70 "cap" and got ≈ 0.4; that constant was
+// an ascender, not the letter body — see TEXT_BODY_EM. The law is unchanged,
+// its coefficient was 34% too generous.)
 //
 // the tile aspect cancelling out entirely. Legibility is bought with METRES OF
 // BOARD PER CHARACTER and with nothing else. Two consequences that this file
@@ -69,8 +73,45 @@
  * back by the same 12% in trackbuild so the metres-per-character stayed put.
  */
 export const TEXT_ADV_EM = 0.62;
-/** Cap height of the Hebrew face as a fraction of the em box. */
-export const TEXT_CAP_EM = 0.70;
+/**
+ * TWO NUMBERS, BECAUSE ONE WAS ANSWERING TWO DIFFERENT QUESTIONS (Wave 5 r3).
+ *
+ * There used to be a single `TEXT_CAP_EM = 0.70`, used both to reserve vertical
+ * room in the layout and to report how big the letters are. Measured in real
+ * Chrome, bold, at 1000 px, per letter over every phrase in this file, the
+ * LETTER BODY — the ink a child actually sees — is:
+ *
+ *     "Arial Hebrew"        0.518-0.524 em     <- macOS, first in the stack
+ *     "Noto Sans Hebrew"    0.549-0.553 em
+ *     generic `sans-serif`  0.584-0.596 em     <- Windows / Linux / ChromeOS
+ *
+ * 0.70 em is approximately the ASCENDER of ל — a letter that appears in only 14
+ * of the 36 authored lines and carries none of the legibility of the other 22.
+ * Running the shipping `drawWorldText` and measuring the ink it actually draws
+ * gives a mean trueInk/0.70 of 0.85, and it is bimodal: 0.749 for lines with no
+ * ל, 1.023 for lines with one. The honest single number is 0.749, i.e. every
+ * legibility figure this project has published was ~34% too flattering.
+ *
+ * How that survived five waves: `TEXT_ADV_EM` IS pinned against real-Chrome
+ * measurement in tests/signage.test.mjs, and `TEXT_CAP_EM` was asserted
+ * nowhere. A constant nothing gates is a comment.
+ *
+ * So:
+ *   TEXT_ASCENT_EM — LAYOUT. How much height a row of this face may need,
+ *     ascender included. Pessimistic on purpose: reserving too little is how
+ *     letters get clipped by a tile edge.
+ *   TEXT_BODY_EM — LEGIBILITY REPORTING. The height of the letter body on the
+ *     face that draws it SMALLEST, so a published px figure is the worst a
+ *     child sees rather than the best. Pinned against the measurement above.
+ */
+export const TEXT_ASCENT_EM = 0.70;
+export const TEXT_BODY_EM = 0.524;
+/**
+ * @deprecated The old single constant, kept only so nothing outside this module
+ * breaks mid-wave. It is the LAYOUT number; anything reporting how readable a
+ * board is wants TEXT_BODY_EM.
+ */
+export const TEXT_CAP_EM = TEXT_ASCENT_EM;
 /** Fraction of the tile WIDTH the text may occupy. */
 export const TEXT_FIT_W = 0.86;
 /** Fraction of the tile HEIGHT the whole text block may occupy. */
@@ -161,7 +202,12 @@ export function fitText(line, aspect, opts = {}) {
     if (f > best.fontFrac * 1.02) best = { rows, fontFrac: f };
   }
   return {
-    rows: best.rows, fontFrac: best.fontFrac, capFrac: best.fontFrac * TEXT_CAP_EM,
+    rows: best.rows, fontFrac: best.fontFrac,
+    // capFrac is the LAYOUT height (ascender included); inkFrac is the letter
+    // body, which is what a legibility figure has to be computed from. Both are
+    // fractions of the TILE HEIGHT = the board's world height.
+    capFrac: best.fontFrac * TEXT_ASCENT_EM,
+    inkFrac: best.fontFrac * TEXT_BODY_EM,
     chars: text.length,
   };
 }
@@ -244,10 +290,11 @@ export function drawWorldText(ctx, line, box, style = {}) {
   if (WORLD_TEXT_STATS.draws.length < DRAW_LOG_MAX) {
     WORLD_TEXT_STATS.draws.push({
       key: style.key || '', line: String(line).trim(), rows: painted,
-      px, widthPx: wpx, limit, capFrac: (px * TEXT_CAP_EM) / h,
+      px, widthPx: wpx, limit,
+      capFrac: (px * TEXT_ASCENT_EM) / h, inkFrac: (px * TEXT_BODY_EM) / h,
     });
   }
-  return { rows: lay.rows, px, widthPx: wpx, limit, capPx: px * TEXT_CAP_EM };
+  return { rows: lay.rows, px, widthPx: wpx, limit, capPx: px * TEXT_ASCENT_EM, inkPx: px * TEXT_BODY_EM };
 }
 
 /* ══════════════════════════════════════════════════ roadside curriculum ══ */
@@ -279,10 +326,19 @@ export const SIGN_MAX_CHARS = 14;
  * with room, and a tier that can only carry M < SIGN_LINES boards SAMPLES the
  * list evenly instead of truncating it (trackbuild's `placeSignage`), so the
  * first line, a middle line and the payoff reach the ground on every tier.
+ *
+ * PER-TRACK, NOT UNIFORM (Wave 5 r3). These are the bounds, not a quota. Cloud
+ * Peak authors TEN: its lesson is ten steps long and the two lines that padded
+ * it to twelve were filler in the place its arc should tighten. A track writes
+ * as many steps as it has; the gate checks the range and the shape, and no
+ * track is asked to invent a step to match another track's count.
  */
-export const SIGN_LINES = 12;
-/** Cap height of the Hebrew face as a fraction of the em box (D38's name). */
-export const SIGN_CAP_EM = TEXT_CAP_EM;
+export const SIGN_LINES_MIN = 8;
+export const SIGN_LINES_MAX = 12;
+/** @deprecated the old uniform count; it is the MAXIMUM, and the atlas budget. */
+export const SIGN_LINES = SIGN_LINES_MAX;
+/** D38's name for the layout height. Kept because progress.html speaks of it. */
+export const SIGN_CAP_EM = TEXT_ASCENT_EM;
 
 /**
  * THE CURRICULUM, IN THE ORDER A CHILD MEETS IT.
@@ -300,11 +356,18 @@ export const SIGN_CAP_EM = TEXT_CAP_EM;
  *     of something met, not a new word thrown at speed.
  *
  * `payoff` names the word the last board exists to land: it is a word the
- * GLOSSARY teaches, it appears on exactly one board — the last one — and the
- * placement rule guarantees that board reaches the ground on every quality
- * tier. That is the one claim in this comment a gate can check without asking
- * the list to vouch for itself, and it is what makes the order load-bearing
- * rather than decorative: reverse the list and the payoff lands on board one.
+ * GLOSSARY teaches, it appears on exactly one board — the last one, no track
+ * shares it with another track — and the placement rule guarantees that board
+ * reaches the ground on every quality tier. `opens` names the line the lesson
+ * has to START on, and it exists for one reason: a gate that only knows the
+ * payoff is last stays green when lines 0..N-2 are reversed or shuffled. Two
+ * anchors, one at each end (D42: gate the property, name at most one string —
+ * here two, and they are the two the curriculum comment actually claims).
+ *
+ * WHAT IS DELIBERATELY NOT GATED, so nobody reads more into a green run than is
+ * there: the order of the lines BETWEEN the opener and the payoff. Nothing
+ * mechanical can tell that 'שכבה על שכבה' belongs after 'רשת נוירונים' rather
+ * than before it; that is an author's judgement and it is reviewed by reading.
  *
  * Every line is 2–3 words and <= SIGN_MAX_CHARS characters. That is optics, not
  * style: see the identity at the top of this file. All original copy; no real
@@ -321,11 +384,21 @@ export const TRACK_SIGNS = {
   // נתונים / טוקן / אימון / מודל שפה.
   oasis: {
     skin: { bg: '#efdcb8', edge: '#c4402f', fg: '#38200f', lit: 0 },
-    payoff: 'מודל שפה',
+    // PAYOFF WAS 'מודל שפה' — the same sentence circuit ends on. The payoff gate
+    // checked uniqueness only WITHIN a track, so finishing Data Oasis and
+    // finishing Neuron City rewarded a child with the identical line. Data
+    // Oasis ends on אימון (glos.training.term) instead, which is what its own
+    // twelve boards have been building towards: examples, cleaning, tokens, and
+    // then what they are FOR.
+    payoff: 'אימון',
+    opens: 'נתונים זה מידע',
     lines: [
       'נתונים זה מידע', 'אוספים דוגמאות', 'תמונות ומילים', 'מספרים וטבלאות',
-      'דוגמה טובה', 'פחות טעויות', 'דפוס חוזר', 'נתונים נקיים',
-      'מאגר נתונים', 'נתוני אימון', 'אוספים טוקנים', 'אימון מודל שפה',
+      // 'דפוס חוזר' -> 'תבנית חוזרת' (D41's rule): to an eight-year-old דפוס is
+      // printing, as in בית דפוס, exactly the everyday-sense trap that got שדה
+      // rejected.
+      'דוגמה טובה', 'פחות טעויות', 'תבנית חוזרת', 'נתונים נקיים',
+      'מאגר נתונים', 'אוספים טוקנים', 'מודל לומד', 'נתונים לאימון',
     ],
   },
   // ── עיר הנוירונים — neural networks ───────────────────────────────────────
@@ -334,6 +407,7 @@ export const TRACK_SIGNS = {
   circuit: {
     skin: { bg: '#0d1236', edge: '#ff5fae', fg: '#8ff6ff', lit: 1.25 },
     payoff: 'מודל שפה',
+    opens: 'נוירון קטן',
     lines: [
       'נוירון קטן', 'הרבה נוירונים', 'רשת נוירונים', 'שכבה על שכבה',
       'מספרים נכנסים', 'דולק או כבוי', 'אות עובר הלאה', 'שכבה נסתרת',
@@ -349,10 +423,18 @@ export const TRACK_SIGNS = {
     // invisible as a SHAPE before it was ever unreadable as text.
     skin: { bg: '#2c3350', edge: '#ffc247', fg: '#f7f1e6', lit: 0.5 },
     payoff: 'מודלים',
+    opens: 'מחשב במקום אחר',
+    // TEN LINES, NOT TWELVE PADDED TO MATCH. oasis and circuit are real
+    // progressions; cloud's lines 8-9 were filler between 'תשובה מהירה' and
+    // 'אימון בענן' and broke the arc exactly where it should tighten. Both are
+    // gone, and each was independently wrong: 'חיבור מאובטח' is jargon of
+    // 'סף הפעלה's class and teaches network security, which is not this track's
+    // subject; 'רשת עולמית' uses רשת in a sense that collides with the
+    // רשת נוירונים / רשת עמוקה a child met one race earlier.
     lines: [
       'מחשב במקום אחר', 'ענן זה מחשבים', 'שרת רחוק', 'אלפי מחשבים',
       'מרכז נתונים', 'עבודה מתחלקת', 'זמין מכל מקום', 'תשובה מהירה',
-      'רשת עולמית', 'חיבור מאובטח', 'אימון בענן', 'שם רצים מודלים',
+      'אימון בענן', 'שם רצים מודלים',
     ],
   },
 };

@@ -23,6 +23,7 @@
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import * as THREE from 'three';
 import {
   TIERS, AUTO_TIER, PROBE, engine,
   effectivePixelRatio, tierFromFrameTime, resolveInitialTier,
@@ -297,7 +298,15 @@ function census(kart) {
     meshes++;
     if (o.name === 'weld') welds++;
     const m = o.material;
-    mats.add(`${m.type}|${m.color.getHexString()}|${m.roughness}|${m.metalness}|${m.emissive?.getHexString() ?? '-'}|${m.side}|${m.transparent}|${m.opacity}|${m.map ? 'map' : '-'}`);
+    // EVERY field that changes how the material renders belongs in this signature.
+    // It used to stop at opacity/map, which let a weld that quietly substituted a
+    // CLONE — same colour, envMapIntensity zeroed, so noticeably duller bodywork
+    // and a per-kart material dispose() never frees — pass as "substitutes no
+    // material". The chrome on this kart is 90% envMap.
+    mats.add([m.type, m.color.getHexString(), m.roughness, m.metalness,
+      m.emissive?.getHexString() ?? '-', m.emissiveIntensity, m.envMapIntensity,
+      m.flatShading, m.side, m.transparent, m.opacity, m.depthWrite, m.alphaTest,
+      m.map ? 'map' : '-'].join('|'));
     const g = o.geometry;
     const t = g.index ? g.index.count / 3 : (g.attributes.position ? g.attributes.position.count / 3 : 0);
     tris += t * (o.isInstancedMesh ? o.count : 1);
@@ -357,6 +366,169 @@ ok('the weld substitutes no material',
   cAi.mats.length === cTwin.mats.length && cAi.mats.every((m, i) => m === cTwin.mats[i]),
   `${cAi.mats.length} vs ${cTwin.mats.length} distinct materials`);
 
+// …and the assertion all of the above was missing. Triangles, vertices and
+// materials are QUANTITIES the weld cannot change even when it is broken: the
+// weld's whole job is to bake each mesh's world transform into its vertices, so
+// the thing that can actually go wrong is WHERE those vertices land and WHICH WAY
+// they face. Two classic weld bugs used to pass this section 18/18 green:
+//   * skip applyMatrix4 for an item whose local offset looks like a no-op → every
+//     wheel collapses onto the kart's centre line as a black slab through the
+//     bodywork (4.97% of the pixels in a rear shot)
+//   * transform the positions but flip a normal's Y → the shading inverts, chrome
+//     goes matte and the paint lights from below (7.5% of the pixels)
+// So: sample every vertex of the welded kart and of its unwelded twin in WORLD
+// space and require the two point clouds to be the same multiset — every vertex
+// of one matched, one-for-one, to a vertex of the other within 10 µm of position
+// and 0.001 of normal. Order-independent (the weld concatenates in bucket order)
+// and tolerance-correct, which a quantised hash is NOT: welding re-associates the
+// matrix multiplies, which moves a vertex by up to ~5e-8 m, and this kart's
+// coordinates are round numbers that sit exactly ON a quantiser's boundary — 1852
+// of 72766 vertices flip cell there, for a difference of 53 nanometres. A gate
+// that cries wolf gets deleted; this one only fires on real movement.
+function worldVerts(kart) {
+  kart.group.updateMatrixWorld(true);
+  const v = new THREE.Vector3(), n = new THREE.Vector3(), nm = new THREE.Matrix3();
+  const box = new THREE.Box3(), c = new THREE.Vector3();
+  const rows = [];
+  kart.group.traverse(o => {
+    // InstancedMesh (the tread blocks) is never welded — visit() keeps it out, and
+    // the mesh census asserts that separately.
+    if (!o.isMesh || o.isInstancedMesh) return;
+    const g = o.geometry, p = g?.attributes?.position;
+    if (!p) return;
+    const na = g.attributes.normal;
+    nm.getNormalMatrix(o.matrixWorld);
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+      if (na) n.fromBufferAttribute(na, i).applyMatrix3(nm).normalize(); else n.set(0, 0, 0);
+      box.expandByPoint(v);
+      c.add(v);
+      rows.push([v.x, v.y, v.z, n.x, n.y, n.z]);
+    }
+  });
+  c.divideScalar(rows.length || 1);
+  return { rows, box, centroid: c };
+}
+// Unmatched vertices of `b`, hashed into 1 mm cells and matched against the 27
+// neighbouring cells so a vertex on a cell boundary still finds its partner.
+function vertexMismatch(a, b, posTol = 1e-5, norTol = 1e-3) {
+  const cells = new Map();
+  const ci = x => Math.round(x * 1000);
+  for (const r of a.rows) {
+    const k = `${ci(r[0])},${ci(r[1])},${ci(r[2])}`;
+    let arr = cells.get(k); if (!arr) cells.set(k, arr = []);
+    arr.push(r);
+  }
+  let miss = 0;
+  for (const r of b.rows) {
+    const x = ci(r[0]), y = ci(r[1]), z = ci(r[2]);
+    let hit = null;
+    search:
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const arr = cells.get(`${x + dx},${y + dy},${z + dz}`);
+      if (!arr) continue;
+      for (let i = 0; i < arr.length; i++) {
+        const s = arr[i];
+        if (Math.abs(s[0] - r[0]) <= posTol && Math.abs(s[1] - r[1]) <= posTol && Math.abs(s[2] - r[2]) <= posTol
+          && Math.abs(s[3] - r[3]) <= norTol && Math.abs(s[4] - r[4]) <= norTol && Math.abs(s[5] - r[5]) <= norTol) {
+          hit = arr; arr.splice(i, 1); break search;
+        }
+      }
+    }
+    if (!hit) miss++;
+  }
+  return miss;
+}
+
+const wAi = worldVerts(aiLow), wTwin = worldVerts(aiTwin);
+const missAi = vertexMismatch(wAi, wTwin);
+ok('every welded vertex lands where the unwelded one did (position + normal)',
+  missAi === 0, `${missAi}/${wTwin.rows.length} vertices moved or flipped`);
+const near = (a, b) => Math.abs(a - b) < 1e-4;
+ok('…and the welded kart fills exactly the same world box',
+  ['x', 'y', 'z'].every(k => near(wAi.box.min[k], wTwin.box.min[k]) && near(wAi.box.max[k], wTwin.box.max[k]))
+  && ['x', 'y', 'z'].every(k => near(wAi.centroid[k], wTwin.centroid[k])),
+  `centroid ${wAi.centroid.toArray().map(n => n.toFixed(4)).join(',')}`);
+
+// A weld that BAKES a hidden mesh is the same bug wearing a different hat: the
+// original is detached, the copy is stuck invisible, and update() then toggles an
+// orphan. Nothing on a still frame changes, which is exactly why it needs a gate.
+let weldedInvisible = 0;
+aiLow.group.traverse(o => { if (o.isMesh && o.name === 'weld' && !o.visible) weldedInvisible++; });
+ok('no welded mesh is baked invisible (the hidden-mesh trap)', weldedInvisible === 0,
+  `${weldedInvisible} invisible welds`);
+
+// The behavioural half: the exhaust flame starts hidden and update() shows it.
+// If the weld swallowed or orphaned it, the kart can never light it again.
+const boostKart = KM.createKartLOD({ engine: eng('low'), lod: 1, parts: P2 });
+const visibleMeshes = k => { let n = 0; k.group.traverse(o => { if (o.isMesh && o.visible) n++; }); return n; };
+const idleVis = visibleMeshes(boostKart);
+for (let i = 0; i < 30; i++) boostKart.update(1 / 60, { steer: 0, speed01: 1, drifting: false, driftCharge01: 1, airborne: false, boosting: true });
+ok('a welded kart can still light its exhaust flame (the registry is attached)',
+  visibleMeshes(boostKart) > idleVis, `${idleVis} → ${visibleMeshes(boostKart)} visible meshes`);
+
+// Every material a welded kart draws with must be one the kart OWNS, or dispose()
+// leaks it — seven opponents rebuilt per race. Patching dispose() on each material
+// in use catches a clone the weld introduced behind the constructor's back.
+const leakKart = KM.createKartLOD({ engine: eng('low'), lod: 1, parts: P2 });
+const inUse = new Set();
+leakKart.group.traverse(o => { if (o.isMesh && o.material) inUse.add(o.material); });
+const freed = new Set();
+for (const m of inUse) { const d = m.dispose.bind(m); m.dispose = () => { freed.add(m); d(); }; }
+leakKart.dispose();
+ok('dispose() frees every material the welded kart draws with (no cloned leak)',
+  freed.size === inUse.size, `${freed.size}/${inUse.size} freed`);
+
+// P1: the low build's tyre must still read as a TYRE at 3.5 m — the distance a
+// rival sits at on the standing start of every race. Count the distinct facet
+// angles around the outer profile of a welded wheel: an 8-gon is a flat black
+// octagon 150 px across, which is what round 1 shipped.
+const outerFacets = w => {
+  const angles = new Set();
+  const pts = [];
+  w.visual.updateMatrixWorld(true);
+  w.visual.traverse(o => {
+    const p = o.geometry?.attributes?.position;
+    if (!o.isMesh || o.isInstancedMesh || !p) return;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); pts.push([Math.hypot(v.y, v.z), Math.atan2(v.z, v.y)]); }
+  });
+  const maxR = Math.max(...pts.map(p => p[0]));
+  for (const [r, a] of pts) if (r > maxR * 0.97) angles.add(Math.round(a * 200));
+  return angles.size;
+};
+const facets = Math.min(...aiLow.wheels.map(outerFacets));
+ok('the cheap kart\'s tyre is still round at 3.5 m (>= 12 facets, not an octagon)',
+  facets >= 12, `${facets} facets on the outer profile`);
+
+// P4: the player is the only kart the chase camera stares at all race, and it was
+// the only kart with blank plate mounts at נמוך.
+const plateMeshes = k => { let n = 0; k.group.traverse(o => { if (o.isMesh && o.material?.map) n++; }); return n; };
+ok('the player\'s kart carries its number plates at נמוך too',
+  plateMeshes(playerLow) >= 3, `${plateMeshes(playerLow)} plate meshes`);
+ok('…and at גבוה', plateMeshes(playerHigh) >= 3, `${plateMeshes(playerHigh)} plate meshes`);
+
+// ── the weld WITHOUT the detail drop ────────────────────────────────────────
+// The two halves of createKartLOD are independent, and this is the combination
+// that matters at בינוני/גבוה, where there are draw calls to spare but no art to
+// spare: the full-detail kart, welded. Supported only if it is gated — same
+// triangles, same vertices, same materials, same vertex positions as the player's
+// own kart, materially fewer meshes.
+const weldHigh = KM.createKartLOD({ engine: eng('high'), parts: P2, lod: 'high', merge: true, shadows: true });
+const cWeldHigh = census(weldHigh);
+ok('{lod:high, merge:true} keeps every triangle and vertex of the full kart',
+  cWeldHigh.tris === cPlayerHigh.tris && cWeldHigh.verts === cPlayerHigh.verts,
+  `${cWeldHigh.tris}t/${cWeldHigh.verts}v vs ${cPlayerHigh.tris}t/${cPlayerHigh.verts}v`);
+ok('…substitutes no material either',
+  cWeldHigh.mats.length === cPlayerHigh.mats.length && cWeldHigh.mats.every((m, i) => m === cPlayerHigh.mats[i]),
+  `${cWeldHigh.mats.length} vs ${cPlayerHigh.mats.length} distinct materials`);
+const missHigh = vertexMismatch(worldVerts(weldHigh), worldVerts(playerHigh));
+ok('…lands every vertex in the same place', missHigh === 0,
+  `${missHigh}/${cPlayerHigh.verts} vertices moved or flipped`);
+ok('…and draws it in less than HALF the meshes (the win at בינוני/גבוה)',
+  cWeldHigh.meshes * 2 < cPlayerHigh.meshes && cWeldHigh.welds > 0,
+  `${cWeldHigh.meshes} vs ${cPlayerHigh.meshes} meshes`);
+
 // A welded kart whose parts change must still end up as the kart it was asked
 // for — the weld throws the slot half away and rebuilds it whole.
 const swapped = KM.createKartLOD({ engine: eng('low'), lod: 1,
@@ -382,7 +554,7 @@ ok('the welded body still rolls and the driver still leans',
   Math.abs(aiLow.bodyPivot.rotation.z) > 0.01 && Math.abs(aiLow.driverPivot.rotation.z) > 0.01,
   `body ${aiLow.bodyPivot.rotation.z.toFixed(3)} driver ${aiLow.driverPivot.rotation.z.toFixed(3)}`);
 
-for (const k of [aiLow, playerLow, playerHigh, aiTwin, swapped, fresh]) k.dispose();
+for (const k of [aiLow, playerLow, playerHigh, aiTwin, swapped, fresh, boostKart, weldHigh]) k.dispose();
 
 console.log('\n  ' + '─'.repeat(78));
 console.log(failed ? `  \x1b[31m${failed} FAILED\x1b[0m\n` : '  \x1b[32mall performance invariants hold\x1b[0m\n');

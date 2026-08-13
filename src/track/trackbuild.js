@@ -1295,9 +1295,14 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
   /**
    * How much of the LETTERS a driver reading this board would lose.
    *
-   * Probes the two spots the board is actually read from — roughly 45 m and 28 m
-   * back up the racing line, at chase-camera eye height — against a GRID over
-   * the text band, and returns the number of blocked probe rays (0 = clear).
+   * Probes the three spots the board is actually read from — roughly 45, 28 and
+   * 19 m back up the racing line, at chase-camera eye height — against a GRID
+   * over the text band, and returns the number of blocked probe rays (0 = clear).
+   * 19 m is the nearest of the three and it was added last, after a preview at
+   * that distance (shots/w5r3-circuit-near-high.png, round 3 draft) showed a
+   * marshal-post canopy clipping the foot of the last letter of `אות עובר הלאה`
+   * while both of the further reads were clean. A board is read over a window,
+   * not at two points in it.
    *
    * Round 2 probed the centre plus four corners at +-0.40, which is 5 points on
    * a 14.6 m x 3.65 m rectangle, and the corners it did probe are in the blank
@@ -1317,20 +1322,37 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
    */
   const TEXT_PROBE_COLS = 9, TEXT_PROBE_ROWS = 3;
   const TEXT_PROBE_X = 0.43, TEXT_PROBE_Y = 0.22;
-  function signBlockedProbes(index, t, centre, u = null, w = 0, h = 0) {
+  /**
+   * ...and it probes BOTH LETTERED PLANES, not the plane between them. A board
+   * is two back-to-back faces `SIGN_THICK` apart (addSignPanel), and 10 cm is
+   * the difference between a sight line that slides along a grandstand beam and
+   * one that crosses it: circuit's `שכבה על שכבה` measured 0 blocked probes on
+   * the mid-plane and 3 on the face a driver actually reads. Testing a plane
+   * the game does not draw is the point-versus-rectangle mistake again, one
+   * axis over.
+   */
+  const SIGN_THICK = 0.10;
+  function signBlockedProbes(index, t, centre, u = null, w = 0, h = 0, n = null) {
     if (!index || !index.tris.length) return 0;
     const probes = [];
+    const planes = n ? [SIGN_THICK / 2, -SIGN_THICK / 2] : [0];
     if (u && w > 0 && h > 0) {
-      for (let i = 0; i < TEXT_PROBE_COLS; i++) {
-        const sx = -TEXT_PROBE_X + (2 * TEXT_PROBE_X * i) / (TEXT_PROBE_COLS - 1);
-        for (let j = 0; j < TEXT_PROBE_ROWS; j++) {
-          const sy = -TEXT_PROBE_Y + (2 * TEXT_PROBE_Y * j) / (TEXT_PROBE_ROWS - 1);
-          probes.push({ x: centre.x + u.x * sx * w, y: centre.y + sy * h, z: centre.z + u.z * sx * w });
+      for (const off of planes) {
+        const ox = n ? n.x * off : 0, oz = n ? n.z * off : 0;
+        for (let i = 0; i < TEXT_PROBE_COLS; i++) {
+          const sx = -TEXT_PROBE_X + (2 * TEXT_PROBE_X * i) / (TEXT_PROBE_COLS - 1);
+          for (let j = 0; j < TEXT_PROBE_ROWS; j++) {
+            const sy = -TEXT_PROBE_Y + (2 * TEXT_PROBE_Y * j) / (TEXT_PROBE_ROWS - 1);
+            probes.push({
+              x: centre.x + u.x * sx * w + ox, y: centre.y + sy * h,
+              z: centre.z + u.z * sx * w + oz,
+            });
+          }
         }
       }
     } else probes.push(centre);
     let blocked = 0;
-    for (const back of [45, 28]) {
+    for (const back of [45, 28, 19]) {
       const rt = ((t - back / L) % 1 + 1) % 1;
       const rp = spline.offsetPoint(rt, 0);
       const ex = rp.x, ey = rp.y + 3.25, ez = rp.z;
@@ -1382,20 +1404,26 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // rather than a board being lost. A dropped board is a curriculum line no
       // child ever meets; a slightly grazed one is still a whole word.
       let spot = null;
-      for (const nudge of [0, 0.34, -0.34, 0.17, -0.17]) {
-        const cand = trySpot(i, (i + 0.5 + nudge) / nSign);
-        if (!cand) continue;
-        if (!spot || cand.blocked < spot.blocked) spot = cand;
-        if (spot.blocked === 0) break;
+      // The far side of the track is the last resort, after every nudge on the
+      // board's own side: alternating sides is what stops a lap reading as a
+      // corridor, so it is given up only to save a line from a prop.
+      for (const flip of [1, -1]) {
+        for (const nudge of [0, 0.34, -0.34, 0.17, -0.17, 0.26, -0.26, 0.09, -0.09]) {
+          const cand = trySpot(i, (i + 0.5 + nudge) / nSign, flip);
+          if (!cand) continue;
+          if (!spot || cand.blocked < spot.blocked) spot = cand;
+          if (spot.blocked === 0) break;
+        }
+        if (spot && spot.blocked === 0) break;
       }
       if (spot) spots.push(spot);
     }
 
-    function trySpot(i, frac) {
+    function trySpot(i, frac, flip = 1) {
       const t = ((startT + frac + srng.range(-0.006, 0.006)) % 1 + 1) % 1;
       // keep the start/finish complex clear — the gantry is the read there
       if (Math.abs(((t - startT + 1.5) % 1) - 0.5) < 0.018) return null;
-      const side = i % 2 === 0 ? 1 : -1;
+      const side = (i % 2 === 0 ? 1 : -1) * flip;
       const w = spline.widthAt(t);
       // EVERY CURRICULUM BOARD IS A MID-SIZE BOARD (Wave 5 round 3).
       //
@@ -1414,6 +1442,17 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // boards; brand and decorative lettering, which is one short word and is
       // read from a few metres, stays on the barrier where it always was.
       const mid = true;
+      // 17.0 m WIDE, and every metre of it is arithmetic (Wave 5 r3). Ink height
+      // is TEXT_BODY_EM * TEXT_FIT_W * width / characters, so the board width IS
+      // the legibility budget: at 14.6 m the longest lines the copy rules allow
+      // measured 12.8 px of true ink at the 28 m read and 9.5 px at first sight,
+      // both under D38's floor once the floor is stated in ink rather than in
+      // ascenders. 17.0 m puts the worst board on any track at 16.3 px at the
+      // 28 m read and 11.9 px at 45 m. It is not larger still because 17.6 m was
+      // measured too: it buys ~4% more ink and costs a board on circuit, which
+      // could no longer be placed with its whole text band clear of the
+      // grandstand canopies.
+      //
       // WIDER BY 12% THAN WAVE 4's 13.0, and for a measured reason:
       // TEXT_ADV_EM went 0.55 -> 0.62 so the model describes the widest fallback
       // font rather than the one this build machine happens to have installed.
@@ -1421,7 +1460,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // costs 11% of every glyph unless the metres are bought back here. They
       // are: the boards on the ground are unchanged in apparent size, and the
       // legibility table is now true on a school laptop as well as on a Mac.
-      const pw = 14.6, ph = pw / SIGN_TILE_ASPECT;
+      const pw = 17.0, ph = pw / SIGN_TILE_ASPECT;
       // Cloud Peak wants its boards ON the drop, standing against open sky; the
       // ground tracks want them spread through the mid-ground band for depth.
       //
@@ -1430,12 +1469,18 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // than ~0.93*Y along the track, so the largest it is ever seen at is
       // ~547 * capMetres / Y pixels. Round 1 scattered boards out to Y = 45 m,
       // where even a perfectly-sized board tops out at 12 px and then slides out
-      // of frame — depth beyond about 34 m is depth nobody can read. So the band
-      // is 8-18 m past the run-off (Y ~ 23-33 m): still unmistakably mid-ground,
-      // still a rung above the barrier furniture, and now legible the whole way in.
+      // of frame — depth beyond about 34 m is depth nobody can read.
+      //
+      // Round 3 pulled the far end in again, 18 -> 13 m past the run-off
+      // (Y ~ 21-26 m), for a measured reason rather than a taste one: with every
+      // curriculum line now on a 14.6 m board the far end of the old band was
+      // where the FRAME, not the glyph, ran out. `החיבור משתנה` at 23.5 m and
+      // `שכבה נסתרת` at 22.6 m peaked at 9.3 and 8.7 px of true letter ink for
+      // the whole lap — never both close and in frame — while boards two metres
+      // nearer read at 16-18. The band still spans 5 m of depth per track.
       const wanted = !mid ? 1.8
-        : SKY_TRACK ? Math.min(maxOut, srng.range(11, 17))
-          : Math.min(maxOut, srng.range(8, 18));
+        : SKY_TRACK ? Math.min(maxOut, srng.range(10, 14))
+          : Math.min(maxOut, srng.range(8, 13));
 
       // Walk inward from the wanted distance until the ground is solid AND no
       // prop stands between the board and a driver reading it. Both used to be
@@ -1464,7 +1509,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
         // The TEXT BAND, not just the centre and not just the corners — see
         // signBlockedProbes. Keep walking inward while anything is blocked, but
         // remember the least-blocked position so a board is never lost outright.
-        const blocked = signBlockedProbes(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph);
+        const blocked = signBlockedProbes(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph, n);
         if (!put || blocked < put.blocked) put = { p, gy, cy, blocked };
         if (blocked === 0) break;
       }
@@ -1485,7 +1530,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     const M = spots.length;
     spots.forEach((s, j) => {
       const tile = M > 1 ? Math.round(j * (N - 1) / (M - 1)) : 0;
-      addSignPanel(panels, { x: s.p.x, y: s.cy, z: s.p.z }, s.n, s.pw, s.ph, signUV(tile), 0.10);
+      addSignPanel(panels, { x: s.p.x, y: s.cy, z: s.p.z }, s.n, s.pw, s.ph, signUV(tile), SIGN_THICK);
       // legs, at the panel's own ends
       const legH = s.cy + s.ph / 2 - s.gy;
       for (const s2 of [-1, 1]) {

@@ -197,24 +197,22 @@ ok('C: the rebate ceiling stays under half the most expensive ask',
 const walletAtSecondGarage = (race, spend, score) =>
   race - spend + tokenReward(score, false) + race;
 {
-  // The engaged child's TYPICAL race (15 then 16, the median of the measured
-  // run), buying a real mid-tier ask at the first garage — 11 tokens, score 51,
-  // a specific goal and a real limit — rather than hoarding. This is the
-  // behaviour the garage is trying to teach, and it must not be the behaviour
-  // that locks the top tier away.
-  const engaged = 15 - 11 + tokenReward(51, false) + 16;
-  ok('D: an engaged child who spends at the first garage can afford the top ask at the second',
-    engaged >= MAX_COST,
-    `15 − 11 + ${tokenReward(51, false)} + 16 = ${engaged} vs the ${MAX_COST} top ask`);
-  // And on the POOREST measured engaged run (13 a race, both races) it is still
-  // reachable — but only with more restraint at the first garage: an 8-token ask
-  // is twice the cheapest complete one, so this is "buy something real and save",
-  // not "buy nothing". That gap between 8 and 11 IS the choice the garage exists
-  // to pose; if it ever closes, the top tier has stopped costing anything.
+  // THE TARGET, stated on the POOREST measured engaged run (13 a race, both
+  // races) rather than the median, because the median already cleared it before
+  // Wave 5 — marginally, on the good seeds only, which is what "the wallet peaks
+  // at 22" meant. The child buys something REAL at the first garage: 8 tokens is
+  // twice the cheapest complete ask, a specific goal with a limit behind it. So
+  // this is "buy something real and save", not "buy nothing and hoard" — and it
+  // is the assertion that goes red if the rebate is put back where Wave 4 had it.
   const engagedFloor = walletAtSecondGarage(13, 8, 32);
-  ok('D: …and on the poorest engaged run too, if they hold back at the first garage',
+  ok('D: an engaged child who spends at the first garage can afford the top ask at the second',
     engagedFloor >= MAX_COST,
-    `13 − 8 + ${tokenReward(32, false)} + 13 = ${engagedFloor} vs ${MAX_COST}`);
+    `13 − 8 + ${tokenReward(32, false)} + 13 = ${engagedFloor} vs the ${MAX_COST} top ask`);
+  // The median run (15 then 16) with a bigger first-garage ask, printed rather
+  // than asserted: it is the comfort margin around the line above, not a second
+  // claim, and pinning a comfort margin invites someone to widen it.
+  console.log(`  \x1b[2m  median engaged run: 15 − 11 + ${tokenReward(51, false)} + 16 = `
+    + `${15 - 11 + tokenReward(51, false) + 16} at the second garage\x1b[0m`);
   ok('D: …but NOT if they also max out the first garage (the choice still bites)',
     walletAtSecondGarage(13, 13, 63) < MAX_COST,
     `13 − 13 + ${tokenReward(63, false)} + 13 = ${walletAtSecondGarage(13, 13, 63)} vs ${MAX_COST}`);
