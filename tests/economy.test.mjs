@@ -55,6 +55,26 @@ console.log('\n  TOKEN ECONOMY — invariants over the shipped constants\n  ' + 
 // same pickups and no quiz tokens at all. The richest single race of the thirty
 // banked 18. These are the EXTREMES, not the means, because "a fully engaged
 // player" is the only version of the target worth gating.
+//
+// WAVE 5 RE-MEASURED IT (.tmp/econmeasure.mjs, four player profiles × three
+// races × three seeds, thirty-six real races driven to the flag). Two things had
+// moved underneath the Wave-4 numbers and both landed in the same wave: the
+// teaching-card cadence now defers roughly one question box per race, and race
+// 2's pace was retuned (`TRACK_PACE.circuit` 0.96 → 0.98), which moves finishing
+// positions and so the finish bonus. Measured again rather than extrapolated —
+// D33's lesson is that a balance measurement is only valid against the field it
+// was taken on:
+//
+//   engaged + winning   13–17 a race     engaged + mid-pack   13–16
+//   half-right          10–14            ignores every box     6–10
+//   boxes met 4–8 (engaged answers 5–8) · pickups 3–6 · finish bonus 3–5
+//
+// The maxima below are the extremes of that run, kept as extremes on purpose:
+// "a fully engaged player" is the only version of the target worth gating. The
+// question maximum stays at Wave 4's 9 rather than dropping to Wave 5's measured
+// 8: the cadence change that removed a box is a pacing decision that could be
+// tuned back tomorrow, and this envelope is the guard, so it keeps the larger of
+// the two real observations.
 const MAX_QUESTIONS_PER_RACE = 9;
 const MIN_PICKUPS_PER_RACE = 3;
 const MAX_PICKUPS_PER_RACE = 6;
@@ -147,27 +167,95 @@ ok('C: the garage rebate stays below the spend that earns it',
   `guided ≤ ${bestGuided}, expert ≤ ${bestExpert}, against a ${MAX_COST}-token top ask`);
 ok('…and expert still pays meaningfully more than guided',
   bestExpert > bestGuided, `${bestExpert} vs ${bestGuided}`);
-// The wallet carries across visits, so the number that has to clear the ask is
-// not one race but "what a strong player arrives at visit 2 with": spend the
-// lot at visit 1, take the rebate, race again. Typical rather than extreme
-// (a mid-table finish, a good-but-not-perfect prompt) because the extreme of
-// every term at once is not a player — it is printed above, and it is the thing
-// that would need a further cut if playtesting ever produces it.
-const typicalRace = 7 * maxReward + 5 + FINISH_TOKENS[1];      // measured mean: 16
-ok('C: a strong player still arrives at garage visit 2 below the top ask',
-  typicalRace + tokenReward(85, false) < MAX_COST,
-  `${typicalRace} from the race + ${tokenReward(85, false)} rebate`
-  + ` = ${typicalRace + tokenReward(85, false)} vs ${MAX_COST}`);
-// Stated rather than asserted, because it is the one case source-level tuning
-// cannot close: the richest race measured (18) plus the largest guided rebate
-// arrives at visit 2 able to buy the top ask. Closing it needs either a race
-// that pays less than a complete ask, or a cap on the garage's view of the
-// wallet — and D17 rejected the second because it makes the HUD counter, the
-// results screen and the garage budget contradict each other in front of a
-// child. Recorded in GAPS.md; watch it in playtest.
-console.log(`  \x1b[2m  residual: richest measured race 18 + best guided rebate`
-  + ` ${tokenReward(100, false)} = ${18 + tokenReward(100, false)} at visit 2, i.e. the carryover extreme`
-  + ` can still reach the ${MAX_COST}-token ask\x1b[0m`);
+// The rebate must be below the spend AT EVERY POINT ON THE CURVE, not only at
+// the top. A cap alone says nothing about the cheap end, and the cheap end is
+// where a rebate turns into a profit: the child who buys the least precise
+// complete ask is the one who could farm it.
+{
+  // (budget, best score it buys, that ask's cost) — from the real price list.
+  const CURVE = [[4, 8, 4], [6, 23, 6], [8, 32, 8], [11, 51, 11],
+    [13, 63, 13], [15, 69, 15], [17, 84, 17], [21, 100, 21]];
+  const bad = CURVE.filter(([, score, cost]) => tokenReward(score, false) >= cost);
+  ok('C: the rebate is below the spend at every point on the price curve',
+    bad.length === 0,
+    CURVE.map(([, s, c]) => `${c}→${tokenReward(s, false)}`).join(' '));
+}
+ok('C: the rebate ceiling stays under half the most expensive ask',
+  bestGuided < MAX_COST / 2 && bestExpert < MAX_COST / 2,
+  `guided ≤ ${bestGuided}, expert ≤ ${bestExpert}, half of ${MAX_COST} is ${MAX_COST / 2}`);
+
+// ── INVARIANT D — the top tier is REACHABLE, but only by saving (Wave 5) ─────
+// The garage's top ask cost 21 and nothing in the game could pay for it: a race
+// banks at most 17, and a child who bought the best ask they could afford at the
+// first garage arrived at the second with 16–19. The only route to 21 was to buy
+// the cheapest possible thing at the first garage — the game paid you for NOT
+// engaging with its own teaching screen. What moved was the garage rebate, which
+// is not race income and so cannot touch invariant A.
+//
+// Modelled here the way it really works in scenes.js:
+//   wallet at the second garage = race1 − spend + rebate(score) + race2
+const walletAtSecondGarage = (race, spend, score) =>
+  race - spend + tokenReward(score, false) + race;
+{
+  // The engaged child's TYPICAL race (15 then 16, the median of the measured
+  // run), buying a real mid-tier ask at the first garage — 11 tokens, score 51,
+  // a specific goal and a real limit — rather than hoarding. This is the
+  // behaviour the garage is trying to teach, and it must not be the behaviour
+  // that locks the top tier away.
+  const engaged = 15 - 11 + tokenReward(51, false) + 16;
+  ok('D: an engaged child who spends at the first garage can afford the top ask at the second',
+    engaged >= MAX_COST,
+    `15 − 11 + ${tokenReward(51, false)} + 16 = ${engaged} vs the ${MAX_COST} top ask`);
+  // And on the POOREST measured engaged run (13 a race, both races) it is still
+  // reachable — but only with more restraint at the first garage: an 8-token ask
+  // is twice the cheapest complete one, so this is "buy something real and save",
+  // not "buy nothing". That gap between 8 and 11 IS the choice the garage exists
+  // to pose; if it ever closes, the top tier has stopped costing anything.
+  const engagedFloor = walletAtSecondGarage(13, 8, 32);
+  ok('D: …and on the poorest engaged run too, if they hold back at the first garage',
+    engagedFloor >= MAX_COST,
+    `13 − 8 + ${tokenReward(32, false)} + 13 = ${engagedFloor} vs ${MAX_COST}`);
+  ok('D: …but NOT if they also max out the first garage (the choice still bites)',
+    walletAtSecondGarage(13, 13, 63) < MAX_COST,
+    `13 − 13 + ${tokenReward(63, false)} + 13 = ${walletAtSecondGarage(13, 13, 63)} vs ${MAX_COST}`);
+  // …and the child who ignores every question box cannot, however they spend.
+  // Measured ceiling for that player is 10 a race, and the most generous thing
+  // they can do is buy the cheapest complete ask (4) and bank the rest.
+  const idle = walletAtSecondGarage(10, MIN_COMPLETE_COST, 8);
+  ok('D: a child who ignores every question box still cannot, however they save',
+    idle < MAX_COST,
+    `10 − ${MIN_COMPLETE_COST} + ${tokenReward(8, false)} + 10 = ${idle} vs ${MAX_COST}`);
+  // The shape of the whole thing in one line: one top-tier ask a championship,
+  // never two. Two would need a race that pays for one on its own — invariant A.
+  ok('D: …and no ONE race ever pays for a top-tier ask, so never two of them',
+    bestCase < MAX_COST, `richest possible race ${bestCase} vs ${MAX_COST}`);
+}
+// ── `prompt-80`, the badge that goes unreachable FIRST ───────────────────────
+// GAPS' standing instruction after any economy change is to check this one
+// before the token thresholds. It is not a token threshold at all: it needs a
+// garage SCORE of 80, and in real play the garage budget is the wallet
+// (scenes.js), so what really gates it is "can the child afford an ask that
+// scores 84". Enumerated against the real price list, a wallet of 13 buys at
+// most 63, 15 buys 69, 16 buys 75, and it takes exactly 17 to reach 84 — D40's
+// derivation, re-run here rather than quoted.
+const PROMPT80_WALLET = 17;
+{
+  const engagedAtSecond = 15 - 11 + tokenReward(51, false) + 16;
+  ok('prompt-80: the engaged child reaches the wallet that can score 84',
+    engagedAtSecond >= PROMPT80_WALLET,
+    `${engagedAtSecond} at the second garage vs the ${PROMPT80_WALLET} it takes to buy an 84`);
+  // …and it is not a participation prize. A child who answers nothing banks at
+  // most pickups + a mid finish, so the first garage cannot buy them an 84 —
+  // the badge for writing a good prompt still costs some engagement first.
+  const idleRaceCeiling = MAX_PICKUPS_PER_RACE + FINISH_TOKENS[1];
+  ok('prompt-80: …and a child who answers nothing cannot buy an 84 at the first garage',
+    idleRaceCeiling < PROMPT80_WALLET,
+    `${idleRaceCeiling} banked with no quiz income vs the ${PROMPT80_WALLET} it takes`);
+}
+console.log(`  \x1b[2m  wallet at the second garage (measured income, real prices):`
+  + ` engaged spender ${walletAtSecondGarage(13, 11, 51)}–${walletAtSecondGarage(16, 11, 51)},`
+  + ` ignores every box ${walletAtSecondGarage(8, 4, 8)}–${walletAtSecondGarage(10, 4, 8)}`
+  + `  ·  top ask ${MAX_COST}\x1b[0m`);
 
 console.log('  ' + '─'.repeat(74));
 console.log(failed ? `  \x1b[31m${failed} failed\x1b[0m\n` : '  \x1b[32mall passed\x1b[0m\n');

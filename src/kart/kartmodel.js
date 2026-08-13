@@ -1261,8 +1261,6 @@ export function createKart(opts = {}) {
   //   arm shoulders (aimed at the grips), each wheel's spin group,
   //   and the wobblers / coreGlow / flames registries, which are moved,
   //   pulsed, scaled or toggled per frame by update().
-  const welded = [];      // meshes this pass created, for pruning on rebuild
-
   // Concatenate a bucket of {geo, matrix} into one indexed BufferGeometry.
   function weldGeometries(items) {
     let vCount = 0, iCount = 0;
@@ -1353,7 +1351,6 @@ export function createKart(opts = {}) {
       mesh2.visible = b.visible;
       mesh2.name = 'weld';
       frame.add(mesh2);
-      welded.push(mesh2);
     }
   }
 

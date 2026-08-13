@@ -22,6 +22,19 @@
 // Measured, not guessed. D28 stopwatched the built game: a child is interrupted
 // 10 / 8 / 7 times across the three races = 25 questions per championship.
 //
+// WAVE 5 RE-MEASURED IT AGAIN and NOTHING HERE MOVED — which is the useful part
+// of the entry, so it is written down rather than left as silence. Wave 5 made
+// the garage's top tier reachable, and the lever it used was the garage REBATE
+// (`tokenReward` in garage/scoring.js), which is not race income: the tracker
+// never sees it (there is no `tokensLifetime` write on `garage:built`, only on
+// `token:pickup`, `quiz:correct` and `race:complete`). So every threshold below
+// is derived from an economy that did not change. What DID change is the input
+// the derivation quotes: question boxes are 4–8 a race now, not 10 / 8 / 7 —
+// the teaching-card cadence defers about one a race — and the re-measured
+// income is 13–17 tokens a race for an engaged child, ~44 a championship, which
+// is the same envelope TOKEN_STEPS was derived against. tests/badges.test.mjs
+// carries the new question count and re-derives 20 / 80 from it.
+//
 // WAVE 4 RE-MEASURE. The economy was re-measured end to end for the first time
 // WITH the quiz reward counted (D29: the yield gate's driver had never triggered
 // a beacon, so the biggest term in the wallet had printed 0 on every run in the

@@ -1145,76 +1145,201 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
   // against the props that would otherwise stand in front of it.
 
   /**
-   * The props worth ray-testing a sign against: TALL enough to cross a board
-   * (>3 m) and SMALL enough to trace cheaply (<20k triangles). That pair of
-   * thresholds picks out exactly the lamp masts, marshal posts, paddock masts
-   * and palms — the thin verticals that bisect a board — while excluding the
-   * terrain and the cloud layer (six-figure triangle counts) and the barrier
-   * (long, but knee-high, and every sign clears it by design). Deliberately
-   * name-free: coupling this to props.js's internal mesh names would rot the
-   * moment that file is reorganised, and rot silently.
+   * EVERYTHING THAT CAN STAND BETWEEN A DRIVER AND A BOARD — no height filter,
+   * no triangle cap.
+   *
+   * Wave 5 round 3. This used to keep only meshes with `tris <= 20000` and a
+   * bounding box at least 3 m tall, on the theory that the thin verticals (lamp
+   * masts, palms, marshal posts) are what bisect a board. Measured on circuit,
+   * that pair of thresholds excluded exactly the furniture that sits BETWEEN
+   * the racing line and the boards:
+   *
+   *     barrier      bbox 1.99 m tall      fence-rails  1.76 m
+   *     fence-posts  2.45 m                terrain      56 448 tris
+   *
+   * — i.e. the two-rail guardrail that runs through the letter bodies of
+   * `אות עובר הלאה` (shots/w5c2-crop-circuit-wide.png), the fence rail through
+   * the bottom of `מאגר נתונים` and the post blacking out a letter between the
+   * words (shots/w5c2-crop-oasis-medium.png). A knee-high rail 6 m from the eye
+   * covers a board 30 m away; "tall" was never the right question, and the
+   * occlusion gate reported 0 blocked boards the whole time.
+   *
+   * The right question is only "does this geometry sit in the sight cone", so
+   * the set is now every mesh in the track except the signage itself (its own
+   * panels and legs). The triangle cap was there for speed; speed now comes
+   * from `buildOccluderIndex` below instead of from pretending the terrain is
+   * transparent. Still deliberately name-free.
    */
   function signOccluders() {
     const out = [];
     group.updateMatrixWorld(true);
-    const box = new THREE.Box3();
     group.traverse(o => {
       if (!o.isMesh || !o.geometry || /^signage/.test(o.name)) return;
       const g = o.geometry;
       const tris = (g.index ? g.index.count : (g.attributes.position?.count || 0)) / 3;
-      if (tris < 1 || tris > 20000) return;
-      box.setFromObject(o);
-      if (box.max.y - box.min.y < 3) return;
+      if (tris < 1) return;
       out.push(o);
     });
     return out;
   }
 
-  const _ray = new THREE.Raycaster();
-  const _eye = new THREE.Vector3(), _dir = new THREE.Vector3();
-  /**
-   * Would a driver reading this board see a mast through it?
+  /* ── the sight-line accelerator ──────────────────────────────────────────
+   * A uniform XZ bucket grid over every occluder triangle in world space, so a
+   * sight-line test touches the few hundred triangles near the ray instead of
+   * the ~130 000 in the track. Built once per track; a probe grid of 27 points
+   * from 2 read distances over ~15 candidate positions is ~800 rays per board,
+   * which is only affordable with an index.
    *
-   * Probes the two spots the board is actually read from — roughly 45 m and 28 m
-   * back up the racing line, at chase-camera eye height — against FIVE points on
-   * the board: its centre and its four inner corners. Centre-only was the bug:
-   * a canopy roof and two support beams crossed the top-left of the oasis
-   * 'פחות טעויות' board while its centre ray flew clean between them, so the
-   * candidate passed and a third of the line was behind a prop. A board is a
-   * rectangle; testing it as a point is testing something else.
+   * Triangles are stored flat and bucketed by the cells their XZ bounding box
+   * covers. Instanced meshes are expanded per instance (fence posts are one),
+   * which a naive `matrixWorld` walk would have collapsed onto the origin.
    *
-   * The corners are pulled 20% in from the true edge: a ray grazing the very
-   * corner of a board is not what makes a line unreadable, and probing the exact
-   * corner would reject candidates for a prop that clips a millimetre of frame.
+   * NOTE FOR THE GATE: tests/signage.test.mjs deliberately does NOT use this.
+   * It re-runs the same question with stock `THREE.Raycaster` over the same
+   * meshes, so a bug in this index shows up as a board the gate calls blocked
+   * and the placement thought was clear, rather than as a shared blind spot.
    */
-  function signOccluded(occl, t, centre, u = null, w = 0, h = 0) {
-    if (!occl.length) return false;
-    const probes = [centre];
-    if (u && w > 0 && h > 0) {
-      for (const sx of [-1, 1]) {
-        for (const sy of [-1, 1]) {
-          probes.push({
-            x: centre.x + u.x * sx * w * 0.40,
-            y: centre.y + sy * h * 0.40,
-            z: centre.z + u.z * sx * w * 0.40,
-          });
+  const OCC_CELL = 8;
+  function buildOccluderIndex(meshes) {
+    const tris = [];
+    const cells = new Map();
+    const m4 = new THREE.Matrix4();
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    for (const o of meshes) {
+      const geo = o.geometry, pos = geo.attributes?.position;
+      if (!pos) continue;
+      const idx = geo.index;
+      const nTri = (idx ? idx.count : pos.count) / 3;
+      const nInst = o.isInstancedMesh ? o.count : 1;
+      for (let k = 0; k < nInst; k++) {
+        if (o.isInstancedMesh) { o.getMatrixAt(k, m4); m4.premultiply(o.matrixWorld); }
+        else m4.copy(o.matrixWorld);
+        for (let f = 0; f < nTri; f++) {
+          const i0 = idx ? idx.getX(f * 3) : f * 3;
+          const i1 = idx ? idx.getX(f * 3 + 1) : f * 3 + 1;
+          const i2 = idx ? idx.getX(f * 3 + 2) : f * 3 + 2;
+          a.set(pos.getX(i0), pos.getY(i0), pos.getZ(i0)).applyMatrix4(m4);
+          b.set(pos.getX(i1), pos.getY(i1), pos.getZ(i1)).applyMatrix4(m4);
+          c.set(pos.getX(i2), pos.getY(i2), pos.getZ(i2)).applyMatrix4(m4);
+          const base = tris.length;
+          tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+          const x0 = Math.floor(Math.min(a.x, b.x, c.x) / OCC_CELL);
+          const x1 = Math.floor(Math.max(a.x, b.x, c.x) / OCC_CELL);
+          const z0 = Math.floor(Math.min(a.z, b.z, c.z) / OCC_CELL);
+          const z1 = Math.floor(Math.max(a.z, b.z, c.z) / OCC_CELL);
+          for (let cx = x0; cx <= x1; cx++) {
+            for (let cz = z0; cz <= z1; cz++) {
+              const key = cx + ',' + cz;
+              let list = cells.get(key);
+              if (!list) cells.set(key, list = []);
+              list.push(base);
+            }
+          }
         }
       }
     }
-    for (const back of [45, 28]) {
-      const rt = ((t - back / L) % 1 + 1) % 1;
-      const rp = spline.offsetPoint(rt, 0);
-      _eye.set(rp.x, rp.y + 3.25, rp.z);
-      for (const q of probes) {
-        _dir.set(q.x - _eye.x, q.y - _eye.y, q.z - _eye.z);
-        const dist = _dir.length();
-        if (dist < 1) continue;
-        _ray.set(_eye, _dir.multiplyScalar(1 / dist));
-        _ray.near = 0.5; _ray.far = dist - 1.0;
-        if (_ray.intersectObjects(occl, false).length) return true;
+    return { tris, cells, stamp: new Int32Array(tris.length / 9), gen: 0 };
+  }
+
+  /**
+   * Does anything in the index cross the segment eye → q, between `nearM` from
+   * the eye and `farM` short of the target? Möller–Trumbore, double-sided (an
+   * occluder occludes from either face), over the triangles bucketed within one
+   * cell of the segment's XZ track — sampled every half cell and taking the 3x3
+   * block, so no triangle within OCC_CELL of the line can be missed.
+   */
+  function segmentBlocked(index, ex, ey, ez, qx, qy, qz, nearM, farM) {
+    const { tris, cells, stamp } = index;
+    const dx = qx - ex, dy = qy - ey, dz = qz - ez;
+    const len = Math.hypot(dx, dy, dz);
+    if (!(len > 0)) return false;
+    const t0 = nearM / len, t1 = (len - farM) / len;
+    if (t1 <= t0) return false;
+    const gen = ++index.gen;
+    const steps = Math.max(2, Math.ceil((len * 2) / OCC_CELL));
+    for (let s = 0; s <= steps; s++) {
+      const f = s / steps;
+      const cx = Math.floor((ex + dx * f) / OCC_CELL), cz = Math.floor((ez + dz * f) / OCC_CELL);
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oz = -1; oz <= 1; oz++) {
+          const list = cells.get((cx + ox) + ',' + (cz + oz));
+          if (!list) continue;
+          for (let i = 0; i < list.length; i++) {
+            const base = list[i];
+            const id = base / 9;
+            if (stamp[id] === gen) continue;
+            stamp[id] = gen;
+            // Möller–Trumbore
+            const ax = tris[base], ay = tris[base + 1], az = tris[base + 2];
+            const e1x = tris[base + 3] - ax, e1y = tris[base + 4] - ay, e1z = tris[base + 5] - az;
+            const e2x = tris[base + 6] - ax, e2y = tris[base + 7] - ay, e2z = tris[base + 8] - az;
+            const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+            const det = e1x * px + e1y * py + e1z * pz;
+            if (det > -1e-9 && det < 1e-9) continue;
+            const inv = 1 / det;
+            const tx = ex - ax, ty = ey - ay, tz = ez - az;
+            const u = (tx * px + ty * py + tz * pz) * inv;
+            if (u < 0 || u > 1) continue;
+            const qx2 = ty * e1z - tz * e1y, qy2 = tz * e1x - tx * e1z, qz2 = tx * e1y - ty * e1x;
+            const v = (dx * qx2 + dy * qy2 + dz * qz2) * inv;
+            if (v < 0 || u + v > 1) continue;
+            const t = (e2x * qx2 + e2y * qy2 + e2z * qz2) * inv;
+            if (t > t0 && t < t1) return true;
+          }
+        }
       }
     }
     return false;
+  }
+
+  /**
+   * How much of the LETTERS a driver reading this board would lose.
+   *
+   * Probes the two spots the board is actually read from — roughly 45 m and 28 m
+   * back up the racing line, at chase-camera eye height — against a GRID over
+   * the text band, and returns the number of blocked probe rays (0 = clear).
+   *
+   * Round 2 probed the centre plus four corners at +-0.40, which is 5 points on
+   * a 14.6 m x 3.65 m rectangle, and the corners it did probe are in the blank
+   * MARGIN rather than in the ink. It missed, on all three tracks and at all
+   * three tiers: a two-rail guardrail through the letter bodies of
+   * `אות עובר הלאה`, a fence post blacking out the letter between the words of
+   * `מאגר נתונים`, a lamp mast bisecting `טעות מלמדת` into `טעות מל|מדת`. The
+   * board D38's own comment names as the reason corners were added at all —
+   * `פחות טעויות` — still failed with 5 points.
+   *
+   * So the probe is the band the INK occupies: TEXT_PROBE_COLS x TEXT_PROBE_ROWS
+   * across +-43% of the width and +-22% of the height, which is where a fitted
+   * line's glyphs actually sit (`fitText` centres one or two rows of at most
+   * TEXT_MAX_EM around the tile's middle). A word arriving at the child in
+   * pieces is the same bug class as the overflow this file's header describes;
+   * sampling a rectangle at five points is what let it hide.
+   */
+  const TEXT_PROBE_COLS = 9, TEXT_PROBE_ROWS = 3;
+  const TEXT_PROBE_X = 0.43, TEXT_PROBE_Y = 0.22;
+  function signBlockedProbes(index, t, centre, u = null, w = 0, h = 0) {
+    if (!index || !index.tris.length) return 0;
+    const probes = [];
+    if (u && w > 0 && h > 0) {
+      for (let i = 0; i < TEXT_PROBE_COLS; i++) {
+        const sx = -TEXT_PROBE_X + (2 * TEXT_PROBE_X * i) / (TEXT_PROBE_COLS - 1);
+        for (let j = 0; j < TEXT_PROBE_ROWS; j++) {
+          const sy = -TEXT_PROBE_Y + (2 * TEXT_PROBE_Y * j) / (TEXT_PROBE_ROWS - 1);
+          probes.push({ x: centre.x + u.x * sx * w, y: centre.y + sy * h, z: centre.z + u.z * sx * w });
+        }
+      }
+    } else probes.push(centre);
+    let blocked = 0;
+    for (const back of [45, 28]) {
+      const rt = ((t - back / L) % 1 + 1) % 1;
+      const rp = spline.offsetPoint(rt, 0);
+      const ex = rp.x, ey = rp.y + 3.25, ez = rp.z;
+      for (const q of probes) {
+        if (Math.hypot(q.x - ex, q.y - ey, q.z - ez) < 2) continue;
+        if (segmentBlocked(index, ex, ey, ez, q.x, q.y, q.z, 0.5, 1.0)) blocked++;
+      }
+    }
+    return blocked;
   }
 
   const placeSignage = () => {
@@ -1238,7 +1363,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     // What it gets instead is the plateau EDGE (see edgeSeek), which is scenery
     // no other track can have.
     const maxOut = SKY_TRACK ? 17 : 34;
-    const occl = signOccluders();
+    const occl = buildOccluderIndex(signOccluders());
     // Candidates first, tiles second. Which LINE a board carries cannot be
     // decided inside this loop any more: it depends on how many boards survive
     // the ground/occlusion search, and that is only known once the loop ends.
@@ -1250,10 +1375,18 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // slot a third of a spacing forward and back before giving up, which keeps
       // the board budget honest without disturbing the even spacing round the lap
       // or the outward spread that gives the mid-ground its depth.
+      //
+      // AND IT TAKES THE CLEANEST, not the first that is merely placeable: every
+      // nudge is scored by how many text-band probes are blocked, a clear one
+      // wins immediately, and if none is clear the least-obstructed one is used
+      // rather than a board being lost. A dropped board is a curriculum line no
+      // child ever meets; a slightly grazed one is still a whole word.
       let spot = null;
-      for (const nudge of [0, 0.34, -0.34]) {
-        spot = trySpot(i, (i + 0.5 + nudge) / nSign);
-        if (spot) break;
+      for (const nudge of [0, 0.34, -0.34, 0.17, -0.17]) {
+        const cand = trySpot(i, (i + 0.5 + nudge) / nSign);
+        if (!cand) continue;
+        if (!spot || cand.blocked < spot.blocked) spot = cand;
+        if (spot.blocked === 0) break;
       }
       if (spot) spots.push(spot);
     }
@@ -1264,17 +1397,31 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       if (Math.abs(((t - startT + 1.5) % 1) - 0.5) < 0.018) return null;
       const side = i % 2 === 0 ? 1 : -1;
       const w = spline.widthAt(t);
-      // On the low tier only the mid-ground boards survive: they are the ones
-      // doing the depth work, and the barrier already carries sponsor boards.
-      const mid = density < 0.6 ? true : i % 3 !== 0;
-      // WIDER BY 12% THAN WAVE 4's 13.0 / 6.8, and for a measured reason:
+      // EVERY CURRICULUM BOARD IS A MID-SIZE BOARD (Wave 5 round 3).
+      //
+      // One board in three used to be a 7.6 m "near" board hung 1.8 m outside
+      // the run-off. Measured in true letter ink (see TEXT_BODY_EM), those four
+      // boards per lap carried their Hebrew at 12.3 px at the near designed read
+      // distance and 7.6-8.7 px at the far one — and 7.6 px is the figure D38
+      // itself condemns as "texture, not text". They passed the gate only
+      // because it scored each board at its PEAK over the lap, which happens far
+      // closer than either distance the boards are designed to be read from.
+      //
+      // Cap height is `TEXT_BODY_EM * TEXT_FIT_W * boardWidth / characters`, so
+      // a 7.6 m board can only carry curriculum by carrying half a line. The
+      // structural answer is the one D38 gives: curriculum text goes on boards
+      // wide enough to carry it. All twelve authored lines are now on 14.6 m
+      // boards; brand and decorative lettering, which is one short word and is
+      // read from a few metres, stays on the barrier where it always was.
+      const mid = true;
+      // WIDER BY 12% THAN WAVE 4's 13.0, and for a measured reason:
       // TEXT_ADV_EM went 0.55 -> 0.62 so the model describes the widest fallback
       // font rather than the one this build machine happens to have installed.
       // Cap height is 0.4 * boardWidth / characters (D38), so the honest model
       // costs 11% of every glyph unless the metres are bought back here. They
       // are: the boards on the ground are unchanged in apparent size, and the
       // legibility table is now true on a school laptop as well as on a Mac.
-      const pw = mid ? 14.6 : 7.6, ph = pw / SIGN_TILE_ASPECT;
+      const pw = 14.6, ph = pw / SIGN_TILE_ASPECT;
       // Cloud Peak wants its boards ON the drop, standing against open sky; the
       // ground tracks want them spread through the mid-ground band for depth.
       //
@@ -1302,7 +1449,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       const U = signUAxis(n);
 
       let put = null;
-      for (const out of [wanted, wanted * 0.78, wanted * 0.58, wanted * 0.4, 1.8]) {
+      for (const out of [wanted, wanted * 0.86, wanted * 0.72, wanted * 0.58, wanted * 0.4, 2.4, 1.8]) {
         const p = spline.offsetPoint(t, side * (w + RUNOFF + out));
         const gy = heightAt(p.x, p.z);
         if (gy < p.y - (mid ? 1.6 : 0.8)) continue;      // perched on the drop
@@ -1314,14 +1461,16 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
         // metres along. Using the anchor's `t` put the probe eye in the wrong
         // place on exactly the corners where props cluster.
         const tc = spline.closestT({ x: p.x, y: cy, z: p.z }).t;
-        // The whole rectangle, not just its centre — see signOccluded.
-        if (signOccluded(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph)) continue;
-        put = { p, gy, cy };
-        break;
+        // The TEXT BAND, not just the centre and not just the corners — see
+        // signBlockedProbes. Keep walking inward while anything is blocked, but
+        // remember the least-blocked position so a board is never lost outright.
+        const blocked = signBlockedProbes(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph);
+        if (!put || blocked < put.blocked) put = { p, gy, cy, blocked };
+        if (blocked === 0) break;
       }
       if (!put) return null;
-      const { p, gy, cy } = put;
-      return { p, gy, cy, n, U, pw, ph };
+      const { p, gy, cy, blocked } = put;
+      return { p, gy, cy, n, U, pw, ph, blocked };
     }
 
     // ── WHICH LINE GOES ON WHICH BOARD ────────────────────────────────────────

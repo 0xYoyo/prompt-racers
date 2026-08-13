@@ -3,7 +3,7 @@
 // Nothing in this file is random. Same prompt in, same part out, every time —
 // which is what lets a child form the rule "more specific → better part" by
 // experiment, and what keeps the screenshot harness reproducible.
-import { SLOT_BY_KEY, optionById } from './prompts.js';
+import { SLOT_BY_KEY, optionById, MAX_COST } from './prompts.js';
 import { pickTips } from './tips.js';
 
 // The kart's stat baseline before any garage part is installed.
@@ -415,7 +415,59 @@ export function scoreFreeText(text, slotKey = 'engine', ctx = {}) {
  * and 4 tokens is still a whole part: generous enough to feel earned, never
  * enough to make a visit turn a profit.
  */
+/*
+ * Wave 5 — the caps went back UP, 4 → 7 guided and 7 → 10 expert (rates 0.045 →
+ * 0.08 and 0.075 → 0.115), and this is the ONE constant that moved to make the
+ * top tier of the garage reachable at all. The measurement, taken end to end on
+ * the built game across four player profiles × three races × three seeds:
+ *
+ *   engaged + winning   13–17 tokens a race      engaged + mid-pack  13–16
+ *   half-right          10–14                    ignores every box    6–10
+ *
+ * A race therefore still cannot buy the 21-token ask — that invariant is
+ * untouched, because RACE income is untouched. But the wallet a child arrives at
+ * the SECOND garage with is `race1 − spend + rebate + race2`, and at a 4-token
+ * ceiling the rebate was too small to carry anyone there: a child who bought the
+ * best ask they could afford at the first garage arrived at the second with
+ * 16–19 and could never buy the top tier at all. The only way to reach it was to
+ * buy the cheapest possible thing at the first garage — i.e. the game paid you
+ * for NOT engaging with the teaching screen, which is precisely backwards.
+ *
+ * WHY THE REBATE AND NOT THE QUIZ. The obvious lever is the quiz reward, and it
+ * was measured first: an engaged child meets 5–8 question boxes a race, so a
+ * flat 1 → 2 adds 10–16 tokens and puts a 21–25-token RACE on the board. That is
+ * exactly the failure D39 flattened the tiers to prevent, and no compensating
+ * cut to pickups (3–6) or the finish table (5 at the top) can absorb it. The
+ * quiz reward can only be 1 while the top ask is 21; it is left alone, and the
+ * arithmetic is written down in quiz.js so the next person does not re-derive it.
+ * The rebate has none of that problem: it is not race income, so it cannot break
+ * the per-race invariant, and it scales with PROMPT QUALITY — a vague ask still
+ * refunds 1–3 — so it pays for exactly the engagement the target is about.
+ *
+ * The ceiling is DERIVED from the top ask rather than typed beside it. D39's
+ * finding was that "capped below the spend" rotted into "half a race's income"
+ * without anyone editing the line it was written on; a cap that reads off
+ * MAX_COST cannot rot that way.
+ */
+// A third of the most expensive ask for guided, just under half for expert.
+// `(MAX_COST - 1) / 2` rather than `MAX_COST / 2` so the expert cap is STRICTLY
+// below half however MAX_COST moves — the invariant asserted in
+// tests/economy.test.mjs is "< half the top ask", and it should be structurally
+// true rather than true by one lucky remainder.
+//
+// EXPERT IS DELIBERATELY BARELY ABOVE GUIDED NOW, and that is a change of intent
+// from D39's "expert pays ~1.75×". The reason is a seam in garage.js (not owned
+// here, reported to the lead): expert mode charges only for the PART row — free
+// text replaces the three priced rows — so an expert build spends 4 and refunds
+// its rebate against that 4. The rebate is a rebate in guided mode and a net
+// PROFIT in expert mode, so scaling it up scales up a farm. Raising expert 7 → 8
+// keeps it ahead of guided without widening a hole this file cannot close; the
+// real incentive to leave the training wheels is the score itself, which free
+// text alone can push past 90.
+export const REBATE_CAP = Math.floor(MAX_COST / 3);              // 7
+export const REBATE_CAP_EXPERT = REBATE_CAP + 1;                 // 8
+
 export function tokenReward(score, expert = false) {
-  const raw = score * (expert ? 0.075 : 0.045);
-  return Math.min(expert ? 7 : 4, Math.round(raw));
+  const raw = score * (expert ? 0.095 : 0.08);
+  return Math.min(expert ? REBATE_CAP_EXPERT : REBATE_CAP, Math.round(raw));
 }

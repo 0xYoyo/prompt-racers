@@ -1133,3 +1133,98 @@ call site deleted so long as the sniff remained. The check strips comments first
 assertion that cannot tell the explanation from the thing explained would forbid documenting
 the decision, and that exact trap had already bitten once while the gate was being written,
 when a `deviceMemory` assertion failed on the prose explaining why `deviceMemory` was removed.
+
+## D48 — The menu was noisy at the source, and the number in GAPS was two sounds
+Sitting on the title screen for twelve seconds played **~19 overtake stingers**. The cause is
+the thing that makes the title screen good: its backdrop is a real `raceScene`, fast-forwarded
+through a pack. `race.js` gated *some* emissions behind `if (!backdrop)` and returned early
+from `driveFeedback`, but `updatePositions` and the lap/finish path were never gated —
+measured over 400 simulated seconds: `race:position` ×195 (61 up, 62 down), `race:lap` ×2,
+`race:bestlap` ×2, `race:finallap`, `race:finish`.
+
+Fixed at the source in the shape D31 established, not with a sixth `if (!backdrop)`:
+
+```js
+const bus = backdrop ? { ...appBus, emit() { /* a backdrop is seen, not heard */ } } : appBus;
+```
+
+All 20 emit sites in the file funnel through it and six redundant guards were deleted. A
+**scoped bus** rather than a renamed emitter, deliberately: the next person types `bus.emit`
+out of habit and inherits the guarantee, there is no second spelling to learn, and for a real
+race the binding is the identical module object. Post-fix, the same 400-second probe: zero
+events, zero sounds.
+
+Two bugs fell out of the same seam, neither previously reported. The backdrop was feeding
+`race:complete` to `badges.js` and `scenes.js` — recording races, tokens, championship
+progress and a **real glossary unlock** for a child who had not pressed a key. And it was
+writing **best laps into the save**, which the emission funnel could not catch because
+`save.set` is not an emission; that one is now guarded separately. The general form, which is
+the Wave-3 silence lesson generalised: **a backdrop is seen, not heard, and not remembered.**
+
+`audio.js` carries the second half as a categorical gate. It began as a denylist of five
+gameplay groups and became an **allowlist** (`ui`, `garage`, `screen`, `music`) after a critic
+measured invented ids in groups `crowd`, `weather`, `world`, `ambience` and `hazard` playing
+happily on the title screen — a denylist is fail-open, and props.js already has a crowd, so
+the next world system would have leaked. The decisive probe now invents a **group** as well as
+an id, and the gate's leak filter is written as the allowlist's complement so it cannot go
+stale.
+
+**The brief's item 4 rested on a number that was two sounds.** GAPS recorded "quiz stinger
+peak 0.52 — the loudest sound in the game". Measured on a virgin save, the first correct
+answer starts `['quiz.correct', 'garage.reveal']` — the badge-unlock cue — peaking 0.5024
+together; the second and third start `['quiz.correct']` alone at 0.2158. The sting by itself
+was **0.272 pre-trim, already below race music (0.439) and the wall hit (0.428)**. It also
+explains a puzzle nobody had connected: a "repeat" of the same sting metered 0.16 while the
+"first" metered 0.49.
+
+So the sting was scaled by **0.78, not the 0.58 the 0.52 figure implied** — 0.58 would have
+put it at 0.163, level with `quiz.wrong` at 0.167, destroying the only contrast the pair
+carries. It now sits at 0.216, 0.49× the music peak, and still reads as a reward at +3.8 dB
+over the ducked bed. **The gate pins an absolute ceiling (0.26) as well as the ratio**,
+because a critic showed the ratio alone could be satisfied by turning the *music* up: a
+mutant restoring the sting to 0.272 while raising the music bus 25% kept the old gate green.
+
+Honest residual, for the playtest rather than for a constant: "noticeably below music peaks"
+is partly a peak-meter artifact. In the 0.5–3 kHz presence band the sting and the music are
+equal (−42.2 vs −42.4 dB), and the sting occupies ~1s of a 2.5s window, so instantaneously it
+sits above the bed in the band the ear is most sensitive to. Music's advantage is all
+low-frequency. Only ears in a room settle that.
+
+Also measured and deliberately left alone: the first correct answer of a save peaks at 0.50
+because sting and badge cue stack. The event is the **cue**, not the stack — the sting adds
++0.2 dB on top of it — and staggering them makes the peak *worse* (0.5229 vs 0.5024), because
+the delayed cue lands in a compressor that has recovered rather than one the sting is already
+holding down. An accident, but one the measurement says to keep.
+
+Suspend-on-hidden is a real `AudioContext.suspend()`, writing no gain and no state, so mute,
+master volume and D34's modal duck are frozen rather than reapplied — there is no fourth
+writer of the buses to keep in step. One genuine bug was found by the critic and fixed: it
+was **not idempotent while its docstring claimed it was**, so two `audio:suspend` events then
+a resume left the context suspended with the clock at zero — silent for the rest of the
+session with no way back. Unreachable through `setHidden`'s transition guard, but
+`audio:suspend` is a public bus event.
+
+**A gate cannot prove silence with an analyser on a suspended context** — it keeps returning
+the last buffer it filled, so a volume ramp passes and a real suspend fails. The honest
+instrument is the context clock: ×1.00 → **×0.000**. That trap is now documented in the gate
+beside the assertion that depends on it.
+
+## D49 — Three ways a shared tree lies to a measurement
+Wave 5 ran up to six agents in one working tree, and each of these cost real time. Recorded
+as a class, because the fix for all three is the same: **know what you measured.**
+
+1. **A `dist/` you did not build yourself is not evidence.** An agent's gate failed
+   spuriously because another agent ran `npm run build` inside the ~40-second window in which
+   a mutated `audio.js` was on disk for a mutation test. The failing run was reading a build
+   made from someone else's mutant. Mutation testing through the real build has a blast
+   radius — which is a second argument for the lead's frequent commits, and an argument for
+   building mutants into `.tmp/` rather than into `dist/`.
+2. **A red gate whose cause you cannot name usually has a mundane explanation available
+   before the exotic ones.** `modaltest` was red for hours and two agents reasoned about load
+   averages and boot timeouts. The actual cause: a gate section had correctly landed *ahead of
+   the guard it gates*, because the guard lived in a file another agent held, so the builder
+   reported the patch rather than crossing the ownership boundary. **A gate and its fix in
+   flight on opposite sides of a file lock** is the signature red of this working method, and
+   it should be the first hypothesis, not the last.
+3. **A gate that exits non-zero while printing zero failure lines did not reach its
+   assertions.** Worth knowing on sight; it means crash or timeout, never a real failure.

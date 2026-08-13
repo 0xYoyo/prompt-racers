@@ -10,7 +10,11 @@ import { existsSync, mkdirSync } from 'fs';
 // The economy gate compares against the garage's OWN prices rather than a copy of
 // them, so a price change shows up here as a failing band instead of a stale
 // comment. prompts.js is pure data + i18n registration, so it imports in node.
-import { MAX_COST, MIN_COMPLETE_COST } from '../src/garage/prompts.js';
+import { MAX_COST, MIN_COMPLETE_COST, KART_SLOTS, optionsFor, costOf } from '../src/garage/prompts.js';
+// The carryover half of the economy gate (Wave 5) needs the garage's own scorer
+// and its own rebate, for the same reason the line above imports its prices: a
+// copy of them here would pass while the game had moved.
+import { scorePrompt, tokenReward } from '../src/garage/scoring.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -1360,9 +1364,38 @@ try {
   // that wins — and answers every question box it meets, correctly, through the
   // real answer buttons. The result is the whole wallet, by source, for exactly
   // the child the economy is aimed at.
-  async function economyGate() {
-    const SAVE_KEY = 'promptracers.v1';
-    console.log('\n  TOKEN ECONOMY — a winning, fully engaged race\n  ' + '─'.repeat(70));
+  // The best ask a given wallet can buy, enumerated over the garage's REAL price
+  // list and scored by the garage's REAL scorer. `ceiling` lets the caller ask
+  // "the best ask costing no more than N", which is how a child who means to save
+  // something for next time shops.
+  const askTable = [];
+  for (let b = 0; b <= 30; b++) {
+    let best = { score: 0, cost: 0 };
+    for (const part of KART_SLOTS)
+      for (const g of optionsFor('goal', part))
+        for (const l of optionsFor('constraint', part))
+          for (const s of optionsFor('style', part)) {
+            const sel = { part, goal: g.id, constraint: l.id, style: s.id };
+            const cost = costOf(sel);
+            if (cost > b) continue;
+            const score = scorePrompt(sel).score;
+            if (score > best.score || (score === best.score && cost < best.cost)) best = { score, cost };
+          }
+    askTable[b] = best;
+  }
+  const bestAskUpTo = n => askTable[Math.max(0, Math.min(30, n))];
+  // The wallet a child arrives at the SECOND garage with, exactly as scenes.js
+  // computes it: race 1, spend, rebate, race 2.
+  const walletAtSecondGarage = (r1, buy, r2) => r1 - buy.cost + tokenReward(buy.score, false) + r2;
+
+  const SAVE_KEY = 'promptracers.v1';
+  /**
+   * Drive one real race to the flag on the game's own autopilot and return the
+   * result object the results screen reads. `answer` is the child:
+   *   'all'  — answers every question box, correctly (an engaged child)
+   *   'none' — never touches a box (a disengaged one; they time out)
+   */
+  async function driveRace({ track, difficulty, seed, answer }) {
     await page.evaluate(k => localStorage.setItem(k, JSON.stringify({
       racerId: 'nitzotz', results: [], championshipRace: 0,
       // The one-time explainers own their own dismissal and are gated elsewhere;
@@ -1371,24 +1404,26 @@ try {
     })), SAVE_KEY);
     await page.reload({ waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
-    await page.evaluate(() => window.__DEBUG.goto('race', {
-      track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: false,
-    }));
+    await page.evaluate(o => window.__DEBUG.goto('race', o),
+      { track, difficulty, seed, autopilot: true, introCard: false });
 
-    const run = await page.evaluate(async () => {
+    return page.evaluate(async (answer) => {
       const D = window.__DEBUG;
       const sc = D.engine.active;
       const q = sc.quiz;
       const STEP = 1 / 60;
       let answered = 0, correct = 0, opened = 0;
       const off = D.bus.on('quiz:open', () => { opened++; });
-      for (let i = 0; i < 60 * 600 && !window.__LAST_RESULT__; i++) {
+      // The disengaged run lets every box time out, and a timeout costs a 24s
+      // cooldown of slow motion — so it needs a much longer sim budget than the
+      // engaged one, or it "fails to reach the flag" for a pacing reason.
+      for (let i = 0; i < 60 * 1800 && !window.__LAST_RESULT__; i++) {
         D.engine.time += STEP;
         sc.update(STEP);
         // A child dismisses things; so does this.
         const scrim = document.querySelector('.grgtok-scrim, .qzint-scrim, .ic-scrim');
         if (scrim && scrim.offsetParent !== null) { scrim.querySelector('button')?.click(); continue; }
-        if (q && q.phase === 'question') {
+        if (q && q.phase === 'question' && answer === 'all') {
           // `correctSlot` is the panel's own answer: the three options are
           // shuffled per showing, so nothing outside it can know which is right,
           // which is why no automated driver had ever answered one.
@@ -1402,7 +1437,12 @@ try {
       off();
       const r = window.__LAST_RESULT__;
       return { r, opened, answered, correct, beacons: q?.beaconCount ?? 0 };
-    });
+    }, answer);
+  }
+
+  async function economyGate() {
+    console.log('\n  TOKEN ECONOMY — a winning, fully engaged race\n  ' + '─'.repeat(70));
+    const run = await driveRace({ track: 0, difficulty: 1, seed: 3, answer: 'all' });
 
     const r = run.r;
     if (!r) { step('E: the engaged race reached the flag', false, `${run.opened} questions opened`); return; }
@@ -1432,6 +1472,71 @@ try {
     step('E: every source still pays something (pickups / quiz / finish)',
       r.tokensFromPickups > 0 && r.tokensFromQuiz > 0 && r.tokensFinishBonus > 0,
       `${r.tokensFromPickups} / ${r.tokensFromQuiz} / ${r.tokensFinishBonus}`);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CARRYOVER — the Wave-5 target: the top tier must be REACHABLE.
+    //
+    // Everything above measures ONE race, and one race is deliberately not
+    // enough to buy the 21-token ask (that is invariant A, and it is what stops
+    // the garage becoming a shop where everything is affordable). But the wallet
+    // CARRIES, so what a child can actually buy is decided at the second garage,
+    // by `race1 − spend + rebate + race2` — and until Wave 5 nothing in this file
+    // looked at that number. It was possible for the top tier of the teaching
+    // screen to be unreachable in real play with every assertion above green.
+    //
+    // So: drive race 2 as well (it is a DIFFERENT track at a DIFFERENT pace —
+    // the reason this must be measured rather than doubled), drive one race as a
+    // child who never touches a question box, and run the real prices, the real
+    // scorer and the real rebate over both.
+    const run2 = await driveRace({ track: 1, difficulty: 2, seed: 3, answer: 'all' });
+    const idle = await driveRace({ track: 0, difficulty: 1, seed: 3, answer: 'none' });
+    if (!run2.r || !idle.r) {
+      step('E2: the carryover races reached the flag', false,
+        `engaged race 2 ${run2.r ? 'ok' : 'MISSING'}, disengaged race ${idle.r ? 'ok' : 'MISSING'}`);
+    } else {
+      const R1 = r.tokens, R2 = run2.r.tokens, RI = idle.r.tokens;
+      // A child who ignores the boxes must still be recognisable AS that child in
+      // the numbers — if the two profiles bank the same, the assertions below are
+      // measuring nothing.
+      step('E2: the disengaged run really is disengaged (no quiz income)',
+        idle.r.tokensFromQuiz === 0 && idle.opened >= 3 && RI < R1,
+        `${idle.opened} boxes met, ${idle.correct} answered → ${RI} banked vs the engaged ${R1}`);
+
+      // THE TARGET. The child buys something REAL at the first garage — an ask
+      // costing at least twice the cheapest complete one — and can still afford
+      // the top tier at the second. Not "buys the cheapest thing and hoards":
+      // that was the only route before Wave 5, and it paid the child for NOT
+      // engaging with the teaching screen.
+      const REAL_ASK = MIN_COMPLETE_COST * 2;
+      let bought = null, wallet = 0;
+      for (let cap = R1; cap >= REAL_ASK; cap--) {
+        const ask = bestAskUpTo(cap);
+        if (ask.cost < REAL_ASK) continue;
+        const w = walletAtSecondGarage(R1, ask, R2);
+        if (w >= MAX_COST) { bought = ask; wallet = w; break; }   // the most it can spend and still get there
+      }
+      console.log(`        \x1b[2mcarryover: race1 ${R1} + race2 ${R2}`
+        + (bought ? `, best first-garage ask that keeps the top tier in reach: ${bought.cost} tokens (score ${bought.score},`
+          + ` rebate ${tokenReward(bought.score, false)}) → ${wallet} at the second garage` : ', top tier unreachable')
+        + `  ·  disengaged ${RI}+${RI}\x1b[0m`);
+      step('E2: an engaged child reaches a top-tier ask by the second garage',
+        !!bought && wallet >= MAX_COST,
+        bought ? `${R1} − ${bought.cost} + ${tokenReward(bought.score, false)} + ${R2} = ${wallet} vs the ${MAX_COST} top ask`
+          : `nothing above ${REAL_ASK} tokens leaves ${MAX_COST} in reach`);
+      step('E2: …and it is a real ask, not the cheapest thing on the screen',
+        !!bought && bought.cost >= REAL_ASK,
+        bought ? `spent ${bought.cost} at the first garage, cheapest complete ask is ${MIN_COMPLETE_COST}` : '—');
+
+      // The other half, and the half that is easy to lose: making the top tier
+      // reachable must not make it reachable for a child who engaged with
+      // nothing. Measured against the most GENEROUS thing that child can do —
+      // buy the cheapest complete ask and bank everything else, twice.
+      const idleWallet = walletAtSecondGarage(RI, bestAskUpTo(MIN_COMPLETE_COST), RI);
+      step('E2: a child who ignores every box still cannot, however they hoard',
+        idleWallet < MAX_COST,
+        `${RI} − ${MIN_COMPLETE_COST} + ${tokenReward(bestAskUpTo(MIN_COMPLETE_COST).score, false)} + ${RI}`
+        + ` = ${idleWallet} vs the ${MAX_COST} top ask`);
+    }
     await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);
   }
 

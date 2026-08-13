@@ -118,7 +118,14 @@ function DRIFT_BOOST_PAYLOAD(peakTier, source = 'drift') {
   return { tier: source === 'drift' ? peakTier : 0, source };
 }
 
-const QUESTIONS = [10, 8, 7];
+// D28 stopwatched 10 / 8 / 7 question boxes a race. Wave 5 re-measured it on the
+// built game (36 real races, four player profiles × three races × three seeds)
+// and it is now 4–8, engaged 5–8: the teaching-card cadence defers roughly one
+// box a race. Updated rather than left alone, because the whole point of the
+// derivation below is that it describes the economy the game ACTUALLY has — a
+// calibration that happens to come out right off a stale input is the failure
+// this file exists to prevent, not a pass.
+const QUESTIONS = [7, 7, 6];
 const TIER_OF_RACE = [1, 2, 3];
 // Measured on the built game after the Wave-4 source-level thinning: 3–6 pickups
 // a race, mean 4.7, on all three tracks (the point of counting whole rows rather
@@ -395,8 +402,18 @@ console.log('\n  3. the collection survives a new championship, dies with a full
   // …and the season badge cannot be re-earned by a second season's first race.
   const n = badges().length;
   playRace({ race: 0, place: 1 });
-  ok('champ-podium3 is not re-awarded after the reset', badges().length === n
-    || !badges().filter(b => b === 'champ-podium3').length > 1);
+  // Asserted about champ-podium3 SPECIFICALLY. It used to read
+  // `badges().length === n || !badges().filter(…).length > 1`, whose second
+  // branch is `(!x) > 1` — always false — so the whole thing was really "no new
+  // badge of ANY kind lands on this race". That is a different claim, and a
+  // false one: this race is the 15th correct answer of the run for any
+  // calibration where a championship is ~14 questions, so `quiz-15` legitimately
+  // lands here and the season badge was never the thing being measured.
+  const fresh = badges().slice(n);
+  ok('champ-podium3 is not re-awarded after the reset',
+    !fresh.includes('champ-podium3')
+    && badges().filter(b => b === 'champ-podium3').length === 1,
+    fresh.length ? `also unlocked: ${fresh.join(', ')}` : 'nothing new unlocked');
 
   // Full wipe (settings screen: save.reset() then bus.emit('save:reset')).
   save.reset();

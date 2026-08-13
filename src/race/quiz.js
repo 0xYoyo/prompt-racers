@@ -279,6 +279,32 @@ const DISMISS_AFTER_S = 0.45;
 // token per correct answer holds on every race, needs no asterisk, and states
 // the rule in a sentence a child can hold: four right answers buy a part.
 //
+// WAVE 5 RE-EXAMINED THIS AND DELIBERATELY LEFT IT AT 1. The Wave-5 task was
+// "make the top tier of the garage reachable", and raising this number is the
+// obvious lever — it is the one that rewards engagement, which is the lesson the
+// game exists to teach. It was measured first and it does not fit. Re-measured
+// on the built game (four player profiles × three races × three seeds, after the
+// teaching-card cadence started deferring a box and after race 2's pace retune):
+//
+//   boxes met per race        4–8   (an engaged child answers 5–8)
+//   pickups per race          3–6
+//   finish bonus              3–5
+//   a winning engaged race    13–17 banked, against the 21-token maximum ask
+//
+// A flat 1 → 2 therefore adds 10–16 tokens to a single race and puts a 21–25
+// token RACE on the board — the child could buy the most expensive ask at EVERY
+// garage, out of one race each time, and "choose where to be precise" stops
+// being a choice. That is the exact failure the flattening above was for, and
+// nothing can absorb it: pickups are 3–6 and cannot go below one authored row a
+// lap without a source paying nothing at all, and the finish table's top is 5
+// with a floor of 3 that GAPS' standing instruction says to raise, not cut.
+//
+// The arithmetic in one line, so nobody has to re-derive it: while the most
+// expensive ask is 21 and a race meets up to 8 boxes, the per-box reward can
+// only be 1. The Wave-5 income came from the garage rebate instead
+// (`tokenReward` in garage/scoring.js), which is not race income and therefore
+// cannot break this invariant — see the block there for the full reasoning.
+//
 // EXPORTED because tests/badges.test.mjs derives its badge thresholds from these
 // numbers and previously scraped them out of this file with a regex, so a rename
 // failed at a parse assertion rather than at the calibration it invalidated.
