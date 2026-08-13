@@ -108,19 +108,20 @@ const MENU_SAFE_GROUPS = new Set(['ui', 'garage', 'screen', 'music']);
 //
 // The first correct answer of a save unlocks the `quiz-first` badge, and
 // badges.js announces every unlock through `audio:play` with `garage.reveal`
-// (peak 0.489 on its own — genuinely the loudest single sound in the game).
-// So what was measured in Wave 4 was the sting stacked with the badge cue, which
-// happens ONCE per save, and not the 7–10-a-race event the complaint is about.
-// Reported to the lead; garage.reveal is the garage's own payoff and is not
-// retuned here on one wave's evidence.
+// (peak 0.488 on its own — in family with the game's other one-off flourishes:
+// music circuit 0.596, race.fanfare 0.517, results.sting 0.492, countdown.go
+// 0.489). So what Wave 4 measured was the sting stacked with the badge cue,
+// which happens ONCE per save, and not the 7–10-a-race event the complaint is
+// about. The cue's own level belongs to the garage and is not retuned here.
 //
 // The sting is still the most present recurring event over a bed that never
 // rests, so it comes down — by ONE scale factor rather than nine retuned
 // numbers, because its SHAPE (bright triangle arpeggio, octave sparkle, one
 // hand-drum tap) is right and only its level was loud. 0.78 lands it at peak
-// ~0.21 / rms ~0.013: about half the music's peak, an octave of headroom under
-// a wall hit, and still clearly brighter and fuller than `quiz.wrong`, which is
-// the only contrast the sound has to carry.
+// 0.216 / rms 0.0136: about half the music's peak, well under a wall hit, and
+// still clearly brighter and fuller than `quiz.wrong`, which is the only
+// contrast the sound has to carry. The gate pins BOTH that ratio and an
+// absolute ceiling, so it cannot be satisfied by turning the music up.
 //
 // `quiz.wrong` is deliberately NOT scaled. It measures peak 0.167 / rms 0.0086 —
 // already under the music bed, which is the whole point of it (a wrong answer
@@ -1351,7 +1352,20 @@ class AudioSystem {
     S('position.down', 'race', 0.45, 'Position lost', function (t) {
       [77, 73, 68].forEach((m, i) => this._blip(t + i * 0.06, m, { peak: 0.11, dur: 0.16, type: 'triangle', filter: 2200 }));
     });
-    S('results.sting', 'race', 2.60, 'Results / podium sting', function (t) {
+    // The same flourish, registered TWICE, in two groups — and the duplication is
+    // the point rather than an oversight. It has two jobs:
+    //   `results.sting` (group 'race')   — the race's own flourish as the flag
+    //                                      drops, raised by `race:finish` while
+    //                                      the child is still in the race scene;
+    //   `podium.sting`  (group 'screen') — the RESULTS/PODIUM SCREEN's flourish,
+    //                                      raised by that screen when it opens.
+    // A podium screen is a menu (buttons, a live backdrop behind it), so a sound
+    // in a gameplay group cannot sound there — which meant `podium:show` was
+    // wired to something that could never be heard, and would have failed
+    // silently for whoever wires the podium screen up next. Rather than punch a
+    // hole in the categorical gate for one id, the screen gets its own cue in a
+    // menu-safe group. One voice function, so the two can never drift apart.
+    const resultsFlourish = function (t) {
       const root = 57;                                    // A
       const chords = [[0, 4, 7, 11], [2, 5, 9, 12], [-3, 4, 7, 12], [0, 7, 12, 16]];
       chords.forEach((ch, i) => {
@@ -1365,7 +1379,9 @@ class AudioSystem {
       });
       this._noise(t + 1.6, { type: 'highpass', f: 3000, f2: 12000, dur: 0.8, peak: 0.045, attack: 0.15 });
       [84, 88, 91, 96].forEach((m, i) => this._blip(t + 1.75 + i * 0.07, m, { peak: 0.08, dur: 0.5, type: 'sine' }));
-    }, true);
+    };
+    S('results.sting', 'race', 2.60, 'Results sting (end of race)', resultsFlourish, true);
+    S('podium.sting', 'screen', 2.60, 'Podium sting (results screen)', resultsFlourish, true);
 
     // ---- tokens ------------------------------------------------------------
     // Rising with combo through a pentatonic ladder so a run is musical.
@@ -1515,7 +1531,7 @@ class AudioSystem {
     S('quiz.correct', 'quiz', 1.10, 'Quiz: correct', function (t) {
       const root = 72;                                   // C5, bright and childlike
       // g = QUIZ_STING_GAIN on every layer — the shape is unchanged, the level
-      // is not. See the constant for the measurements behind 0.58.
+      // is not. See QUIZ_STING_GAIN for the measurements behind its value.
       const g = QUIZ_STING_GAIN;
       [0, 4, 7, 12].forEach((iv, i) => {
         this._tone(t + i * 0.055, {
@@ -1695,8 +1711,10 @@ class AudioSystem {
       const d = typeof p === 'number' ? p : (p && (p.delta ?? (p.from - p.to)));
       if (d > 0) this.play('position.up'); else if (d < 0) this.play('position.down');
     });
-    simple(['race:finish', 'race:results'], 'results.sting');
-    simple('podium:show', 'results.sting');
+    simple('race:finish', 'results.sting');
+    // The screen's own cue, in a menu-safe group, so a podium/results SCREEN that
+    // announces itself is actually heard (see podium.sting's registration).
+    simple(['podium:show', 'race:results'], 'podium.sting');
 
     // UI — includes the names menus.js actually emits (menu:racer / menu:start /
     // menu:goto) and the pause-menu round trip.
@@ -1998,6 +2016,7 @@ registerStrings({
     'audio.group.garage': 'מוסך',
     'audio.group.engine': 'מנוע',
     'audio.group.quiz': 'חידון',
+    'audio.group.screen': 'מסכי סיום',
     'audio.group.music': 'מוזיקה',
     'audio.state': 'מצב הקשר',
     'audio.voices': 'קולות פעילים',
@@ -2014,7 +2033,8 @@ registerStrings({
     'audio.s.lap.final': 'הקפה אחרונה',
     'audio.s.position.up': 'עלייה במיקום',
     'audio.s.position.down': 'ירידה במיקום',
-    'audio.s.results.sting': 'תוצאות ופודיום',
+    'audio.s.results.sting': 'סיום מרוץ',
+    'audio.s.podium.sting': 'מסך התוצאות',
     'audio.s.token.pickup': 'איסוף טוקן (קומבו)',
     'audio.s.lap.best': 'הקפה הכי מהירה',
     'audio.s.quiz.correct': 'תשובה נכונה',
@@ -2062,6 +2082,7 @@ registerStrings({
     'audio.group.garage': 'Garage',
     'audio.group.engine': 'Engine',
     'audio.group.quiz': 'Quiz',
+    'audio.group.screen': 'Result screens',
     'audio.group.music': 'Music',
     // The three race themes by TRACK NAME, not by theme id. Without these the
     // English preview falls back to the registry label ("Music: race — circuit"),
@@ -2073,7 +2094,7 @@ registerStrings({
   },
 });
 
-const GROUP_ORDER = ['engine', 'drive', 'race', 'impact', 'garage', 'quiz', 'ui', 'music'];
+const GROUP_ORDER = ['engine', 'drive', 'race', 'impact', 'garage', 'quiz', 'screen', 'ui', 'music'];
 const GROUP_COLOUR = {
   engine: '#ffc247', drive: '#7ee081', race: '#ff9f6b', impact: '#ff6b6b',
   garage: '#c9b8ff', quiz: '#7ee0d0', ui: '#6fc3ff', music: '#ffd66b',

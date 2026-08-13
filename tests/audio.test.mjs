@@ -215,6 +215,13 @@ try {
   // by (a) instead, because race.js is where it is stopped: the backdrop never
   // emits it in the first place. Left in the list it added rms 0.004 of legal UI
   // audio to a silence window and made this assertion sit on its own threshold.
+  // Liveness thresholds. Measured on the shipped build: 14 of the backdrop's
+  // nodes move in 3 seconds, the furthest by 72.9m (a pack of karts at racing
+  // speed). The procedural stand-in menus.js falls back to moves NOTHING in
+  // world space. Set well under the real figure and far above the fallback's
+  // zero, so this fails on a missing backdrop and never on a slow machine.
+  const LIVE_NODES = 6;
+  const LIVE_METRES = 20;
   const MENU_EVENTS = [
     ['race:countdown', { n: 2 }], ['race:start', {}], ['race:lap', { lap: 2 }],
     ['race:bestlap', { ms: 41000 }], ['race:finallap', {}],
@@ -251,10 +258,45 @@ try {
         await new Promise(r => setTimeout(r, 60));
       }
       await window.__hush();
-      await new Promise(r => setTimeout(r, 700));
+      // 3s, not 0.7s: `results.sting` is 2.6s long and `__hush()` only stops the
+      // PERSISTENT voices, so a one-shot scheduled by the burn-in above is still
+      // ringing after a short wait. Under one mutant the "backdrop is silent"
+      // window read 0.034 of a decaying podium sting — the assertion was
+      // measuring the previous section rather than the backdrop.
+      await new Promise(r => setTimeout(r, 3000));
       drain();
+      // …and PROVE the isolation rather than assume it: the room must already be
+      // quiet before the window that claims the backdrop is quiet opens.
+      const control = await window.__measure(600);
 
       // (a) the live backdrop, stepped for 90 simulated seconds.
+      //
+      // FIRST, PROVE THERE IS A BACKDROP. Everything below is an assertion about
+      // a live race behind the logo, and menus.js falls back to a procedural
+      // stand-in — silently, no console error — if `setBackdrop()` was never
+      // called. A build with that one call removed passed all three silence
+      // assertions, printing "90s of simulated racing behind the logo, silent"
+      // over a screen with no race on it at all. An assertion over an empty
+      // sample set is not an assertion. So: snapshot the world positions of the
+      // backdrop scene's nodes, step 3 seconds, and require that a pack of them
+      // actually moved.
+      const scene3d = window.__DEBUG.engine.active?.scene;
+      const snap = [];
+      scene3d?.updateMatrixWorld?.(true);
+      scene3d?.traverse?.(o => {
+        const p = o.getWorldPosition ? o.getWorldPosition(new window.__THREE__.Vector3()) : null;
+        if (p) snap.push({ o, x: p.x, y: p.y, z: p.z });
+      });
+      window.__DEBUG.advance(3);
+      scene3d?.updateMatrixWorld?.(true);
+      let moved = 0, maxMove = 0;
+      for (const s of snap) {
+        const p = s.o.getWorldPosition(new window.__THREE__.Vector3());
+        const d = Math.hypot(p.x - s.x, p.y - s.y, p.z - s.z);
+        if (d > 1) moved++;
+        if (d > maxMove) maxMove = d;
+      }
+      const liveness = { nodes: snap.length, moved, maxMove };
       // Both layers are checked separately here, because either one alone would
       // hide a break in the other: the EVENTS the backdrop emits (race.js's
       // guard) and the SOUND that reaches the bus (audio.js's). With only the
@@ -289,17 +331,33 @@ try {
       const handStarted = drain();
       const engineLive = a.engine.enabled;
 
-      // (c) two sounds invented right now: same synthesis, different GROUP
+      // (c) sounds invented right now: same synthesis, different GROUP.
+      //
+      // The version of this probe that only invented a new ID in the KNOWN group
+      // `race` was not the decisive one, and a critic proved it: with the gate
+      // written as a denylist of five gameplay groups, ids registered in `crowd`,
+      // `weather`, `world`, `ambience` and `hazard` all played on the title
+      // screen at ~0.040 rms, and this probe saw none of it. So the probe now
+      // invents a GROUP as well — the exact shape of the next world system
+      // (props.js already has a crowd) — and that is what an allowlist passes
+      // and a denylist cannot.
       const voice = function (t) {
         this._tone(t, { type: 'triangle', f: 660, dur: 0.45, peak: 0.30, attack: 0.004 });
         this._tone(t, { type: 'sine', f: 990, dur: 0.35, peak: 0.18, attack: 0.004 });
       };
-      a._snd('futureRace.sting', 'race', 0.6, 'probe (gameplay group)', voice);
+      a._snd('futureRace.sting', 'race', 0.6, 'probe (known gameplay group)', voice);
+      a._snd('futureCrowd.roar', 'crowd', 0.6, 'probe (group invented at test time)', voice);
+      a._snd('futureWeather.gust', 'weather', 0.6, 'probe (group invented at test time)', voice);
       a._snd('futureUi.sting', 'ui', 0.6, 'probe (ui group)', voice);
       await window.__hush();
       const gm = window.__measure(900);
       const gameAccepted = a.play('futureRace.sting');
       const unknownGame = await gm;
+      await window.__hush();
+      const cgm = window.__measure(900);
+      const crowdAccepted = a.play('futureCrowd.roar');
+      const weatherAccepted = a.play('futureWeather.gust');
+      const unknownGroup = await cgm;
       const um = window.__measure(900);
       const uiAccepted = a.play('futureUi.sting');
       const unknownUi = await um;
@@ -314,18 +372,40 @@ try {
       const cm = window.__measure(900);
       bus.emit('ui:confirm');
       const click = await cm;
+      // The RESULTS/PODIUM screen's own flourish. It is a menu screen, so this is
+      // the one gameplay-shaped cue that must still be heard here — and before
+      // `podium.sting` existed it could not be: `podium:show` was wired to a
+      // sound in the `race` group, i.e. to silence, with no error to notice.
+      await window.__hush();
+      await new Promise(r => setTimeout(r, 400));
+      const pm = window.__measure(1400);
+      bus.emit('podium:show');
+      const podium = await pm;
 
       return {
+        control, liveness,
         backdrop, backdropStarted, backdropEvents, hand, handStarted, engineLive,
         gameAccepted, uiAccepted, unknownGame, unknownUi, music, click,
+        crowdAccepted, weatherAccepted, unknownGroup, podium,
         scene: window.__DEBUG.state().scene,
       };
     } finally { a.play = realPlay; }
   }, MENU_EVENTS);
 
-  const GAMEPLAY_GROUPS = ['race', 'drive', 'impact', 'quiz', 'engine'];
-  const leaked = list => list.filter(s => GAMEPLAY_GROUPS.includes(s.group)).map(s => s.name);
+  // Anything NOT menu-safe leaked. Written as the allowlist's complement on
+  // purpose: a copy of the gameplay list here would go stale the moment a world
+  // group is added, and this gate would stop seeing exactly what it is for.
+  const MENU_SAFE = ['ui', 'garage', 'screen', 'music'];
+  const leaked = list => list.filter(s => !MENU_SAFE.includes(s.group)).map(s => s.name);
   ok('the silent-menu probe really sat on the title screen', menu.scene === 'menu', menu.scene);
+  // The two assertions that make every silence claim below falsifiable: there IS
+  // a race behind the logo, and the room was already quiet when the meter opened.
+  ok('…and the title backdrop is a LIVE race (not the procedural stand-in)',
+    menu.liveness.moved >= LIVE_NODES && menu.liveness.maxMove > LIVE_METRES,
+    `${menu.liveness.moved}/${menu.liveness.nodes} nodes moved in 3s, max ${menu.liveness.maxMove.toFixed(1)}m `
+    + `(need ${LIVE_NODES} nodes / ${LIVE_METRES}m)`);
+  ok('…and nothing from the previous section is still ringing',
+    menu.control.rms < RMS_FLOOR, `rms ${menu.control.rms.toFixed(5)} before the silence windows open`);
   ok('the LIVE menu backdrop emits no gameplay EVENTS (race.js)',
     menu.backdropEvents.length === 0,
     menu.backdropEvents.length ? 'EMITTED: ' + menu.backdropEvents.join(', ')
@@ -346,6 +426,10 @@ try {
   ok('an UNKNOWN gameplay sound id is silent too (group-driven, not a list)',
     menu.gameAccepted === false && menu.unknownGame.rms < RMS_FLOOR,
     `accepted=${menu.gameAccepted} rms ${menu.unknownGame.rms.toFixed(5)}`);
+  ok('an UNKNOWN GROUP is silent too (allowlist, not a denylist of five names)',
+    menu.crowdAccepted === false && menu.weatherAccepted === false
+    && menu.unknownGroup.rms < RMS_FLOOR,
+    `crowd=${menu.crowdAccepted} weather=${menu.weatherAccepted} rms ${menu.unknownGroup.rms.toFixed(5)}`);
   ok('a UI sound invented at the same moment still plays',
     menu.uiAccepted === true && menu.unknownUi.rms > RMS_FLOOR,
     `accepted=${menu.uiAccepted} rms ${menu.unknownUi.rms.toFixed(4)}`);
@@ -353,6 +437,28 @@ try {
     menu.music.rms > RMS_FLOOR, `rms ${menu.music.rms.toFixed(4)}`);
   ok('a UI click still sounds on that same screen',
     menu.click.rms > RMS_FLOOR, `rms ${menu.click.rms.toFixed(4)}`);
+  ok('the PODIUM screen can still announce itself (podium:show)',
+    menu.podium.rms > RMS_FLOOR, `rms ${menu.podium.rms.toFixed(4)}`);
+
+  // ── 2a-i. A MODULE PREVIEW IS NOT A MENU ──────────────────────────────────
+  // core/harness.js `bootPreview()` boots every module preview as the scene
+  // `preview`, so the first version of the menu gate muted gameplay audio in the
+  // one place whose entire job is auditioning gameplay audio: a critic running
+  // `tools/preview.mjs --mod src/race/race.js` would measure silence and report a
+  // bug that is not in the module. Asserted here on the same signal the harness
+  // raises — `scene:entered('preview')` — in the real built game.
+  const preview = await page.evaluate(async () => {
+    const a = window.__AUDIO, bus = a.bus;
+    bus.emit('scene:entered', 'preview');
+    await window.__hush();
+    await new Promise(r => setTimeout(r, 300));
+    const m = window.__measure(900);
+    const accepted = a.play('collide.wall', { speed: 1 });
+    return { screen: a._screen, accepted, ...(await m) };
+  });
+  ok('a module PREVIEW is not gated (harness boots it as scene "preview")',
+    preview.screen === null && preview.accepted === true && preview.rms > RMS_FLOOR,
+    `screen=${preview.screen} accepted=${preview.accepted} rms ${preview.rms.toFixed(4)}`);
 
   // Back to racer select, and onto the screen KIND where world audio is allowed —
   // everything from here to the real race below measures the sounds themselves,
@@ -639,6 +745,23 @@ try {
       bus.emit('audio:resume');
       await new Promise(r => setTimeout(r, 350));
       out.duck = { before: duckBefore, after: mixState() };
+      a.modal.pop('quiz');
+      await new Promise(r => setTimeout(r, 400));
+
+      // ---- 4. suspend TWICE, then resume once ------------------------------
+      // The bug this pins was real and total: `suspend()` recomputed "was there
+      // anything running" on every call, so a second `audio:suspend` while
+      // already parked recorded FALSE, and the following `audio:resume` then
+      // declined to resume anything. The game went silent for the rest of the
+      // session with no way back. `audio:suspend` is a public bus event, so
+      // "the visibility transition upstream only fires once" is not a defence.
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 200));
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 200));
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 400));
+      out.doubled = { state: a.ctx.state, rate: await clockRate(), rms: (await window.__measure(700)).rms };
       return out;
     } finally {
       try { a.modal.pop('quiz'); } catch { /* */ }
@@ -679,6 +802,10 @@ try {
     && near(susp.duck.after.musicBus, susp.duck.before.musicBus, 0.02),
     `ducked=${susp.duck.after.modalDucked} engineBus ${susp.duck.after.engineBus.toFixed(4)} `
     + `musicBus ${susp.duck.before.musicBus.toFixed(3)}→${susp.duck.after.musicBus.toFixed(3)}`);
+  ok('suspend is IDEMPOTENT (a second hide cannot strand the game silent)',
+    susp.doubled.state === 'running' && susp.doubled.rate > 0.8 && susp.doubled.rms > RMS_FLOOR,
+    `after suspend,suspend,resume: state=${susp.doubled.state} clock x${susp.doubled.rate.toFixed(2)} `
+    + `rms ${susp.doubled.rms.toFixed(4)}`);
   await page.evaluate(() => window.__hush());
 
   // ── 2d. master volume API (used by the settings screen) ───────────────────
@@ -746,6 +873,15 @@ try {
   //  * BOTH ENDS OR NEITHER. A ratio alone is satisfied by a sting that has been
   //    turned off, so the floor and the right/wrong contrast are pinned too.
   const STING_VS_MUSIC = 0.55;    // sting peak as a fraction of music peak
+  // …AND an absolute ceiling, because a ratio alone is satisfied by moving the
+  // OTHER side. Demonstrated: a build with the sting back at its Wave-4 level
+  // (gain 1.0) and the music bus pushed 0.85 → 1.06 printed
+  // "sting 0.272 … music 0.522 … = 0.52 (need < 0.55)" and passed the whole
+  // gate green — the exact level this wave exists to fix, with every sound in
+  // the game 25% louder as the price. Two independent pins, so neither side can
+  // be satisfied by moving the other. 0.26 sits ~20% above the measured 0.216
+  // and ~5% under the 0.272 it must never return to.
+  const STING_PEAK_CEIL = 0.26;
   const STING_RMS_FLOOR = 0.008;  // it must still be a moment, not a whisper
   const mix = await page.evaluate(async () => {
     const a = window.__AUDIO, bus = a.bus;
@@ -775,6 +911,9 @@ try {
     mix.correct.peak < mix.music.peak * STING_VS_MUSIC,
     `sting peak ${mix.correct.peak.toFixed(3)} vs music ${mix.music.peak.toFixed(3)} `
     + `= ${(mix.correct.peak / Math.max(1e-9, mix.music.peak)).toFixed(2)} (need < ${STING_VS_MUSIC})`);
+  ok('…and below an ABSOLUTE ceiling (so turning the music up cannot pass it)',
+    mix.correct.peak < STING_PEAK_CEIL,
+    `sting peak ${mix.correct.peak.toFixed(3)} < ${STING_PEAK_CEIL}`);
   ok('quiz sting is not the loudest event in the game',
     mix.correct.peak < mix.wall.peak && mix.correct.rms < mix.music.rms,
     `sting ${mix.correct.peak.toFixed(3)} < wall ${mix.wall.peak.toFixed(3)}, `

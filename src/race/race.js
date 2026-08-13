@@ -313,6 +313,7 @@ export function raceScene(engine, opts = {}) {
     lapTime: 0,
     lap: 1,
     bestLap: null,
+    tokenCardDeferrals: 0,   // see the first-token popup's cadence escalation
     tokens: 0,
     quizTokens: 0,
     combo: 0,
@@ -479,7 +480,22 @@ export function raceScene(engine, opts = {}) {
         // seconds. `teachingCardReady()` defers to the NEXT pickup rather than
         // dropping the card — the save flag is untouched here, so nothing is
         // lost by waiting (ui/style.js).
-        if (!backdrop && shouldShowFirstTokenPopup() && teachingCardReady()) showFirstTokenPopup();
+        //
+        // The escalation is the floor under that promise. Measured in Wave 5: a
+        // box episode occupies ~5s and then casts a 15s shadow, and token rows
+        // are laid along the SAME racing line as the beacons — so pickups
+        // correlate with the shadow instead of arriving independently of it, and
+        // "defer to the next pickup" once had no next pickup to arrive at (a
+        // whole first race finished with the card never shown). It is unreachable
+        // on all three tracks today, because the intro card is a curtain that
+        // casts no shadow; it exists so a future track that puts a question box
+        // before the first pickup degrades to "late" rather than to "never".
+        if (!backdrop && shouldShowFirstTokenPopup()) {
+          if (teachingCardReady(S.tokenCardDeferrals >= 2 ? 6 : undefined)) {
+            S.tokenCardDeferrals = 0;
+            showFirstTokenPopup();
+          } else S.tokenCardDeferrals++;
+        }
       }
       S.comboT = Math.max(0, S.comboT - dt);
       if (S.comboT === 0) S.combo = 0;

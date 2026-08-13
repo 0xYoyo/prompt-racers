@@ -40,6 +40,8 @@ if (typeof document === 'undefined') {
     fillRect() {}, clearRect() {}, beginPath() {}, arc() {}, fill() {}, stroke() {},
     save() {}, restore() {}, translate() {}, rotate() {}, scale() {},
     moveTo() {}, lineTo() {}, closePath() {}, drawImage() {}, fillText() {},
+    // section 7 rasterises the kart's number-plate texture headlessly
+    arcTo() {}, strokeText() {}, strokeRect() {}, rect() {},
     measureText: () => ({ width: 8 }),
     createRadialGradient: () => ({ addColorStop() {} }),
     createLinearGradient: () => ({ addColorStop() {} }),
@@ -265,6 +267,122 @@ ok('choosing a tier ends the probe for this session', engine._probe === null);
 ok('choosing a tier clears autoTier, so no later boot re-probes', engine.autoTier === false);
 ok('the chosen tier reboots unchanged', resolveInitialTier(save.read('quality')).name === 'low');
 save._replace({ quality: 'auto' });
+
+// ── 7. the AI kart LOD (Wave 5) ──────────────────────────────────────────────
+//
+// Eight karts were measured at 95% of the frame's draw calls, and the cheap
+// build that was supposed to prevent that reduced NOTHING: race.js asks for it
+// with `lod: 1`, a number, and every test inside createKart is a string compare
+// against 'low'. `1 === 'low'` is false, so each "cheap" opponent was built at
+// MID detail — 235 meshes against the player's own 144 at the נמוך tier — and
+// no test anywhere compared the two builds, which is why it survived a wave.
+//
+// So the assertions below are, in order: the numeric LOD resolves; the cheap
+// build is MATERIALLY cheaper than the full one (the missing assertion); it is
+// under an absolute bound with margin; the PLAYER's kart is never reduced or
+// welded; the weld is lossless (same triangles, same vertices, same materials);
+// setParts on a welded kart still produces the right kart; and the things that
+// have to keep moving — wheels, steering, body roll — survived the weld.
+console.log('\n  \x1b[1mAI kart LOD\x1b[0m');
+
+const KM = await import('../src/kart/kartmodel.js');
+const eng = t => ({ q: TIERS[t] });
+const P2 = { engine: 2, tires: 2, wing: 2, chassis: 2, exhaust: 2 };
+
+function census(kart) {
+  let meshes = 0, tris = 0, verts = 0, welds = 0;
+  const mats = new Set();
+  kart.group.traverse(o => {
+    if (!o.isMesh) return;
+    meshes++;
+    if (o.name === 'weld') welds++;
+    const m = o.material;
+    mats.add(`${m.type}|${m.color.getHexString()}|${m.roughness}|${m.metalness}|${m.emissive?.getHexString() ?? '-'}|${m.side}|${m.transparent}|${m.opacity}|${m.map ? 'map' : '-'}`);
+    const g = o.geometry;
+    const t = g.index ? g.index.count / 3 : (g.attributes.position ? g.attributes.position.count / 3 : 0);
+    tris += t * (o.isInstancedMesh ? o.count : 1);
+    verts += g.attributes.position ? g.attributes.position.count : 0;
+  });
+  return { meshes, tris: Math.round(tris), verts, welds, mats: [...mats].sort() };
+}
+
+ok('a numeric lod resolves to the cheap build (1 → low)', KM.normalizeLod(1) === 'low',
+  `normalizeLod(1) = ${JSON.stringify(KM.normalizeLod(1))}`);
+ok('lod 0 means "no override" — the tier decides', KM.normalizeLod(0) === null);
+ok('a string lod still works', KM.normalizeLod('low') === 'low' && KM.normalizeLod('junk') === null);
+
+// The kart race.js actually builds for an opponent at נמוך, and the player's.
+const aiLow = KM.createKartLOD({ engine: eng('low'), parts: P2, lod: 1 });
+const playerLow = KM.createKart({ engine: eng('low'), parts: P2 });
+const playerHigh = KM.createKart({ engine: eng('high'), parts: P2 });
+const cAi = census(aiLow), cPlayerLow = census(playerLow), cPlayerHigh = census(playerHigh);
+
+// THE assertion nothing had. Whatever the numbers become, the cheap build must
+// stay dramatically cheaper than the full one, or it is not a LOD.
+ok('createKartLOD(lod:1) draws less than HALF the meshes of createKart',
+  cAi.meshes * 2 < cPlayerHigh.meshes,
+  `${cAi.meshes} vs ${cPlayerHigh.meshes} meshes`);
+ok('…and less than half of the PLAYER\'s kart at the same נמוך tier',
+  cAi.meshes * 2 < cPlayerLow.meshes, `${cAi.meshes} vs ${cPlayerLow.meshes}`);
+
+// An absolute ceiling with real margin (measured: 50 at parts tier 2, 64 at the
+// hero tier). Seven opponents live under this number.
+let worstLod = 0;
+for (let t = 0; t < 4; t++) {
+  const k = KM.createKartLOD({ engine: eng('low'), lod: 1,
+    parts: { engine: t, tires: t, wing: t, chassis: t, exhaust: t } });
+  worstLod = Math.max(worstLod, census(k).meshes);
+  k.dispose();
+}
+ok('an opponent is under 90 draw calls at every part tier', worstLod <= 90, `worst = ${worstLod}`);
+
+// The player's kart is the game's hero art and is on screen at 3–8 m in every
+// frame. It must not be reduced, and it must never be welded — a welded kart
+// cannot have one slot swapped, which is the whole garage.
+ok('the player\'s kart keeps its full detail at גבוה', cPlayerHigh.meshes >= 200, `${cPlayerHigh.meshes} meshes`);
+ok('the player\'s kart keeps its נמוך detail (the LOD did not leak into it)',
+  cPlayerLow.meshes >= 140, `${cPlayerLow.meshes} meshes`);
+ok('no kart built by createKart is ever welded',
+  cPlayerLow.welds === 0 && cPlayerHigh.welds === 0,
+  `${cPlayerLow.welds}/${cPlayerHigh.welds} welded meshes`);
+ok('the opponent IS welded', cAi.welds > 0, `${cAi.welds} welded meshes`);
+
+// Lossless: the weld may change how many buffers are bound and nothing else.
+// The twin is the same build with the weld switched off.
+const aiTwin = KM.createKart({ engine: eng('low'), parts: P2, lod: 'low', shadows: false, plates: true, merge: false });
+const cTwin = census(aiTwin);
+ok('the weld keeps every triangle', cAi.tris === cTwin.tris, `${cAi.tris} vs ${cTwin.tris}`);
+ok('the weld keeps every vertex', cAi.verts === cTwin.verts, `${cAi.verts} vs ${cTwin.verts}`);
+ok('the weld substitutes no material',
+  cAi.mats.length === cTwin.mats.length && cAi.mats.every((m, i) => m === cTwin.mats[i]),
+  `${cAi.mats.length} vs ${cTwin.mats.length} distinct materials`);
+
+// A welded kart whose parts change must still end up as the kart it was asked
+// for — the weld throws the slot half away and rebuilds it whole.
+const swapped = KM.createKartLOD({ engine: eng('low'), lod: 1,
+  parts: { engine: 1, tires: 1, wing: 1, chassis: 1, exhaust: 1 } });
+swapped.setParts({ wing: 3, engine: 3 });
+const fresh = KM.createKartLOD({ engine: eng('low'), lod: 1,
+  parts: { engine: 3, tires: 1, wing: 3, chassis: 1, exhaust: 1 } });
+const cSwap = census(swapped), cFresh = census(fresh);
+ok('setParts on a welded kart rebuilds it correctly (no stale welded geometry)',
+  cSwap.tris === cFresh.tris && cSwap.meshes === cFresh.meshes,
+  `${cSwap.meshes}m/${cSwap.tris}t vs ${cFresh.meshes}m/${cFresh.tris}t`);
+
+// Whatever moves must have stayed outside the weld. Wheels spin and steer, the
+// body rolls: a weld that swallowed a frame would freeze one of them.
+for (let i = 0; i < 30; i++) aiLow.update(1 / 60, { steer: 1, speed01: 0.9, drifting: false, driftCharge01: 0, airborne: false, boosting: false });
+const spun = aiLow.wheels.every(w => Math.abs(w.spin.rotation.x) > 0.1);
+const steered = aiLow.wheels.filter(w => w.kind === 'front').every(w => Math.abs(w.steer.rotation.y) > 0.05);
+const wheelMeshes = aiLow.wheels.every(w => { let n = 0; w.spin.traverse(o => { if (o.isMesh) n++; }); return n > 0; });
+ok('welded wheels still spin', spun, aiLow.wheels.map(w => w.spin.rotation.x.toFixed(2)).join(' '));
+ok('welded front wheels still steer', steered);
+ok('every wheel still owns geometry (the weld did not eat one)', wheelMeshes);
+ok('the welded body still rolls and the driver still leans',
+  Math.abs(aiLow.bodyPivot.rotation.z) > 0.01 && Math.abs(aiLow.driverPivot.rotation.z) > 0.01,
+  `body ${aiLow.bodyPivot.rotation.z.toFixed(3)} driver ${aiLow.driverPivot.rotation.z.toFixed(3)}`);
+
+for (const k of [aiLow, playerLow, playerHigh, aiTwin, swapped, fresh]) k.dispose();
 
 console.log('\n  ' + '─'.repeat(78));
 console.log(failed ? `  \x1b[31m${failed} FAILED\x1b[0m\n` : '  \x1b[32mall performance invariants hold\x1b[0m\n');
