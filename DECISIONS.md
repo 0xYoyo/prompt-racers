@@ -1501,3 +1501,29 @@ answers land on top of a stronger boost and buy only the difference. So race 2's
 was a **pace** problem, not an engagement one — and the tempting fix was measured before being
 rejected: raising the boost to 1.45× hands race 1 to any child who answers (22/40 → 40/40 wins)
 and still never wins race 2. The boost constant stays, and the gate now goes red if it moves.
+
+## D57 — "Every box is one question" became a lie the moment boxes could be dim
+The smoothing pass found the one real copy defect of Wave 5.1, and it was not a register
+problem — it was a **factual** one. `quiz.intro.1` promised "כל תיבה היא שאלה אחת על AI" /
+"Every box is one question about AI". That was true until D52 put the boxes on a visible
+recharge: a ghosted beacon opens no question, so the universal was precisely the promise the
+redesigned boxes no longer keep, printed on the one card whose entire job is telling a child
+what a box is. Now "תיבה דולקת" / "a lit box".
+
+The fix is also the cheapest possible answer to a question this wave kept asking — whether the
+recharge state needs words. It does not need a card, a toast or a tutorial beat: naming the LIT
+state in the explainer the child is already reading pays off the first time the boxes dim, at
+zero cadence cost. **A new mechanic taught without words still needs its vocabulary introduced
+once, and the right place is the card that already exists.**
+
+Two smaller things worth recording. The word `אחת` / `one` was dropped as a *typographic*
+consequence, not a stylistic one: adding `דולקת` pushed the Hebrew line to wrap for the first
+time and the wrap split the bolded `טוקנים למוסך` with a two-word widow — measured in the real
+card at 486 px content width. And the English `Auto-detect` in the new settings note was
+replaced ("The game picks for you, up to Medium") because it was the only jargon in a panel of
+plain words **and it named a control that is not on screen** — the segments are Low/Medium/High
+with no "auto" chip for a child to attach the word to. The Hebrew never had that trap because it
+says "the game" rather than naming a mechanism; the correction ran the other way there, replacing
+a passive technical adverb (`נבחר רק ידנית`) with the plain active plural the rest of the panel
+speaks. **Each language was wrong in its own direction, which is the case a single-language
+reviewer cannot see.**

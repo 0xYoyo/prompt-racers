@@ -213,7 +213,14 @@ registerStrings({
     'menu.set.q.low': 'נמוך',
     'menu.set.q.medium': 'בינוני',
     'menu.set.q.high': 'גבוה',
-    'menu.set.q.auto': 'המשחק בוחר לבד עד בינוני. גבוה נבחר רק ידנית.',
+    // Both halves are STATEMENTS, in the house voice (D27): the note tells a
+    // child what the game does, it does not tell them what to do. "נבחר רק
+    // ידנית" was a passive with a technical adverb — the only one in a panel
+    // that otherwise speaks in plain active plural — and it read as translated
+    // English. Its English twin had the opposite fault: "Auto-detect" is the
+    // one piece of jargon in the panel, and it named a control that is not on
+    // screen (the segments are נמוך/בינוני/גבוה, there is no "auto" chip).
+    'menu.set.q.auto': 'המשחק בוחר לבד עד בינוני. רק אתם יכולים לבחור גבוה.',
     'menu.set.sound': 'צלילים',
     'menu.set.on': 'דולק',
     'menu.set.off': 'כבוי',
@@ -320,7 +327,7 @@ registerStrings({
     'menu.set.q.low': 'Low',
     'menu.set.q.medium': 'Medium',
     'menu.set.q.high': 'High',
-    'menu.set.q.auto': 'Auto-detect goes up to Medium. High is a manual choice.',
+    'menu.set.q.auto': 'The game picks for you, up to Medium. Only you can choose High.',
     'menu.set.sound': 'Sound',
     'menu.set.on': 'On',
     'menu.set.off': 'Off',

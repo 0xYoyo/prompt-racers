@@ -170,7 +170,15 @@ registerStrings({
     // anywhere. House voice: impersonal plural, no gendered imperative (D27).
     'quiz.intro.kicker': 'חדש על המסלול',
     'quiz.intro.title': 'תיבת שאלה',
-    'quiz.intro.1': 'כל תיבה היא שאלה אחת על AI — תשובה נכונה נותנת <b>טורבו</b> ו<b>טוקנים למוסך</b>.',
+    // "כל תיבה" was true until Wave 5.1 put the boxes on a VISIBLE recharge: a
+    // ghosted beacon opens no question, so the universal was a promise the
+    // boxes no longer keep. "דולקת" is the one word the recharge gauge gets —
+    // it names the state the child is already being shown (lit core vs ghosted
+    // core) without a second card and without explaining a mechanic that has
+    // not happened yet at the moment this card appears.
+    // ("אחת" went with it: with "דולקת" in front the line wrapped, and the wrap
+    //  broke the bolded "טוקנים למוסך" across two lines with a two-word widow.)
+    'quiz.intro.1': 'תיבה דולקת היא שאלה על AI — תשובה נכונה נותנת <b>טורבו</b> ו<b>טוקנים למוסך</b>.',
     // Evaluative, not directive — and deliberately the SAME register as the
     // English line below it. Hebrew said "אז אוספים כל תיבה בדרך" (an
     // instruction) while English said "worth grabbing" (a judgement): two
@@ -203,7 +211,7 @@ registerStrings({
     'quiz.topic.vibe': 'Vibe coding',
     'quiz.intro.kicker': 'New on the track',
     'quiz.intro.title': 'Question box',
-    'quiz.intro.1': 'Every box is one question about AI — a right answer gives a <b>boost</b> and <b>tokens for the garage</b>.',
+    'quiz.intro.1': 'A lit box is a question about AI — a right answer gives a <b>boost</b> and <b>tokens for the garage</b>.',
     'quiz.intro.2': 'An answer that misses costs nothing, so every box on the way is worth grabbing.',
     'quiz.intro.go': 'On to the question! (Space)',
   },

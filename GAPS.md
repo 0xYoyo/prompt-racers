@@ -390,17 +390,27 @@ only one still present, and only the first time each track is seen. Closing it m
 track ahead of time on idle frames — a new system rather than a cache, so it was deliberately
 left. The gate holds it under a cold ceiling so a regression there still fails.
 
-### Kart contact shadow on oasis at נמוך is only partly closed
-The blob darkens its footprint by 31.9% of local road brightness on oasis and 30.4% on cloud —
-the same relative occlusion — but oasis asphalt is much darker in absolute terms (base sum-RGB
-78.5 vs 169.4), so that is 8.4 per channel there against 17 on cloud. Cloud reads grounded;
-oasis still reads slightly pasted at chase distance. **It is not a dark-road limit:** the
-player's real cast shadow on the same track at גבוה moves 64,158 ground px (4.46% of frame) at
-mean Δ 53.3, against the blob's 25,305 px (1.76%) at mean Δ 25.1 — 2.5× the area and 2.1× the
-darkening. The deficit is mostly **area and shape**, not opacity: oasis' low sun rakes the real
-shadow into a long offset smear while the blob is a symmetric footprint. Do NOT close this by
-adding black — the surface is already near-black, and the retired card's failure (D55) was
-exactly a contrast misjudgement. Both numbers reproduce with `.tmp/gt/ab3.mjs`.
+### Kart contact shadow on oasis at נמוך — area closed, contrast not
+The נמוך blob is now raked along the sun's ground projection, driven by each theme's real
+elevation (oasis 15° → 2.61 m smear, cloud 13° → 3.03 m, the night circuit's 38° moon → 0.90 m,
+correctly almost symmetric). Masked ground A/B on oasis went **25,305 px → 68,910 px** against
+the real cast shadow's 64,158, so the 2.5× area deficit that made the kart read as pasted is
+closed and marginally overshot. Direction and shape now match the real גבוה shadow in the same
+frame (`shots/w51r4-oasis-zoom-raked.png` vs `shots/w51r4-oasis-zoom-real.png`).
+
+**What is still open is depth, and it is deliberately unclosed.** The raked blob darkens its
+footprint by 37.9% of local road brightness where the real shadow at גבוה reaches 51.7%. The
+only lever left is alpha, and oasis' asphalt is near-black (base sum-RGB 75 against cloud's
+163) — which is precisely the surface the retired pre-Wave-1 card misjudged in the other
+direction (D55). Trading a measured area win for a contrast gamble is the wrong trade. Cloud is
+unambiguously solved; oasis reads acceptable at chase distance and is the weakest of the three.
+
+Two smaller residuals ride along, neither observed in play nor gated: the smear now extends
+~2.6–3.0 m, so on a strongly crowned or banked stretch its far end could sink into the road and
+be depth-clipped; and two karts running side by side overlap their smears, doubling alpha in the
+overlap (visible as peak Δ rising 136 → 167 on oasis with per-card alpha unchanged).
+`BLOB_SKEW_MAX = 4.0 m` never binds today — cloud's 3.03 m is the longest rake in the game.
+All numbers reproduce with `.tmp/gt/ab3.mjs`.
 
 ### Race 3's target is only half met — an upgrade alone wins the finale
 Measured over 40 seeds: a clean, unengaged, stock driver finishes **3.90** (0 wins in 40, 15
