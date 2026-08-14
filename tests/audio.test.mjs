@@ -162,6 +162,41 @@ try {
       clearInterval(iv); a.stopEngine();
       return out;
     };
+    // ── a THIRD meter: level + spectral centroid ─────────────────────────────
+    // "Is this cue a duplicate of the token pickup?" is a question about the
+    // SIGNAL, not about the wiring, so it needs an instrument that can hear the
+    // difference between a dark two-note nudge and a bright ascending sparkle.
+    // The centroid (magnitude-weighted mean frequency) is exactly that, and it
+    // is only accumulated on frames that actually contain something — otherwise
+    // the silence between the notes drags every cue toward the same number.
+    const anS = a.ctx.createAnalyser();
+    anS.fftSize = 4096;
+    anS.smoothingTimeConstant = 0;
+    a.master.connect(anS);
+    const bufS = new Float32Array(anS.fftSize);
+    const magS = new Float32Array(anS.frequencyBinCount);
+    window.__measureSpec = ms => new Promise(res => {
+      const binHz = a.ctx.sampleRate / anS.fftSize;
+      let sum = 0, n = 0, peak = 0, wsum = 0, msum = 0;
+      const iv = setInterval(() => {
+        anS.getFloatTimeDomainData(bufS);
+        let s = 0, p = 0;
+        for (let i = 0; i < bufS.length; i++) { const v = bufS[i]; s += v * v; if (Math.abs(v) > p) p = Math.abs(v); }
+        const rms = Math.sqrt(s / bufS.length);
+        sum += rms; n++; if (p > peak) peak = p;
+        if (rms > 0.002) {                       // only frames with real content
+          anS.getFloatFrequencyData(magS);
+          for (let i = 1; i < magS.length; i++) {
+            const m = Math.pow(10, magS[i] / 20);
+            wsum += m * i * binHz; msum += m;
+          }
+        }
+      }, 20);
+      setTimeout(() => {
+        clearInterval(iv);
+        res({ rms: sum / Math.max(1, n), peak, centroid: msum > 0 ? wsum / msum : 0 });
+      }, ms);
+    });
     // Silence every persistent voice so a single source can be measured alone.
     window.__hush = async () => {
       a.stopMusic(0.05); a.stopEngine(); a.drift.stop(a.now, 0.05); a.setAiEngines([]);
@@ -232,6 +267,7 @@ try {
     ['surface:change', { surface: 'grass' }], ['surface:change', { surface: 'sand' }],
     ['drift:start', {}], ['drift:tier', { tier: 2 }], ['drift:boost', { tier: 2 }],
     ['quiz:correct', {}], ['quiz:wrong', {}], ['quiz:timeout', {}],
+    ['quiz:softToken', { i: 0, x: 0, y: 0, z: 0 }], ['quiz:recharged', {}],
   ];
   await page.evaluate(() => window.__DEBUG.goto('menu'));
   await sleep(500);
@@ -926,6 +962,146 @@ try {
     `correct ${mix.correct.peak.toFixed(3)}/${mix.correct.rms.toFixed(4)} vs `
     + `wrong ${mix.wrong.peak.toFixed(3)}/${mix.wrong.rms.toFixed(4)}`);
 
+  // ── 3c. THE QUESTION-BOX CUES (Wave 5.1) ──────────────────────────────────
+  // Wave 5.1 redesigned the pickup rules and created two player-facing moments
+  // that had NO sound at all:
+  //   quiz:softToken — drove through a box that was still recharging. It pays no
+  //                    token; it shaves the recharge and sparkles. It used to
+  //                    re-emit `token:pickup` and BORROW that sound, so the
+  //                    regression this section exists to catch is not only
+  //                    "silent" but "sounds like the reward it did not pay".
+  //   quiz:recharged — every box popped back to live. The invitation to go and
+  //                    get one.
+  // Three independent properties, because they fail three different ways:
+  //   (a) the event reaches a sound at all, and it is that cue's OWN sound id —
+  //       asserted on the id `play()` is called with, so wiring either of these
+  //       back to `token.pickup` fails here even though it would meter fine;
+  //   (b) the SIGNAL is real: non-silent, non-clipping, over in well under a
+  //       second, and — for the soft touch — measurably darker and quieter than
+  //       the token pickup, which is the confusion the cue exists to avoid;
+  //   (c) it cannot STACK: the soft touch can fire on consecutive beacons, and
+  //       six copies inside 70ms must not pile into a buzz.
+  // Both cues must be fully gone in the 400ms window that opens once their own
+  // measurement window closes — they are moments, not pads.
+  const SOFT_VS_TOKEN_PEAK = 0.8;  // the nudge must sit clearly under the reward
+  const SOFT_VS_TOKEN_SPEC = 0.8;  // …and clearly darker than it
+  const boxes = await page.evaluate(async () => {
+    const a = window.__AUDIO, bus = a.bus;
+    const reg = n => { const s = a.sounds.get(n); return s ? { group: s.group, dur: s.dur } : null; };
+    // Fire `evt` and report BOTH the sound ids it started and what it measured.
+    //
+    // The measurement window is sized to the CUE, not fixed, and that is not a
+    // thumb on the scale: `rms` here is a mean over the whole window, so a 0.25s
+    // cue measured over 1.1s reads 4x quieter than the same cue measured over
+    // its own length — the soft touch metered 0.0027 that way, under the file's
+    // silence floor, while its peak was 0.069 and the idle bus reads 0.00000.
+    // A floor lowered to accommodate that would stop distinguishing "quiet" from
+    // "gone", which is the one thing this assertion is for. Peak and centroid,
+    // which every cross-cue comparison below uses, are window-length invariant.
+    const fire = async (evt, payload, ms) => {
+      await window.__hush();
+      await new Promise(r => setTimeout(r, 700));
+      const names = [];
+      const realPlay = a.play.bind(a);
+      a.play = (n, o) => { const r = realPlay(n, o); if (r) names.push(n); return r; };
+      try {
+        const m = window.__measureSpec(ms);
+        bus.emit(evt, payload);
+        const out = await m;
+        const tail = await window.__measureSpec(400);   // starts ~ms after the fire
+        return { names, ...out, tailRms: tail.rms };
+      } finally { a.play = realPlay; }
+    };
+    const soft = await fire('quiz:softToken', { i: 1, x: 0, y: 0, z: 0, shaved: 1.2, charge: 0.4 }, 450);
+    const recharged = await fire('quiz:recharged', {}, 750);
+    const token = await fire('token:pickup', { combo: 1 }, 600);
+
+    // (c) six soft touches inside 70ms — the worst case two ghosted beacons on
+    // consecutive frames can produce, exaggerated.
+    await window.__hush();
+    await new Promise(r => setTimeout(r, 700));
+    const burstNames = [];
+    const realPlay = a.play.bind(a);
+    a.play = (n, o) => { const r = realPlay(n, o); if (r) burstNames.push(n); return r; };
+    let burst;
+    try {
+      const m = window.__measureSpec(1100);
+      for (let i = 0; i < 6; i++) {
+        bus.emit('quiz:softToken', { i, x: 0, y: 0, z: 0 });
+        await new Promise(r => setTimeout(r, 12));
+      }
+      burst = await m;
+    } finally { a.play = realPlay; }
+    return {
+      soft, recharged, token, burst, burstPlays: burstNames.length,
+      regSoft: reg('quiz.soft'), regRecharged: reg('quiz.recharged'),
+    };
+  });
+  await page.evaluate(() => window.__hush());
+  console.log(`  \x1b[2mbox cues: soft ${boxes.soft.peak.toFixed(3)}/${boxes.soft.rms.toFixed(4)}/`
+    + `${Math.round(boxes.soft.centroid)}Hz  recharged ${boxes.recharged.peak.toFixed(3)}/`
+    + `${boxes.recharged.rms.toFixed(4)}/${Math.round(boxes.recharged.centroid)}Hz  `
+    + `token ${boxes.token.peak.toFixed(3)}/${boxes.token.rms.toFixed(4)}/`
+    + `${Math.round(boxes.token.centroid)}Hz\x1b[0m`);
+
+  ok('quiz.soft is registered as a gameplay-group sound of sane length',
+    !!boxes.regSoft && boxes.regSoft.group === 'quiz'
+    && boxes.regSoft.dur > 0.05 && boxes.regSoft.dur < 0.8,
+    boxes.regSoft ? `group=${boxes.regSoft.group} dur=${boxes.regSoft.dur}` : 'NOT REGISTERED');
+  ok('quiz.recharged is registered as a gameplay-group sound of sane length',
+    !!boxes.regRecharged && boxes.regRecharged.group === 'quiz'
+    && boxes.regRecharged.dur > 0.1 && boxes.regRecharged.dur < 1.2,
+    boxes.regRecharged ? `group=${boxes.regRecharged.group} dur=${boxes.regRecharged.dur}` : 'NOT REGISTERED');
+
+  ok('quiz:softToken plays its OWN cue (not the token reward, not silence)',
+    boxes.soft.names.length > 0 && boxes.soft.names.includes('quiz.soft')
+    && !boxes.soft.names.includes('token.pickup'),
+    boxes.soft.names.length ? boxes.soft.names.join(', ') : 'SILENT — no sound started');
+  ok('quiz:recharged plays its OWN cue (not the token reward, not silence)',
+    boxes.recharged.names.length > 0 && boxes.recharged.names.includes('quiz.recharged')
+    && !boxes.recharged.names.includes('token.pickup'),
+    boxes.recharged.names.length ? boxes.recharged.names.join(', ') : 'SILENT — no sound started');
+
+  ok('the soft-touch cue is a real, bounded signal',
+    boxes.soft.rms > RMS_FLOOR && boxes.soft.peak < PEAK_CEIL && boxes.soft.tailRms < RMS_FLOOR,
+    `rms ${boxes.soft.rms.toFixed(4)} peak ${boxes.soft.peak.toFixed(3)}, `
+    + `and gone in the next window (tail rms ${boxes.soft.tailRms.toFixed(5)})`);
+  ok('the recharged cue is a real, bounded signal',
+    boxes.recharged.rms > RMS_FLOOR && boxes.recharged.peak < PEAK_CEIL
+    && boxes.recharged.tailRms < RMS_FLOOR,
+    `rms ${boxes.recharged.rms.toFixed(4)} peak ${boxes.recharged.peak.toFixed(3)}, `
+    + `and gone in the next window (tail rms ${boxes.recharged.tailRms.toFixed(5)})`);
+
+  // The signal-level version of "it must not over-promise the currency": quieter
+  // AND darker than the pickup it used to borrow. A copy of token.pickup under a
+  // new id passes every wiring assertion above and fails right here.
+  ok('the soft touch does not sound like the token reward (quieter and darker)',
+    boxes.soft.peak < boxes.token.peak * SOFT_VS_TOKEN_PEAK
+    && boxes.soft.centroid < boxes.token.centroid * SOFT_VS_TOKEN_SPEC,
+    `peak ${boxes.soft.peak.toFixed(3)} vs token ${boxes.token.peak.toFixed(3)} `
+    + `(need < ${SOFT_VS_TOKEN_PEAK}x), centroid ${Math.round(boxes.soft.centroid)}Hz vs `
+    + `${Math.round(boxes.token.centroid)}Hz (need < ${SOFT_VS_TOKEN_SPEC}x)`);
+  // …and the recharged cue is its own sound too, not the pickup re-voiced: a
+  // duplicate would land within a few percent on both axes at once.
+  const rDiff = Math.max(
+    Math.abs(boxes.recharged.peak / Math.max(1e-9, boxes.token.peak) - 1),
+    Math.abs(boxes.recharged.centroid / Math.max(1e-9, boxes.token.centroid) - 1));
+  ok('the recharged cue is distinguishable from the token pickup', rDiff > 0.15,
+    `differs by ${(rDiff * 100).toFixed(0)}% on peak/centroid (need > 15%)`);
+
+  // The soft touch and the recharge are two different answers, so they must not
+  // be the same sound as each other either.
+  const sDiff = Math.max(
+    Math.abs(boxes.soft.peak / Math.max(1e-9, boxes.recharged.peak) - 1),
+    Math.abs(boxes.soft.centroid / Math.max(1e-9, boxes.recharged.centroid) - 1));
+  ok('the two box cues are distinguishable from each other', sDiff > 0.15,
+    `differs by ${(sDiff * 100).toFixed(0)}%`);
+
+  ok('six soft touches in 70ms cannot stack into a buzz',
+    boxes.burstPlays <= 2 && boxes.burst.peak < boxes.soft.peak * 1.8,
+    `${boxes.burstPlays} voice(s) for 6 events, burst peak ${boxes.burst.peak.toFixed(3)} `
+    + `vs single ${boxes.soft.peak.toFixed(3)}`);
+
   for (const theme of ['oasis', 'circuit', 'cloud']) {
     await measureSource(`music — ${theme}`, `a.playMusic('race', { theme: ${JSON.stringify(theme)} });`, 1600);
   }
@@ -944,6 +1120,10 @@ try {
     ['surface:change', { surface: 'grass' }], ['surface:change', { surface: 'sand' }],
     ['drift:start', {}], ['drift:tier', { tier: 2 }], ['drift:boost', { tier: 2 }],
     ['quiz:correct', {}], ['quiz:wrong', {}], ['quiz:timeout', {}],
+    // Wave 5.1's question-box moments — the pickup rules emit these and nothing
+    // else does, so a rename on either side is silence that looks like nothing
+    // happened. See section 3c.
+    ['quiz:softToken', { i: 0, x: 0, y: 0, z: 0 }], ['quiz:recharged', {}],
     ['ui:hover', {}], ['ui:select', {}], ['ui:confirm', {}], ['ui:back', {}],
     ['garage:build', {}], ['garage:reveal', { tier: 3 }],
   ];

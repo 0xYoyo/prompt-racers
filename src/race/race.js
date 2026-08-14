@@ -383,19 +383,22 @@ export function raceScene(engine, opts = {}) {
   // ── the soft reward for a RECHARGING question box (Wave 5.1) ───────────────
   // A ghosted beacon is visibly not going to ask anything, but driving through
   // one must still feel like touching something rather than like a bug that
-  // swallowed a pickup. So it pays exactly what a gold token pays — one token,
-  // the same `token:pickup` event, the same sparkle at the thing you touched —
-  // and nothing else: no modal, no freeze, no combo.
+  // swallowed a pickup. So it sparkles at the thing you touched, and quiz.js
+  // pays the reward that is actually on-lesson: the touch SHAVES time off the
+  // recharge, and the child watches the arc jump forward for it.
   //
-  // It cannot be farmed. quiz.js consumes the beacon before it emits, so a
-  // beacon pays at most once per life and comes back on the same RESPAWN_S as
-  // any other; circling one pays nothing. The combo is deliberately NOT
-  // advanced: the combo is the reward for a clean line through a token row, and
-  // a ghosted box is not one.
+  // WHAT IT DELIBERATELY DOES NOT PAY IS CURRENCY (round 2). Round 1 paid one
+  // token here, and that one line cost the whole pass its point: with every
+  // beacon TOUCHED paying a token, beacon income stopped being "how many
+  // questions did you answer" and became "how many beacons did you drive
+  // through", so RESPAWN_S had to go 26 → 60 to hold a won race under D51's
+  // 21-token top ask. Measured, that starved the track: 59 questions over nine
+  // engaged races against Wave 4's 69. Currency here buys nothing a child
+  // wanted and costs them the boxes. So: sparkle, charge, no wallet, no combo
+  // (the combo is the reward for a clean line through a token row, and a
+  // ghosted box is not one) and no modal.
   const offSoftToken = backdrop ? null : bus.on('quiz:softToken', ({ x, y, z }) => {
     if (S.phase !== 'racing' || S.finished) return;
-    S.tokens += 1;
-    bus.emit('token:pickup', { tokens: S.tokens, combo: S.combo });
     fx?.spawn('token', { x, y, z });
   });
   // Pause: freeze the sim entirely. Input is disabled too so a held key does not

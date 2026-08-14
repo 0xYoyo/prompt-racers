@@ -1194,6 +1194,24 @@ class AudioSystem {
     this.sounds.set(name, { group, dur, label, fn, priority });
   }
 
+  /**
+   * _retrigger(key, gap) — true when `key` fired less than `gap` seconds ago,
+   * i.e. "swallow this one". For cues whose EVENT can legitimately arrive twice
+   * in the same instant (two ghosted beacons on consecutive frames), where the
+   * second copy would only phase against the first and turn a soft nudge into a
+   * buzz. Deliberately NOT a general policy: the token pickup wants its
+   * back-to-back combo ladder, and impacts want every hit.
+   * One Map, allocated once, keyed by sound id — nothing per frame.
+   */
+  _retrigger(key, gap) {
+    if (!this.ready) return false;              // no clock yet: never swallow
+    if (!this._lastAt) this._lastAt = new Map();
+    const tN = this.now, last = this._lastAt.get(key);
+    if (last != null && tN - last < gap) return true;
+    this._lastAt.set(key, tN);
+    return false;
+  }
+
   // ── engine control ─────────────────────────────────────────────────────────
   /** setEngineState({rpm01, load, boosting, surface}) — call every frame; cheap. */
   setEngineState(s = {}) {
@@ -1552,6 +1570,47 @@ class AudioSystem {
       this._tone(t + 0.16, { type: 'sine', f: mtof(53), dur: 0.55, peak: 0.055, attack: 0.03 });
       this._noise(t, { type: 'lowpass', f: 900, dur: 0.18, peak: 0.025, attack: 0.03 });
     });
+    // ---- the question boxes themselves (Wave 5.1) --------------------------
+    // Two moments the redesigned pickup rules created, both previously silent.
+    //
+    // `quiz.soft` — the child drove through a box that was still RECHARGING. It
+    // gives no question and no token; it shaves 1.2s off every box's recharge
+    // and spawns a sparkle. Until this cue existed the moment re-emitted
+    // `token:pickup` and borrowed that sound, which promised a currency that was
+    // not paid. So the voicing is deliberately the opposite of `token.pickup` on
+    // every axis that carries meaning:
+    //   token.pickup — 3-note major arpeggio, rises with the combo, filter 8 kHz
+    //                  plus an octave sine and a highpassed sparkle: BRIGHT and
+    //                  ascending, i.e. "you got something".
+    //   quiz.soft    — TWO notes, a small rising 4th, no combo, no sparkle, and
+    //                  everything under a ~1.8 kHz lowpass: dark, round, and
+    //                  about a third of the token's level. It reads as a nudge.
+    // It is also not a failure sound: nothing falls, nothing is dissonant, the
+    // attacks are 8–10 ms (no percussive click) and it resolves upward.
+    // Short and low-emphasis on purpose — it fires 2–5 times a race, and the
+    // wiring below rate-limits it so two beacons in the same instant cannot
+    // stack into a buzz.
+    S('quiz.soft', 'quiz', 0.28, 'Quiz: box still charging', function (t) {
+      this._tone(t, { type: 'sine', f: mtof(74), dur: 0.13, peak: 0.055, attack: 0.008, filter: 1600 });
+      this._tone(t + 0.055, { type: 'triangle', f: mtof(79), dur: 0.16, peak: 0.045, attack: 0.010, filter: 1800, q: 0.7 });
+      // a breath of body under it, no top end at all
+      this._noise(t, { type: 'lowpass', f: 900, dur: 0.06, peak: 0.012, attack: 0.006 });
+    });
+    // `quiz.recharged` — the cooldown ran out and EVERY box on the track pops
+    // back to life. This is an invitation, so it rises (a clean open 5th, E5→B5)
+    // and it is bright — but it is a signpost, not a reward: two notes against
+    // the correct sting's four, no hand-drum tap, and a peak under it, so a
+    // child never mistakes "the boxes are live" for "you answered right".
+    S('quiz.recharged', 'quiz', 0.55, 'Quiz: boxes recharged', function (t) {
+      [76, 83].forEach((m, i) => {
+        this._tone(t + i * 0.075, {
+          type: 'triangle', f: mtof(m), dur: 0.30 - i * 0.04, peak: 0.075 - i * 0.012,
+          attack: 0.004, filter: 6000,
+        });
+        this._tone(t + i * 0.075, { type: 'sine', f: mtof(m + 12), dur: 0.16, peak: 0.026, attack: 0.004 });
+      });
+      this._noise(t + 0.06, { type: 'highpass', f: 6000, f2: 11000, dur: 0.22, peak: 0.018, attack: 0.03 });
+    });
     S('quiz.timeout', 'quiz', 0.95, 'Quiz: time up', function (t) {
       // A soft three-note wind-down. Still no alarm: running out of time is
       // information, not a punishment.
@@ -1735,6 +1794,18 @@ class AudioSystem {
     simple(['quiz:wrong', 'quiz:incorrect'], 'quiz.wrong');
     simple(['quiz:timeout', 'quiz:timeUp'], 'quiz.timeout');
     on('quiz:answer', p => this.play(p && (p.correct === true || p.ok === true) ? 'quiz.correct' : 'quiz.wrong'));
+    // The question BOXES (Wave 5.1). Both are rate-limited rather than played
+    // raw: `quiz:softToken` can arrive twice in the same instant (two ghosted
+    // beacons in a row), and `quiz:recharged` is emitted by drainCooldown, which
+    // both the clock and a soft touch can drive — a second copy inside the first
+    // one's tail is a phasing buzz, not a louder cue. The gap is under the
+    // physical minimum between two beacons, so no real event is ever lost.
+    for (const e of ['quiz:softToken', 'quiz:soft', 'quiz:softtoken']) {
+      on(e, () => { if (!this._retrigger('quiz.soft', 0.12)) this.play('token.pickup'); });
+    }
+    for (const e of ['quiz:recharged', 'quiz:recharge']) {
+      on(e, () => { if (!this._retrigger('quiz.recharged', 0.35)) this.play('quiz.recharged'); });
+    }
 
     // garage
     simple(['garage:build', 'garage:assemble'], 'garage.build');
@@ -2040,6 +2111,8 @@ registerStrings({
     'audio.s.quiz.correct': 'תשובה נכונה',
     'audio.s.quiz.wrong': 'לא הפעם',
     'audio.s.quiz.timeout': 'נגמר הזמן',
+    'audio.s.quiz.soft': 'תיבה עדיין נטענת',
+    'audio.s.quiz.recharged': 'התיבות חזרו לפעולה',
     'audio.s.drift.tier': 'דריפט — עלייה בדרגה',
     'audio.s.drift.start': 'תחילת דריפט',
     'audio.s.drift.sustain': 'דריפט — טעינה',

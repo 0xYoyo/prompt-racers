@@ -56,11 +56,32 @@ const RACES = [
 ];
 const SEEDS = [3, 11, 19, 41, 57];
 
+// THE QUIZ-ENGAGEMENT AXIS (Wave 5.1).
+// ---------------------------------------------------------------------------
+// `pace x parts` models a player's DRIVING and their GARAGE, and for four waves
+// that was the whole model — which quietly assumed the third axis, how many quiz
+// questions a child answers, does not move the finishing order. Wave 5.1 changed
+// the cadence (6.4 -> 8.6 questions opened per engaged race) and the assumption
+// had to be measured rather than assumed.
+//
+// A correct answer calls `body.applyBoost()` with the constants below, copied
+// from src/race/quiz.js (`const BOOST` there). They are duplicated rather than
+// imported because quiz.js reaches for the DOM at module scope; if that file's
+// BOOST ever moves, section 6 is where the divergence shows up, and the bounds
+// there are set so a real change to it goes red rather than silently passing.
+//
+// An engaged child is modelled as N correct answers spread evenly through the
+// race in track progress. N = 8 is the measured cadence of the shipped build
+// (spread 6-11, most races 8); N = 0 is clean-driving-only, which is the case
+// the race-2 target is written against.
+const QUIZ_BOOST = { strength: 1.3, duration: 2.4, impulse: 6 };
+
 /**
  * One headless 3-lap race.
+ * @param {number} boosts  correct quiz answers, spread evenly through the race
  * @returns {{pos, lapsBehind, gap, bandMin, bandMax, lonely, time}}
  */
-function race({ track, difficulty, pace, seed, laps = 3, parts = null, maxTime = 900 }) {
+function race({ track, difficulty, pace, seed, laps = 3, parts = null, boosts = 0, maxTime = 900 }) {
   const { def, spline } = getTrack(track);
   const slots = gridSlots(spline, def, 8);
   const racer = ROSTER[0];
@@ -80,6 +101,10 @@ function race({ track, difficulty, pace, seed, laps = 3, parts = null, maxTime =
 
   const toLine = ((def.startT - player.lapT) + 1) % 1;
   const finishAt = toLine + laps;
+  // Answer times, in track progress: evenly spread, first one half an interval in.
+  const boostAt = [];
+  for (let k = 0; k < boosts; k++) boostAt.push(toLine + (k + 0.5) * laps / boosts);
+  let nextBoost = 0;
   const finish = new Array(field.drivers.length + 1).fill(null);
   let t = 0, prevT = player.lapT, pProg = 0, lapsBehind = null;
   // "Alone on track", measured along the road rather than as the crow flies:
@@ -92,6 +117,10 @@ function race({ track, difficulty, pace, seed, laps = 3, parts = null, maxTime =
     player.update(DT, autopilotInput(player, spline, { drift: true }));
     pProg += TrackSpline.deltaT(player.lapT, prevT);
     prevT = player.lapT;
+    while (nextBoost < boostAt.length && pProg >= boostAt[nextBoost]) {
+      player.applyBoost(QUIZ_BOOST.strength, QUIZ_BOOST.duration, QUIZ_BOOST.impulse);
+      nextBoost++;
+    }
     field.update(DT, { body: player, progress: pProg });
     t += DT;
 
@@ -238,12 +267,17 @@ const S40 = Array.from({ length: 40 }, (_, i) => i + 1);
 const T2 = { engine: 2, tyres: 2, frame: 2, turbo: 2 };
 const T3 = { engine: 3, tyres: 3, frame: 3, turbo: 3 };
 const _cells = new Map();
-const cell40 = (R, pace, parts = null, tag = '') => {
-  const key = `${R.n}|${pace}|${tag}`;
+const cell40 = (R, pace, parts = null, tag = '', boosts = 0) => {
+  const key = `${R.n}|${pace}|${tag}|q${boosts}`;
   if (!_cells.has(key)) {
-    const p = S40.map(seed => race({ track: R.track, difficulty: R.difficulty, pace, seed, parts }).pos);
+    const p = S40.map(seed => race({ track: R.track, difficulty: R.difficulty, pace, seed, parts, boosts }).pos);
     const m = p.reduce((a, b) => a + b, 0) / p.length;
-    _cells.set(key, { p, mean: m, wins: p.filter(x => x === 1).length, best: Math.min(...p) });
+    const hist = new Array(8).fill(0);
+    for (const x of p) hist[x - 1]++;
+    _cells.set(key, {
+      p, hist, mean: m, wins: p.filter(x => x === 1).length,
+      podium: p.filter(x => x <= 3).length, best: Math.min(...p), worst: Math.max(...p),
+    });
   }
   return _cells.get(key);
 };
@@ -520,6 +554,144 @@ console.log('\n=== 5. WAVE-1 AI BEHAVIOUR (personalities, drift, lap times) ==='
   const driftPct = tel.drivers.map(d => 100 * d.driftTime / tel.time);
   assert(Math.min(...driftPct) > 40, `every opponent still drifts most of the lap (min ${f(Math.min(...driftPct), 1)}%)`);
   field.dispose();
+}
+
+// --- 6. THE QUIZ-ENGAGEMENT AXIS (Wave 5.1) ---------------------------------
+// Everything above this line models a player as `pace x parts`. A child also
+// ANSWERS QUESTIONS, and every correct answer is a speed boost, so "is race 2
+// too easy?" has two different causes with two different fixes: the field's pace
+// is wrong, or engagement is over-rewarded. This section measures the second one
+// so the two can be told apart, and pins it so a future change to the quiz's
+// BOOST constant or to the question cadence cannot move the difficulty curve
+// without a gate going red.
+//
+// MEASURED, 40 seeds, 100% pace, stock kart, x0 vs x8 correct answers:
+//
+//   cell                  x0 (clean only)        x8 (fully engaged)     worth
+//   race 1 (oasis)    2.25  5/40 wins  40 pod   1.45  22/40  40 pod   0.80 pl
+//   race 2 (circuit)  3.73  0/40 wins   9 pod   3.48   0/40  16 pod   0.25 pl
+//   race 3 (cloud)    3.90  0/40 wins  15 pod   3.40   1/40  26 pod   0.50 pl
+//
+// So a correct answer is worth 0.03-0.10 of a finishing place — 0.16-0.38s of
+// lap time — and eight of them are worth well under one garage tier (a tier-2
+// kart is 7.2-9.5s a race). The reason is mechanical and worth knowing before
+// anyone "fixes" it: the quiz boost is 1.30x, a purple drift release is 1.38x,
+// and a clean autopilot lap is already inside a drift boost about two thirds of
+// the time — so most answers land on top of a STRONGER boost and buy only
+// `duration * 0.35`. Engagement is under-rewarded here, not over-rewarded, which
+// is the evidence that race 2's old walkover was a PACE problem (fixed at
+// TRACK_PACE.circuit) and not an engagement problem.
+//
+// Do not buff the quiz boost to "make engagement matter" without re-running
+// this: measured, 1.45x/4.0s takes race 1 from 22/40 wins to 40/40 — it hands
+// the first race, the one a child plays before the garage exists, to anyone who
+// answers the questions, and still does not win them race 2 (0/40 at 1.60x/4.0s).
+console.log('\n=== 6. THE QUIZ-ENGAGEMENT AXIS (40 seeds, x0 vs x8 correct answers) ===');
+{
+  const [R1, R2, R3] = RACES;
+  const q0 = [cell40(R1, 1.00, null, 'stock'), cell40(R2, 1.00, null, 'stock'), cell40(R3, 1.00, null, 'stock')];
+  const q8 = [cell40(R1, 1.00, null, 'stock', 8), cell40(R2, 1.00, null, 'stock', 8), cell40(R3, 1.00, null, 'stock', 8)];
+  const perAnswer = [0, 1, 2].map(i => (q0[i].mean - q8[i].mean) / 8);
+  for (let i = 0; i < 3; i++) {
+    console.log(`  race ${i + 1}: x0 mean ${f(q0[i].mean)} (${q0[i].wins} wins, ${q0[i].podium} podiums) ` +
+      `-> x8 mean ${f(q8[i].mean)} (${q8[i].wins} wins, ${q8[i].podium} podiums)  ` +
+      `worth ${f(q0[i].mean - q8[i].mean)} places, ${f(perAnswer[i], 3)}/answer  dist x8 ${q8[i].hist.join(' ')}`);
+  }
+  // (i) CATCHER, on the quiz side. Engagement has to be VISIBLY worth doing on
+  // the race a child meets before the garage exists: race 1 is where answering
+  // turns a fought-for 2nd into a win. Goes red if the boost is nerfed, if the
+  // cadence collapses, or if quiz.js stops calling applyBoost at all (at x0 this
+  // cell reads 2.25 with 5/40 wins, so both halves fail).
+  assert(q8[0].mean <= 1.75 && q8[0].wins >= 10,
+    `race 1: answering the questions turns 2nd into a win fight ` +
+    `(x8 mean ${f(q8[0].mean)} <= 1.75, ${q8[0].wins}/${S40.length} wins >= 10, from ${f(q0[0].mean)} at x0)`);
+  // (ii) GUARD, the other side of the same number: engagement must not TRIVIALISE
+  // race 1. Trips at boost 1.45x/2.4s (1.07) and 1.45x/4.0s (1.00).
+  assert(q8[0].mean >= 1.15,
+    `race 1 is still a race for an engaged child (x8 mean ${f(q8[0].mean)} >= 1.15)`);
+  // (iii) CATCHER. Race 2's target, stated on the axis the playtest complaint was
+  // really about: a clean driver who ALSO answers everything still does not win
+  // race 2 — the garage is the lever there. Red on the pre-Wave-5 pace
+  // (circuit 0.96) and red on a boost buffed to 1.45x/4.0s (3.02).
+  assert(q8[1].wins === 0 && q8[1].mean >= 3.10,
+    `race 2 is not won by engagement alone (x8 mean ${f(q8[1].mean)} >= 3.10, ${q8[1].wins} wins)`);
+  // (iv) CATCHER. Race 2 stays the middle rung under FULL engagement too, not
+  // just for the unengaged driver section 3b measures. Pre-fix (circuit 0.96)
+  // this gap collapses with race 2's mean.
+  assert(q8[1].mean - q8[0].mean >= 1.50,
+    `race 2 is still strictly harder than race 1 for an engaged child ` +
+    `(${f(q8[0].mean)} -> ${f(q8[1].mean)}, gap ${f(q8[1].mean - q8[0].mean)} >= 1.50)`);
+  // (v) GUARD, and the direct answer to "is engagement over-rewarded?". A single
+  // correct answer may not be worth more than a seventh of a finishing place on
+  // any race; measured 0.100 / 0.031 / 0.063. Trips on every boost buff measured
+  // (1.45x/4.0s reads 0.156 on race 1 and 0.163 on race 3).
+  assert(Math.max(...perAnswer) <= 0.14,
+    `one correct answer is a nudge, not a shortcut (worst ${f(Math.max(...perAnswer), 3)} places/answer <= 0.14)`);
+}
+
+// --- 7. RACE 3, MEASURED EXPLICITLY (Wave 5.1) ------------------------------
+// The finale had never been playtested by a human, so its target is asserted
+// here rather than inferred from the sections above: winning it should want a
+// decent upgrade AND engagement, and a 70%-pace child must never be lapped on
+// `cloud` — the one track where Wave 1 measured 1.04 laps down (LAPPED) and
+// Wave 2 claimed a fix that was never re-measured end to end.
+//
+// MEASURED, 40 seeds unless stated:
+//   100% stock  x0   mean 3.90  best 2nd  0 wins  15/40 podiums  +2.2s to winner
+//   100% stock  x8   mean 3.40  best 1st  1 win   26/40 podiums
+//   100% tier-2 x0   mean 1.10  36/40 wins        <- OFF TARGET, see below
+//   100% tier-2 x8   mean 1.00  40/40 wins
+//    85% stock  x0   mean 6.17            0.10 laps behind
+//    70% stock  x0   8th on 40/40 seeds   0.21 laps behind, 0 lapped, nearest
+//                    opponent never further than 0.08 laps up the road
+//
+// VERDICT: half on target, half off, and the off half is FLAGGED not fixed
+// (Wave 5.1's brief froze race 3). The clean-driver half is right — 3.90 stock,
+// no win in 40 seeds, and engagement moves it to 3.40 with one win. The upgrade
+// half is not: a tier-2 kart wins the finale 36 times in 40 with ZERO questions
+// answered, so "a decent upgrade AND engagement" is really "a decent upgrade".
+// This is the same inversion pinned in 3b (vii) — race 3 is easier than race 2
+// for an upgraded kart — and it is one fault, not two: the finale's opponents
+// stop at tier-2 parts (`aiPartTier` caps at 2), so a child arriving on tier-2
+// meets an equally-equipped field on the geometry with the least room to defend.
+// GAPS.md carries the lever (the finale's opponents on tier-3).
+console.log('\n=== 7. RACE 3 MEASURED AGAINST ITS TARGET ===');
+{
+  const R3 = RACES[2];
+  const c0 = cell40(R3, 1.00, null, 'stock');
+  const c8 = cell40(R3, 1.00, null, 'stock', 8);
+  console.log(`  clean stock: x0 mean ${f(c0.mean)} best ${c0.best} worst ${c0.worst} wins ${c0.wins} podiums ${c0.podium}  dist ${c0.hist.join(' ')}`);
+  console.log(`  engaged x8:  mean ${f(c8.mean)} best ${c8.best} worst ${c8.worst} wins ${c8.wins} podiums ${c8.podium}  dist ${c8.hist.join(' ')}`);
+  // (i) ON TARGET, both sides. The finale is not won by driving, engaged or not…
+  assert(c0.wins === 0 && c0.mean >= 3.40,
+    `race 3 is not won by clean driving alone (mean ${f(c0.mean)} >= 3.40, ${c0.wins} wins)`);
+  assert(c8.wins <= 4 && c8.mean >= 3.00,
+    `…nor by clean driving plus a full set of correct answers ` +
+    `(x8 mean ${f(c8.mean)} >= 3.00, ${c8.wins}/${S40.length} wins <= 4)`);
+  // (ii) …and it is not a wall either: a stock, unengaged child still finishes
+  // mid-pack and on the podium sometimes, rather than being strung out.
+  assert(c0.mean <= 4.60 && c0.podium >= 5,
+    `race 3 is a finale, not a wall (mean ${f(c0.mean)} <= 4.60, ${c0.podium}/${S40.length} podiums >= 5)`);
+
+  // (iii) THE STANDING CONSTRAINT FROM GAPS.md, on the track it was broken on.
+  // Section 1 checks all three races on the five gate seeds; this checks `cloud`
+  // specifically, on twelve, with a tighter budget — because this is the cell
+  // that was measured at 1.04 laps down in the built game and it is the promise
+  // the whole rubber band exists to keep. 0.30 headless is ~0.51 in the built
+  // game (headless runs ~1.7x kinder — see the note at the top of this file).
+  const S12 = S40.slice(0, 12);
+  const runs = S12.map(seed => race({ track: R3.track, difficulty: R3.difficulty, pace: 0.70, seed }));
+  const lb = runs.map(r => r.lapsBehind);
+  const lonely = Math.max(...runs.map(r => r.lonely));
+  console.log(`  70% pace on cloud, ${S12.length} seeds: laps behind ${f(Math.min(...lb))}..${f(Math.max(...lb))}, ` +
+    `lapped ${runs.filter(r => r.lapsBehind >= 1).length}, worst gap to nearest kart ${f(lonely)} laps, ` +
+    `places ${Math.min(...runs.map(r => r.pos))}..${Math.max(...runs.map(r => r.pos))}`);
+  assert(runs.every(r => r.lapsBehind < 1),
+    `race 3: a 70%-pace child is NEVER lapped on cloud (${runs.filter(r => r.lapsBehind >= 1).length}/${S12.length} lapped)`);
+  assert(Math.max(...lb) < 0.30,
+    `race 3: and not close to it (worst ${f(Math.max(...lb))} laps behind, budget 0.30)`);
+  assert(lonely < 0.15,
+    `race 3: a 70%-pace child always has a kart in sight (worst ${f(lonely)} laps to the nearest, budget 0.15)`);
 }
 
 // --- optional: where the lapping edge actually is ---------------------------

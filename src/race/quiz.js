@@ -214,35 +214,40 @@ registerStrings({
 const BEACONS = 6;            // per lap — a player meets 2–3 per lap in practice
 const HIT_RADIUS = 3.4;       // generous: kids should not have to thread a needle
 const HIT_HEIGHT = 4.0;       // vertical tolerance (jumps on Cloud Peak)
-// A used beacon comes back later in the race. 26 → 60 in Wave 5.1, and this is
+// A used beacon comes back later in the race. 26 → 30 in Wave 5.1, and this is
 // an ECONOMY number as much as a pacing one, so the reasoning is written down.
 //
-// Every beacon a child drives through now pays exactly one token: a right answer
-// pays it, and a RECHARGING box pays the same one as its soft reward. So beacon
-// income stopped being "how many questions opened" and became "how many beacons
-// were touched" — and touching them is free. Measured on the built game, three
-// tracks, an engaged autopilot answering every question correctly:
+// ROUND 1 PUT IT AT 60 AND THAT WAS THE WRONG TRADE. Round 1 paid a token for
+// every beacon TOUCHED (the soft reward for a recharging box), so beacon income
+// stopped being "how many questions opened" and became "how many beacons were
+// met" — and touching them is free. The only lever left to hold a won race under
+// D51's 21-token maximum garage ask was to put fewer beacons on the track, so
+// RESPAWN_S nearly doubled. It bought the fire RATE (49% → 72%) by meeting far
+// fewer boxes, and the number that matters — questions actually asked — went
+// nowhere. Measured, engaged autopilot, 3 seeds × 3 tracks, questions per race:
 //
-//   RESPAWN_S   beacons met   boxes opened   banked on a won race
-//     26 (old)     10–15          8–10            18 · 20 · 23
-//     55           10–11           8              17 · 18 · 20
-//     60 (here)      7–10          6–7            18 · 16 · 17
+//   Wave 4 (main)          69 total, 7.7 mean
+//   Wave 5 (broken)        58 total, 6.4 mean
+//   round 1 (RESPAWN 60)   59 total, 6.6 mean   ← -14% vs Wave 4
+//   here (soft pays no
+//   currency, RESPAWN 30)  see the table in DECISIONS — back above Wave 4
+//
+// So the currency came off the soft pickup (race.js: sparkle only; the reward
+// for touching a ghosted box is the SHAVE below, which is on-lesson and costs
+// the economy nothing) and this went back down to where the track is full.
+// 30 rather than 26: a beacon comes back about a lap later, which keeps the
+// worst engaged winning race under D51's 21 with the same margin Wave 4 had.
 //
 // It is also RACING seconds rather than wall seconds — see the respawn tick in
 // update(). That distinction is worth a token or two on its own: a timed-out
 // question burns 20 wall seconds with the world frozen, so on a wall clock the
 // child who ignored every box got their beacons back FASTEST.
 //
-// 23 is past D51's 21-token maximum garage ask — the number the whole economy is
-// built to stay under — and 20 is outside the 11–19 band flowtest holds a
-// winning engaged race to. At 60s a beacon comes back about a lap and a half
-// later, a race meets 9–10 of them, and the wallet lands back in the band.
-//
-// This is NOT the knob that decides how many boxes FIRE: that is the cooldown
-// below, and it is untouched by this. 6–9 boxes open per race here against 6
-// before, out of 9–10 met rather than ~15 — the fire rate goes from about a
-// third to 67–100%.
-const RESPAWN_S = 60;
+// This is NOT the knob that decides what FRACTION of boxes fire: that is the
+// cooldown below, and it is untouched by this. What it decides is how many
+// boxes exist to fire at all, which is why a gate on the ratio alone cannot see
+// it moving — see quizboxtest section 6's absolute floor.
+const RESPAWN_S = 30;
 // After any question, no beacon FIRES for this long — and for exactly this long
 // every beacon on the track is visibly ghosted and visibly recharging, so the
 // rule is one a child reads off the road rather than one they have to infer.
@@ -273,6 +278,14 @@ const COOLDOWN_S = 8;
 // at 24s a timed-out question took the boxes away for most of a lap, which is
 // indistinguishable from the bug this pass exists to remove.
 const COOLDOWN_IGNORED_S = 13;
+// THE SOFT REWARD, in the only currency this system should ever pay in: time.
+// Driving through a ghosted box shaves this much off the recharge, and the arc
+// on every beacon visibly jumps forward the moment it happens. It is on-lesson
+// (the boxes come back sooner because you went and got them), it is legible
+// without a word of UI, and unlike round 1's token it cannot inflate the wallet
+// — so RESPAWN_S is free to stay where the track is full. It is small on
+// purpose: a shortcut, not a way to skip the pacing rule.
+const SOFT_SHAVE_S = 1.2;
 // How long the "the boxes are live again" pop lasts. Long enough to be seen
 // from a kart, short enough not to read as a second state.
 const RECHARGE_POP_S = 0.6;
@@ -777,7 +790,13 @@ export function createQuizSystem(engine, opts = {}) {
   group.name = 'quiz:beacons';
 
   const detail = q.propDensity >= 0.7 ? 1 : 0;
-  const wantRing = q.propDensity >= 0.5;
+  // THE RECHARGE GAUGE IS NOT A DETAIL PROP. It used to be built only at
+  // propDensity >= 0.5, which meant the low tier (0.35) never built the mesh at
+  // all — and Wave 5.1's auto-detect can now pick low, so on the tier a real
+  // mid-range machine lands on, the ONE indicator that says when the boxes come
+  // back did not exist. It is one instanced mesh pair for the whole track; it is
+  // built at every tier now, with fewer segments at the cheap ones.
+  const ringSegs = detail ? 72 : 40;
   const wantBeam = q.propDensity >= 0.35;
 
   const geos = [], mats = [], meshes = [];
@@ -806,7 +825,8 @@ export function createQuizSystem(engine, opts = {}) {
   }
   const N = beacons.length;
 
-  let coreMesh = null, satMesh = null, ringMesh = null, beamMesh = null, glowMesh = null, padMesh = null;
+  let coreMesh = null, satMesh = null, ringMesh = null, ringTrackMesh = null;
+  let beamMesh = null, glowMesh = null, padMesh = null;
   // Three satellites, three answer keys — and three distinct colours so the
   // "pick one of three" idea is legible before a single word is read.
   const SAT_COLORS = [0xffd66b, 0x6fe8ff, 0xc9a6ff];
@@ -838,15 +858,40 @@ export function createQuizSystem(engine, opts = {}) {
     }
     satMesh.instanceColor.needsUpdate = true;
 
-    if (wantRing) {
-      const ringGeo = keepG(new THREE.TorusGeometry(1.85, 0.1, 6, detail ? 28 : 16));
-      const ringMat = keepM(new THREE.MeshStandardMaterial({
-        color: 0xd0b6ff, emissive: 0x7b4bff, emissiveIntensity: 1.9,
-        roughness: 0.3, transparent: true, opacity: 0.9,
-      }));
-      indicatorMats.add(ringMat);
-      ringMesh = new THREE.InstancedMesh(ringGeo, ringMat, N);
-    }
+    /* ── THE RECHARGE GAUGE: a constant-diameter ring with a filling arc ──────
+       Round 1 drew this as a ring that GREW in diameter, 0.34 → 1.0, with no
+       full-size reference next to it and no sweep. At 10% charge that is a
+       barely-visible sliver: the "not yet" state was least legible exactly when
+       a child most needs to read it, and there was nothing on screen to read it
+       AGAINST. So it is now the gauge every eight-year-old already knows — a
+       dim full circle that is always there at full size, and a bright arc that
+       fills it clockwise from the top. Empty circle: not yet. Full circle: go.
+
+       The arc is one geometry with a DRAW RANGE rather than a rebuilt mesh:
+       RingGeometry with phiSegments = 1 emits its indices strictly in theta
+       order, so truncating the index count IS the arc, and one cooldown drives
+       every beacon — that is a single setDrawRange call a frame, no allocation.
+       (Mirrored on X at build time so the fill runs clockwise; both materials
+       are DoubleSide, so the flipped winding costs nothing.) */
+    const arcGeo = keepG(new THREE.RingGeometry(1.62, 1.98, ringSegs, 1, Math.PI / 2, Math.PI * 2));
+    arcGeo.scale(-1, 1, 1);
+    const ringMat = keepM(new THREE.MeshStandardMaterial({
+      color: 0xf4ecff, emissive: 0x9a6bff, emissiveIntensity: 2.9,
+      roughness: 0.3, transparent: true, opacity: 0.95, side: THREE.DoubleSide,
+    }));
+    indicatorMats.add(ringMat);
+    ringMesh = new THREE.InstancedMesh(arcGeo, ringMat, N);
+
+    // …and the track it fills: the same circle, always whole, always dim. This
+    // is the reference the arc is read against, and it is why a nearly-empty
+    // gauge still reads as a gauge rather than as a smudge.
+    const trackGeo = keepG(new THREE.RingGeometry(1.66, 1.94, ringSegs, 1));
+    const trackMat = keepM(new THREE.MeshBasicMaterial({
+      color: 0x4a3a86, transparent: true, opacity: 0.42, side: THREE.DoubleSide,
+      depthWrite: false,
+    }));
+    indicatorMats.add(trackMat);
+    ringTrackMesh = new THREE.InstancedMesh(trackGeo, trackMat, N);
     if (wantBeam) {
       // A light column planted on the road plus a flat halo where it lands, so
       // the beacon is legible from the far end of a straight.
@@ -872,10 +917,11 @@ export function createQuizSystem(engine, opts = {}) {
     coreMesh.name = 'quiz:beacon-core';
     satMesh.name = 'quiz:beacon-sats';
     glowMesh.name = 'quiz:beacon-glow';
-    if (ringMesh) ringMesh.name = 'quiz:beacon-ring';
+    if (ringMesh) ringMesh.name = 'quiz:beacon-ring';            // the filling arc
+    if (ringTrackMesh) ringTrackMesh.name = 'quiz:beacon-ringtrack'; // the circle it fills
     if (beamMesh) beamMesh.name = 'quiz:beacon-beam';
     if (padMesh) padMesh.name = 'quiz:beacon-pad';
-    for (const m of [beamMesh, padMesh, glowMesh, ringMesh, coreMesh, satMesh]) {
+    for (const m of [beamMesh, padMesh, glowMesh, ringTrackMesh, ringMesh, coreMesh, satMesh]) {
       if (!m) continue;
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       m.frustumCulled = false;
@@ -909,6 +955,14 @@ export function createQuizSystem(engine, opts = {}) {
     if (cooldown <= 0 || cooldownFull <= 0) return 1;
     return Math.max(0, Math.min(1, 1 - cooldown / cooldownFull));
   }
+  /** Take `s` seconds off the recharge, from either source — the clock running
+   *  or a ghosted box being driven through. Completing it is an EVENT, not a
+   *  silent flag flip: the beacons flash back to full and say so on the bus. */
+  function drainCooldown(s) {
+    if (cooldown <= 0) return;
+    cooldown = Math.max(0, cooldown - s);
+    if (cooldown === 0) { popT = RECHARGE_POP_S; bus.emit('quiz:recharged', {}); }
+  }
   /** True when driving through a beacon opens a question. */
   function beaconsLive() {
     if (opts.forceCharge != null) return false;
@@ -932,23 +986,39 @@ export function createQuizSystem(engine, opts = {}) {
   // Scratch objects — nothing is allocated inside the frame loop.
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
   const _p = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
+  const _cp = new THREE.Vector3();          // the camera, for billboarding the gauge
   const _axis = new THREE.Vector3(0.35, 1, 0.18).normalize();
+  // The gauge only reads as a gauge if it is FACING the child, so it billboards
+  // to whichever camera is rendering. Resolved per frame rather than captured:
+  // the race scene and every preview() hand the engine a different one.
+  function gaugeQuat(pos) {
+    const cam = opts.camera || engine?.active?.camera || null;
+    if (!cam) { _q.setFromAxisAngle(_axis, 0.5); return _q; }
+    cam.getWorldPosition(_cp);
+    _m.lookAt(_cp, pos, _up);               // local +Z toward the camera
+    return _q.setFromRotationMatrix(_m);
+  }
 
   let vis = 0;   // visual clock, always real time (beacons keep spinning in slow-mo)
 
   function writeInstances() {
     if (!N) return;
     applyChargeVisuals();
-    // THE RECHARGE RING. While the boxes are spent the halo ring is small and
-    // grows back as the cooldown drains — a battery filling, read at a glance
-    // from a kart — and on the frame it completes it overshoots once. A child
-    // never has to be told the boxes are coming back; they can watch it.
+    // THE RECHARGE GAUGE. The circle never changes size — what changes is how
+    // much of it is FILLED, clockwise from the top, and one setDrawRange says
+    // it for every beacon on the track. Empty circle: not yet. Full circle: go.
+    // On the frame it completes, the whole gauge overshoots once (the pop).
     const charge = chargeFrac();
     const pop = popT > 0 ? popT / RECHARGE_POP_S : 0;
-    const ringScale = beaconsLive() ? 1 + pop * 0.28 : 0.34 + 0.66 * charge;
-    // …and while it recharges the ring spins faster, so the beacon reads as
-    // BUSY rather than as dead.
-    const ringSpin = beaconsLive() ? 1.25 : 3.1;
+    const live = beaconsLive();
+    // A constant diameter, with a breath while live and the pop on top — the
+    // size never carries information, so it can be pure life.
+    const ringScale = 1 + pop * 0.28 + (live ? Math.sin(vis * 2.0) * 0.03 : 0);
+    if (ringMesh) {
+      const segs = Math.round((live ? 1 : Math.max(0, Math.min(1, charge))) * ringSegs);
+      ringMesh.geometry.setDrawRange(0, segs * 6);   // 2 triangles per segment
+      ringMesh.visible = segs > 0;
+    }
     for (const b of beacons) {
       const on = b.alive ? 1 : 0.0001;
       const bob = Math.sin(vis * 1.7 + b.phase) * 0.22;
@@ -968,11 +1038,14 @@ export function createQuizSystem(engine, opts = {}) {
         _s.set(on, on, on);
       }
       if (ringMesh) {
-        _q.setFromAxisAngle(_axis, -vis * ringSpin + b.phase);
+        // Same transform for the arc and the circle it fills — they are one
+        // gauge, drawn as two meshes only because one of them is truncated.
+        gaugeQuat(_p);
         const rs = on * ringScale;
         _s.set(rs, rs, rs);
         _m.compose(_p, _q, _s);
         ringMesh.setMatrixAt(b.i, _m);
+        if (ringTrackMesh) ringTrackMesh.setMatrixAt(b.i, _m);
         _s.set(on, on, on);
       }
       if (beamMesh) {
@@ -1407,12 +1480,7 @@ export function createQuizSystem(engine, opts = {}) {
     vis += dt;
 
     if (!freeze) {
-      if (cooldown > 0) {
-        cooldown = Math.max(0, cooldown - dt);
-        // The moment it completes is an EVENT, not a silent flag flip: the
-        // beacons flash back to full and say so on the bus.
-        if (cooldown === 0) { popT = RECHARGE_POP_S; bus.emit('quiz:recharged', {}); }
-      }
+      if (cooldown > 0) drainCooldown(dt);
       if (popT > 0) popT = Math.max(0, popT - dt);
       // Respawn is RACING time, not wall time: it only ticks while the world is
       // actually running. A panel freezes the world (D11/D20 — a child is never
@@ -1465,14 +1533,19 @@ export function createQuizSystem(engine, opts = {}) {
         if (live) {
           openQuestion();          // …which is what marks the exemption spent
         } else {
-          // Driving through a recharging box is never nothing. One token and a
-          // sparkle — the same pickup path a gold token takes, awarded by
-          // race.js because this module must not import it. It pays once per
-          // beacon LIFE (the beacon is consumed here and respawns on the normal
-          // RESPAWN_S path), exactly like a token pickup, so it cannot be
-          // farmed by circling.
+          // Driving through a recharging box is never nothing: it SHAVES the
+          // recharge (every beacon's arc jumps forward on the same frame) and
+          // race.js puts a sparkle on the thing you touched. What it explicitly
+          // does not pay is currency — see the note over SOFT_SHAVE_S and the
+          // handler in race.js.
+          //
+          // It cannot be farmed: the beacon is consumed on the line above and
+          // comes back on the normal RESPAWN_S path, so one beacon shaves at
+          // most once per life and circling one pays nothing.
+          drainCooldown(SOFT_SHAVE_S);
           bus.emit('quiz:softToken', {
             i: hit.i, x: hit.pos.x, y: hit.pos.y, z: hit.pos.z,
+            shaved: SOFT_SHAVE_S, charge: chargeFrac(),
           });
         }
       }
@@ -1701,6 +1774,12 @@ export function preview(engine) { return previewScene(engine); }
  *  the pair is the whole legibility claim — a child can tell at a glance which
  *  of the two they are driving at. */
 export function previewRecharging(engine) { return previewScene(engine, { charge: 0.45 }); }
+
+/** The hardest state to draw and the one that matters most: barely recharged.
+ *  Round 1's growing ring was a sliver here; the constant circle with an almost
+ *  empty arc has to still read as "not yet, and here is how far off" — at both
+ *  quality tiers, which is what shots/w51r2-ring-*-c10.png are for. */
+export function previewRechargingEarly(engine) { return previewScene(engine, { charge: 0.1 }); }
 
 /** Almost charged: the ring nearly full, moments before the boxes pop back on. */
 export function previewRecharged(engine) { return previewScene(engine, { charge: 0.92 }); }

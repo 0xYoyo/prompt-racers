@@ -114,6 +114,19 @@ await evalp(() => {
   const r = window.__DEBUG.engine.renderer;
   const real = r.render.bind(r);
   r.render = (...args) => { S.renders++; return real(...args); };
+  // Timer callbacks that actually FIRE. A chained setTimeout or a forgotten
+  // setInterval on an idle menu is the classic "it gets hot after a few
+  // minutes" bug, and it is invisible to a gate that only counts allocations.
+  S.timerTicks = 0;
+  const st = window.setTimeout.bind(window), si = window.setInterval.bind(window);
+  window.setTimeout = (f, ms, ...rest) =>
+    st(typeof f === 'function' ? (...a) => { S.timerTicks++; return f(...a); } : f, ms, ...rest);
+  window.setInterval = (f, ms, ...rest) =>
+    si(typeof f === 'function' ? (...a) => { S.timerTicks++; return f(...a); } : f, ms, ...rest);
+  // …and DOM churn in the UI overlay, which is the half engine.js concedes
+  // "animates at the full rate regardless" and which nothing else measures.
+  S.mutations = 0;
+  S.mo = new MutationObserver(recs => { S.mutations += recs.length; });
 });
 
 const snap = async () => {
@@ -287,6 +300,42 @@ ok('the DOM does not accumulate nodes', last.nodes <= first.nodes + 4,
 ok('a menu re-entry is fast (the backdrop is not rebuilt per screen)',
   med(gotos) < 400, `median ${med(gotos)}ms`);
 
+/* ── 3b. re-entrant navigation: the double-click ─────────────────────────── */
+//
+// A scene factory is asynchronous and the race's takes ~1.8s under SwiftShader.
+// Anything that fires a second navigation inside that window used to dispose the
+// already-disposed old scene a second time AND orphan the scene the first call
+// was building — MEASURED at menu bus handlers 10 → 37, permanently, per
+// occurrence: one whole race scene's subscriptions, listeners and GPU resources,
+// alive with nothing pointing at it. Sequential cycles cannot see this, which is
+// exactly why it survived; these gotos are deliberately NOT awaited.
+console.log('\n  3b. overlapping navigation (a double-click during a slow build)');
+await goto('menu');
+await wait(200);
+const dbl0 = await snap();
+for (let i = 0; i < 5; i++) {
+  await evalp(async () => {
+    const D = window.__DEBUG;
+    const a = D.goto('race', { track: 0, seed: 5, lang: 'he' });   // slow factory
+    const b = D.goto('menu', { lang: 'he' });                       // …superseded by this
+    await Promise.all([a, b]);
+  });
+  await wait(120);
+}
+await goto('menu');
+await wait(200);
+const dbl1 = await snap();
+ok('the last navigation wins (the screen is the one asked for last)',
+  dbl1.scene === 'menu', dbl1.scene);
+ok('5 overlapping navigations leak no bus subscriptions', dbl1.bus === dbl0.bus,
+  `${dbl0.bus} → ${dbl1.bus}  ${JSON.stringify(dbl1.busBy)}`);
+ok('…no window/document listeners', dbl1.dom === dbl0.dom,
+  `${dbl0.dom} → ${dbl1.dom}  ${JSON.stringify(dbl1.domBy)}`);
+ok('…no ResizeObservers', dbl1.ro === dbl0.ro, `${dbl0.ro} → ${dbl1.ro}`);
+ok('…and no DOM nodes', dbl1.nodes <= dbl0.nodes + 2, `${dbl0.nodes} → ${dbl1.nodes}`);
+ok('…and the heap comes back (< 4MB after five orphaned race builds)',
+  dbl1.heap - dbl0.heap < 4e6, `${((dbl1.heap - dbl0.heap) / 1e6).toFixed(2)} MB`);
+
 /* ── 4. the compressed idle soak ─────────────────────────────────────────── */
 //
 // TWO soaks, and the assertion is on the SECOND one. A first pass legitimately
@@ -336,6 +385,100 @@ ok('…and the heap does not slope either (< 3MB over the second soak)',
   soak2.heap - soak1.heap < 3e6, `${((soak2.heap - soak1.heap) / 1e6).toFixed(2)} MB`);
 ok('…and the screen is still capped after ten minutes',
   s2.frames.presentRatio <= 0.6, `${s2.frames.renders}/${s2.frames.frames} frames presented`);
+
+/* ── 4b. a REAL idle: wall-clock seconds, the real rAF loop ──────────────── */
+//
+// The compressed soak above buys sim steps cheaply, and that is all it buys.
+// `__DEBUG.advance()` calls the scene's update() in a bare loop: it never calls
+// engine.draw, and it passes ZERO wall time. So a regression whose cost is per
+// PRESENT or per REAL SECOND — a forgotten setInterval, a chained setTimeout
+// rotating a hint, an allocation inside the backdrop's render path — is
+// invisible to it, and that is precisely the shape of the report this whole item
+// came from: "minutes of idling ramp the fans". At 1KB per present a real
+// five-minute idle allocates ~9MB and the compressed soak sees ~0.4MB of it.
+//
+// So one pass burns real seconds with the engine's own rAF loop, and measures
+// the three things that only real time can show: presents, timer callbacks that
+// actually fired, and DOM churn in the overlay.
+//
+// HOW SENSITIVE THIS IS, stated rather than implied: SwiftShader gives only
+// ~30 real presents in 25s here (a real machine gives thousands), so anything
+// measured PER PRESENT has almost no resolution and is reported rather than
+// asserted. The sharp instruments in this pass are the ones that do not depend
+// on the rasteriser at all and are exact counts rather than sampled sizes:
+// timer callbacks that fired, DOM mutations, and live subscriptions/listeners.
+console.log('\n  4b. a real idle — wall-clock seconds on the real loop');
+await goto('menu');
+await wait(300);
+await observeIdle(60);            // warm: pay the first-frame uploads before measuring
+const real0 = await snap();
+const REAL_SECS = +(a.soak || 25);
+const live = await (async () => {
+  await evalp(() => {
+    const e = window.__DEBUG.engine, S = window.__IDLE__;
+    S.renders = 0; S.timerTicks = 0; S.mutations = 0;
+    S.wasHeadless = e._headless;
+    e._headless = false;          // hand the loop back to the engine, for real
+    S.mo.observe(e.ui, { childList: true, subtree: true, attributes: true, characterData: true });
+    S.t0 = performance.now();
+  });
+  await wait(REAL_SECS * 1000);
+  return evalp(() => {
+    const e = window.__DEBUG.engine, S = window.__IDLE__;
+    const secs = (performance.now() - S.t0) / 1000;
+    S.mo.disconnect();
+    e._headless = S.wasHeadless;
+    return { secs, renders: S.renders, timerTicks: S.timerTicks, mutations: S.mutations };
+  });
+})();
+const real1 = await snap();
+const grew = real1.heap - real0.heap;
+console.log(`      ${live.secs.toFixed(1)}s idle: ${live.renders} real presents, ${live.timerTicks} timer callbacks, ${live.mutations} DOM mutations`);
+console.log(`      heap ${(real0.heap / 1e6).toFixed(2)} → ${(real1.heap / 1e6).toFixed(2)} MB  (${(grew / Math.max(1, live.renders) / 1024).toFixed(2)} KB/present)`);
+
+// Liveness only. The absolute number is a property of SwiftShader (it reaches
+// 7-13 rAF/s on this scene, halved again by the cap); what matters here is that
+// real frames really happened, so the per-second assertions below mean something.
+ok('the engine\'s own loop really ran for real seconds', live.renders >= 15 && live.secs >= REAL_SECS - 2,
+  `${live.renders} presents in ${live.secs.toFixed(1)}s`);
+// KB/present is REPORTED, not asserted, and the reason is worth writing down:
+// with ~30 real presents available here the number's denominator is far too
+// small for its numerator (heap noise survives a forced GC at ~0.1-0.4MB), and
+// it swung 0.3 → 10.5 KB/present across identical runs. A gate that flaky
+// teaches people to re-run gates, which is the habit that lets a real failure
+// through. What IS asserted is retained heap over real wall time — and retained
+// is the right word: transient per-frame garbage is collected, so it shows up as
+// GC pressure rather than growth, while the cost that made the fans audible is
+// the present itself, which section 1 caps and asserts directly.
+console.log(`      (informational) ${(grew / Math.max(1, live.renders) / 1024).toFixed(2)} KB retained per present — too few presents here to assert on`);
+ok('…and the heap holds over real wall time (< 1MB)', grew < 1e6,
+  `${(grew / 1e6).toFixed(2)} MB in ${live.secs.toFixed(0)}s`);
+// A timer nobody cancelled is the classic "it gets hot after a few minutes".
+// The idle menu should be running essentially none: CSS does its animation.
+// MEASURED baseline: 11.1/s, and it is exactly one thing — the music
+// sequencer's 90ms scheduling pump (audio.js `start()`), which stop() clears.
+// The bound is set just above one pump, so a SECOND pump left running by a
+// scene that did not stop its music — the most likely leak of this shape — puts
+// it at 22/s and fails.
+ok('an idle menu fires almost no timer callbacks (one music pump, no more)',
+  live.timerTicks / live.secs < 15, `${(live.timerTicks / live.secs).toFixed(1)}/s (one pump = 11.1/s)`);
+// The DOM half — the part engine.js concedes "animates at the full rate
+// regardless". A CSS animation mutates nothing; a JS class-flipper or marquee
+// shows up here and nowhere else.
+ok('…and mutates almost no DOM', live.mutations / live.secs < 20,
+  `${(live.mutations / live.secs).toFixed(1)} mutations/s`);
+ok('…while leaking no subscriptions, listeners or observers over real time',
+  real1.bus === real0.bus && real1.dom === real0.dom && real1.ro === real0.ro,
+  `bus ${real0.bus}→${real1.bus}, dom ${real0.dom}→${real1.dom}, ro ${real0.ro}→${real1.ro}`);
+// Deliberately NO geometry/texture assertion here. This pass runs straight after
+// 18,000 simulated steps, and THREE counts a geometry when it is UPLOADED, not
+// when it is created — so the first real presents afterwards flush whatever
+// those steps created, and a rate measured across them cannot tell a flush from
+// a leak (measured: +22 on a pass that is followed by a flat one). The
+// geometry slope is section 4's job, where it is a like-for-like two-pass
+// comparison. What this pass uniquely sees — presents, timers, mutations, heap
+// per real second — is asserted above.
+console.log(`      (informational) geo ${real0.geometries}→${real1.geometries}, tex ${real0.textures}→${real1.textures}`);
 
 /* ── 5. a hidden tab costs nothing, and comes back on a clean clock ──────── */
 console.log('\n  5. the hidden tab');

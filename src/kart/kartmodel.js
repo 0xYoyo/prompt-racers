@@ -157,18 +157,93 @@ function roundRectPath(g, x, y, w, h, r) {
   g.closePath();
 }
 
-function contactShadowTexture() {
-  const S = 64;
-  const c = document.createElement('canvas');
-  c.width = c.height = S;
-  const g = c.getContext('2d');
-  const grd = g.createRadialGradient(S / 2, S / 2, 2, S / 2, S / 2, S / 2);
-  grd.addColorStop(0, 'rgba(0,0,0,0.55)');
-  grd.addColorStop(0.55, 'rgba(0,0,0,0.28)');
-  grd.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = grd; g.fillRect(0, 0, S, S);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
+/* ------------------------------------------------------------------ */
+/* fake contact shadow ("blob") — the only ground shadow at נמוך        */
+/* ------------------------------------------------------------------ */
+
+// At נמוך the renderer casts no shadows at all (TIERS.low.shadows === false),
+// and a rival kart casts none at ANY tier (createKartLOD forces shadows off), so
+// on the two daylight tracks those karts were pasted onto the road rather than
+// sitting on it. This is the standard cheap fix: one alpha-mapped plane lying on
+// the road under each kart, dark in the middle, feathered to nothing at the edge.
+//
+// WHY THE RETIRED CARD FAILED — and it is NOT what round 1 of this fix claimed.
+// The old card was a canvas createRadialGradient wrapped in a CanvasTexture, and
+// round 1 recorded it as never drawing a pixel under ANGLE/SwiftShader. Measured:
+// false. Toggling the old card's `visible` on the real build and diffing the two
+// framebuffers moves 20,715 px (1.44% of a 1600x900 frame) on oasis at נמוך and
+// 26,911 px on cloud. It rasterised every frame, on every tier, since Wave 1.
+// Canvas gradients render fine here (gfx/props.js glowTexture() is one, in every
+// race frame). The card was simply BELOW THE PERCEPTUAL FLOOR: peak alpha 0.55 x
+// material opacity 0.85 = 0.47 of black laid over near-black asphalt, a mean
+// delta of ~2.5/channel. An authoring bug, not a driver bug.
+//
+// Two rules fall out of that, and they are the point of this comment:
+//   * Ground-shadow work is judged as a RENDERED-PIXEL DELTA, never as "the mesh
+//     is in the scene graph with the right transform". The old card passed every
+//     structural check there is. tests/kartshadow.test.mjs now A/Bs real frames.
+//   * An opaque debug material is NOT a valid visibility probe for a card that
+//     relies on renderOrder/depthWrite. Force this mesh opaque while leaving
+//     renderOrder:-1 and depthWrite:false and it moves into the opaque pass,
+//     draws BEFORE the road, and the road paints over it — you see nothing and
+//     conclude the texture is broken. Clear all three or the probe lies.
+//
+// The falloff is computed per texel into a DataTexture — for determinism (no
+// canvas rasteriser in the loop, so screenshots are byte-stable) and because one
+// DataTexture is shared by all eight karts. NOT because canvas is broken.
+//
+// One texture for the whole process, built on first use and shared by all eight
+// karts (the material is per-kart and kart-owned, so dispose() still frees
+// everything the kart draws with — a shared material would leak past the first
+// kart to be disposed).
+const BLOB_S = 96;
+const BLOB_HALF_X = 1.70, BLOB_HALF_Z = 2.30;   // plane half-extents, metres
+const BLOB_Y = 0.022;                            // metres above the road (see the mesh below)
+const BLOB_OPACITY = 0.68;
+let _blobTex = null;
+
+export function blobShadowTexture() {
+  if (_blobTex) return _blobTex;
+  const S = BLOB_S;
+  const data = new Uint8Array(S * S * 4);
+  const smooth = t => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+  // A dark PLATEAU with a feathered rim, not a peak: a pure radial falloff has
+  // its darkest value at a single texel, so the shadow that survives from the
+  // chase camera — the part that pokes out past the bodywork — is its palest
+  // part, and the kart still floats. Solid to 40% of the radius, feathered from
+  // there out.
+  const pool = d => smooth((1 - d) / 0.60);
+  // Four pools at the tyre contact patches over one soft body pool: a plain
+  // ellipse reads as a sticker, four pools under the wheels read as a kart
+  // standing on its tyres. Positions are the real axle coordinates.
+  const patches = [
+    [-FRONT_X, FRONT_Z, 0.64], [FRONT_X, FRONT_Z, 0.64],
+    [-REAR_X, REAR_Z, 0.82], [REAR_X, REAR_Z, 0.82],
+  ];
+  for (let j = 0; j < S; j++) {
+    const v = (j + 0.5) / S;
+    // the plane is rotated -90° about X, so its +Y (v = 1) points at -Z, the nose
+    const z = -(v * 2 - 1) * BLOB_HALF_Z;
+    for (let i = 0; i < S; i++) {
+      const u = (i + 0.5) / S;
+      const x = (u * 2 - 1) * BLOB_HALF_X;
+      let a = pool(Math.hypot(x / 1.05, z / 1.60)) * 0.80;
+      for (const [px, pz, pr] of patches) {
+        a = Math.max(a, pool(Math.hypot(x - px, z - pz) / pr));
+      }
+      const o = (j * S + i) * 4;
+      data[o] = data[o + 1] = data[o + 2] = 0;
+      data[o + 3] = Math.round(255 * clamp(a, 0, 1));
+    }
+  }
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
+  // DataTexture defaults to NearestFilter — left alone the blob is a 96-texel
+  // staircase at chase distance, which is the "hard disc" failure mode.
+  t.minFilter = t.magFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  _blobTex = t;
   return t;
 }
 
@@ -321,15 +396,32 @@ export function createKart(opts = {}) {
   driverPivot.position.set(0, 0.62, 0.26);
   bodyPivot.add(driverPivot);
 
-  /* ---------------- contact shadow ------------------------------- */
-  const csTex = contactShadowTexture(); texs.push(csTex);
-  const csMat = new THREE.MeshBasicMaterial({ map: csTex, transparent: true, depthWrite: false, opacity: 0.85 });
-  mats.push(csMat);
-  const contact = new THREE.Mesh(G(new THREE.PlaneGeometry(2.9, 3.4)), csMat);
-  contact.rotation.x = -Math.PI / 2;
-  contact.position.y = 0.012;
-  contact.renderOrder = -1;
-  group.add(contact);
+  /* ---------------- fake contact shadow -------------------------- */
+  // ONLY when this kart casts no real shadow — otherwise the kart would carry a
+  // blob AND its shadow-map shadow, which reads as two shadows in one frame.
+  // It hangs off the ROOT group, never off bodyPivot: race.js aligns the root to
+  // the road surface, while bodyPivot carries the lean/pitch/squat. A blob under
+  // bodyPivot would tip up on its edge in every corner. The weld never traverses
+  // the root, and `blob` is in weldStatics' stop set as well.
+  let blob = null, blobMat = null;
+  if (!shadows) {
+    blobMat = new THREE.MeshBasicMaterial({
+      map: blobShadowTexture(), transparent: true, depthWrite: false,
+      opacity: BLOB_OPACITY, toneMapped: false,
+    });
+    mats.push(blobMat);
+    blob = new THREE.Mesh(G(new THREE.PlaneGeometry(BLOB_HALF_X * 2, BLOB_HALF_Z * 2)), blobMat);
+    blob.name = 'blobShadow';
+    blob.rotation.x = -Math.PI / 2;
+    // 2.2 cm of clearance: enough that the road never punches through it on a
+    // banked or crowned surface, small enough that it still reads as contact
+    // rather than a card floating under the kart. depthWrite stays off so the
+    // kart's own wheels are not clipped by it.
+    blob.position.y = BLOB_Y;
+    blob.renderOrder = -1;   // first of the transparents: under smoke, flames, dust
+    blob.castShadow = blob.receiveShadow = false;
+    group.add(blob);
+  }
 
   /* ---------------- chassis -------------------------------------- */
   // floor pan
@@ -1411,12 +1503,14 @@ export function createKart(opts = {}) {
     //   wobblers, coreGlow                update() rotates/pulses/scales them; a
     //                                     welded one is detached, so it freezes —
     //                                     invisible in a still frame, wrong in motion
-    // Belt-and-braces, honestly narrow (D42): `contact` hangs off the ROOT group,
+    // Belt-and-braces, honestly narrow (D42): `blob` hangs off the ROOT group,
     // which no weldFrame call ever traverses, and `flames` start hidden and are
     // already protected by the hidden-mesh rule in weldFrame. Both are listed so
     // that a future weld of the root, or a flame that starts visible, still cannot
-    // swallow them — neither is what protects them today.
-    const stop = new Set([driverPivot, headPivot, steerPivot, contact, slotWeld]);
+    // swallow them — neither is what protects them today. A welded blob would be
+    // baked into the chassis bucket and would then lean with the body.
+    const stop = new Set([driverPivot, headPivot, steerPivot, slotWeld]);
+    if (blob) stop.add(blob);
     for (const a of arms) stop.add(a.shoulder);
     for (const w of wheels) { stop.add(w.axle); stop.add(w.steer); stop.add(w.spin); }
     for (const arr of [wobblers, coreGlow, flames]) for (const o of arr) stop.add(o);
@@ -1585,7 +1679,14 @@ export function createKart(opts = {}) {
       if (c.userData.spin) { c.rotation.y += dt * (0.8 + heat * 2.5); c.rotation.x += dt * 0.4; }
       if (c.userData.pulse) c.scale.setScalar(1 + 0.07 * Math.sin(st.t * (7 + heat * 7)) + heat * 0.05);
     }
-    contact.material.opacity = 0.85 * (1 - st.air * 0.85);
+    // Airborne: the blob fades AND shrinks. Both, because a shadow that only
+    // fades reads as the light going out, while one that only shrinks reads as
+    // the kart driving away from its own shadow. Nothing is allocated here.
+    if (blob) {
+      blobMat.opacity = BLOB_OPACITY * (1 - st.air * 0.9);
+      const s = 1 - st.air * 0.30;
+      blob.scale.set(s, s, 1);
+    }
   }
 
   /* ---------------- disposal ------------------------------------- */
@@ -1604,8 +1705,10 @@ export function createKart(opts = {}) {
   }
 
   api = {
-    group, racer, parts, wheels, lod,
+    group, racer, parts, wheels, lod, shadows,
     bodyPivot, driverPivot, headPivot, steerPivot,
+    // null whenever the kart casts a real shadow — the gate reads this
+    blobShadow: blob,
     update, setParts, dispose,
     // handy for the race camera / HUD
     get width() { return 1.55; },

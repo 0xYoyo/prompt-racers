@@ -18,14 +18,18 @@
 //   2. the one-time explainer appears exactly ONCE EVER — race 1's first box,
 //      never again in a later race and never again in a later session
 //   3. while the cooldown drains the beacons are visibly INACTIVE (asserted on
-//      the live material and the live instance matrices, not on a flag), driving
-//      through one opens NO modal, and it still pays the soft token
+//      the live material and the live scene graph, not on a flag), driving
+//      through one opens NO modal, pays NO currency, and shaves the recharge
 //   4. when the cooldown ends the beacons come back with a visible pop, and the
 //      next beacon opens a question
 //   5. a teaching card standing in a box's way costs the child NOTHING: no
 //      consumed beacon, no cooldown, no `quiz:deferred`
 //   6. the cadence: over three real engaged races, MOST of the beacons a child
-//      drives through open a question
+//      drives through open a question — AND enough boxes open in absolute terms
+//      that the game is still full (a ratio alone gets greener as the track
+//      empties; see the note over section 6)
+//   7. the recharge gauge exists at the LOW quality tier, which is a tier real
+//      children play on
 //
 // Everything here runs against the REAL BUILD through puppeteer and synthetic
 // input, exactly as tools/modaltest.mjs and tools/flowtest.mjs do, because the
@@ -113,11 +117,17 @@ async function installRig() {
       const core = window.__beaconMesh('quiz:beacon-core');
       if (!core) return null;
       const sats = window.__beaconMesh('quiz:beacon-sats');
+      // THE RECHARGE GAUGE is a constant-diameter circle (quiz:beacon-ringtrack)
+      // with an arc filling it (quiz:beacon-ring, truncated by its draw range).
+      // So there are two numbers, and they must move in opposite ways: the FILL
+      // rises with the charge, the DIAMETER does not move at all. Round 1 drew
+      // the charge as the diameter, with nothing to read it against.
       const ring = window.__beaconMesh('quiz:beacon-ring');
-      let ringScale = null;
+      const ringTrack = window.__beaconMesh('quiz:beacon-ringtrack');
+      let ringScale = null, ringFill = null;
       if (ring) {
-        // the ring is rotated about an arbitrary axis, so the uniform scale is
-        // the length of a basis column rather than a single element
+        // the ring billboards to the camera, so the uniform scale is the length
+        // of a basis column rather than a single element
         const a = ring.instanceMatrix.array;
         let best = 0;
         for (let i = 0; i < ring.count; i++) {
@@ -125,13 +135,17 @@ async function installRig() {
           if (s > best) best = s;                       // the biggest LIVE beacon
         }
         ringScale = +best.toFixed(4);
+        const idx = ring.geometry.index ? ring.geometry.index.count : 0;
+        const drawn = ring.visible ? Math.min(ring.geometry.drawRange.count, idx) : 0;
+        ringFill = idx ? +(drawn / idx).toFixed(4) : null;
       }
       const q = A().quiz;
       return {
         opacity: +core.material.opacity.toFixed(4),
         emissive: +core.material.emissiveIntensity.toFixed(4),
         satOpacity: sats ? +sats.material.opacity.toFixed(4) : null,
-        ringScale,
+        ringScale, ringFill, ringTrack: !!ringTrack,
+        trackOpacity: ringTrack ? +ringTrack.material.opacity.toFixed(4) : null,
         live: q.beaconsLive, charge: +q.charge.toFixed(4), left: +q.cooldownLeft.toFixed(3),
       };
     };
@@ -313,11 +327,12 @@ const cool = await guarded('a recharging beacon could be reached at all', () => 
   const tokensBefore = A().state.tokens;
   const picksBefore = window.__PICK.length;
   const softBefore = window.__SOFT.length;
+  const preTouch = window.__art();
   const met = window.__touchBeacon();
   const during = window.__art();
   D.advance(F);
   return {
-    lit, spent, half, during, met, openedAtBeacon,
+    lit, spent, half, preTouch, during, met, openedAtBeacon,
     phaseAfter: A().quiz.phase,
     panelAfter: !!document.querySelector('.quiz-root.show') || !!document.querySelector('.qzint-scrim'),
     tokenDelta: A().state.tokens - tokensBefore,
@@ -337,20 +352,46 @@ ok('…the satellites ghost with it (the whole beacon reads as off, not half of 
   `${cool.lit?.satOpacity} → ${cool.spent?.satOpacity}`);
 ok('…but it does not VANISH — a beacon a child stops seeing is a beacon they stop looking for',
   cool.spent?.opacity > 0.05, `core opacity ${cool.spent?.opacity}`);
-// The recharge indicator: a ring that visibly fills as the cooldown drains.
-ok('the recharge ring PROGRESSES as the cooldown drains',
-  cool.half?.ringScale > cool.spent?.ringScale + 0.05 && cool.half?.charge > cool.spent?.charge + 0.1,
-  `ring ${cool.spent?.ringScale} → ${cool.half?.ringScale} as charge ${cool.spent?.charge} → ${cool.half?.charge}`);
-ok('…and it is smaller than a live beacon\'s while it is still charging',
-  cool.half?.ringScale < cool.lit?.ringScale, `${cool.half?.ringScale} vs lit ${cool.lit?.ringScale}`);
+// THE RECHARGE GAUGE: a circle that is always whole and always the same size,
+// with an arc filling it. Both halves are asserted, because each without the
+// other is the round-1 failure: a bare growing arc has nothing to be read
+// against, and a bare circle says nothing about how far along it is.
+ok('the recharge ARC fills as the cooldown drains',
+  cool.half?.ringFill > cool.spent?.ringFill + 0.15 && cool.half?.charge > cool.spent?.charge + 0.1,
+  `fill ${cool.spent?.ringFill} → ${cool.half?.ringFill} as charge ${cool.spent?.charge} → ${cool.half?.charge}`);
+ok('…and the arc is short while it is still charging (a full circle means GO)',
+  cool.half?.ringFill < 0.9 && cool.lit?.ringFill >= 0.999,
+  `charging ${cool.half?.ringFill} vs live ${cool.lit?.ringFill}`);
+ok('…and there is a full-size circle to read it AGAINST, always drawn',
+  cool.spent?.ringTrack === true && cool.spent?.trackOpacity > 0.05,
+  `track ring present ${cool.spent?.ringTrack}, opacity ${cool.spent?.trackOpacity}`);
+ok('…and the gauge never changes SIZE — the diameter carries no information',
+  cool.spent?.ringScale > 0 && Math.abs(cool.half?.ringScale - cool.spent?.ringScale) < 0.06
+  && Math.abs(cool.lit?.ringScale - cool.spent?.ringScale) < 0.12,
+  `empty ${cool.spent?.ringScale} · half ${cool.half?.ringScale} · live ${cool.lit?.ringScale}`);
 // Driving through one.
 ok('driving through a recharging beacon registers as an INACTIVE encounter',
   !!cool.met && cool.met.active === false, cool.met ? `active=${cool.met.active}` : 'no beacon was hit');
 ok('…and opens NO modal at all', cool.phaseAfter === 'idle' && cool.panelAfter === false,
   `quiz phase '${cool.phaseAfter}', panel ${cool.panelAfter}`);
-ok('…and still pays the soft token: +1, through the normal pickup path',
-  cool.tokenDelta === 1 && cool.picks === 1 && cool.softs === 1,
-  `+${cool.tokenDelta} token, ${cool.picks} token:pickup, ${cool.softs} quiz:softToken`);
+// WHAT THE SOFT PICKUP PAYS, AND WHAT IT MUST NOT. Round 1 paid one token here.
+// That made beacon income "how many beacons did you touch" rather than "how many
+// questions did you answer", and the only way back under D51's 21-token top ask
+// was to put fewer beacons on the track — which cost 10 questions a
+// championship. So the payment is TIME: the recharge is shaved, every gauge on
+// the track jumps forward, and the wallet is not touched. Both halves are
+// asserted, because the currency version passes any test that only counts the
+// event.
+ok('…and it is announced, once, as a soft encounter',
+  cool.softs === 1 && !!cool.met && cool.met.active === false,
+  `${cool.softs} quiz:softToken`);
+ok('…and pays NO CURRENCY — the wallet does not move for touching a ghosted box',
+  cool.tokenDelta === 0 && cool.picks === 0,
+  `+${cool.tokenDelta} token, ${cool.picks} token:pickup`);
+ok('…and instead SHAVES the recharge, visibly: the arc jumps forward',
+  cool.preTouch?.left - cool.during?.left > 0.5
+  && cool.during?.ringFill > cool.preTouch?.ringFill + 0.02,
+  `${cool.preTouch?.left}s → ${cool.during?.left}s left · fill ${cool.preTouch?.ringFill} → ${cool.during?.ringFill}`);
 // RESPAWN IS RACING TIME. A consumed beacon must not come back while the world
 // is frozen behind a panel — the same rule the lap clock obeys (D11/D20). It is
 // not a nicety: a timed-out question burns 20 wall seconds, so on a wall clock
@@ -390,13 +431,18 @@ ok('…and the episode then closes into a fresh, ghosted cooldown',
 // The anti-farm rule: a beacon pays once per life, exactly like a gold token.
 const farm = await guarded('the consumed beacon could be re-driven', () => {
   const D = window.__DEBUG, A = () => D.engine.active;
-  const t0 = A().state.tokens, s0 = window.__SOFT.length;
+  const t0 = A().state.tokens, s0 = window.__SOFT.length, c0 = A().quiz.cooldownLeft;
   // sit on the beacon we just consumed for two full seconds
   for (let i = 0; i < 120; i++) D.advance(1 / 60);
-  return { delta: A().state.tokens - t0, softs: window.__SOFT.length - s0 };
+  return { delta: A().state.tokens - t0, softs: window.__SOFT.length - s0,
+    drained: +(c0 - A().quiz.cooldownLeft).toFixed(3) };
 });
 ok('…and it cannot be farmed: sitting on the consumed beacon pays nothing more',
   farm.delta === 0 && farm.softs === 0, `+${farm.delta} tokens, ${farm.softs} soft payouts in 2s`);
+// …including the shave, which is the reward that actually exists now: two
+// seconds of sitting on a spent beacon must drain exactly two seconds of clock.
+ok('…and the SHAVE cannot be farmed either: 2s parked drains 2s of recharge, no more',
+  farm.drained <= 2.1, `${farm.drained}s drained in 2s`);
 
 /* ═══════════════════════════════════════════════════════════════════════════
    4. AND THEN IT COMES BACK, VISIBLY
@@ -414,19 +460,20 @@ const back = await guarded('the recharge could be watched', () => {
   for (let i = 0; i < 60 * 30; i++) {
     D.advance(F);
     const a = window.__art();
-    trace.push({ live: a.live, opacity: a.opacity, emissive: a.emissive, ring: a.ringScale });
+    trace.push({ live: a.live, opacity: a.opacity, emissive: a.emissive, ring: a.ringFill });
     if (window.__RECHARGED.length > rechargedBefore && trace.length > 2
         && trace[trace.length - 1].live && q.phase === 'idle') {
       // …plus a few more frames so the pop itself is inside the trace
       for (let k = 0; k < 30; k++) {
         D.advance(F);
         const c = window.__art();
-        trace.push({ live: c.live, opacity: c.opacity, emissive: c.emissive, ring: c.ringScale });
+        trace.push({ live: c.live, opacity: c.opacity, emissive: c.emissive, ring: c.ringFill });
       }
       break;
     }
   }
   const iLive = trace.findIndex(t => t.live);
+  const minRing = trace.reduce((m, t) => Math.min(m, t.ring ?? 1), 1);
   const ghost = iLive > 0 ? trace[iLive - 1] : null;
   const litAfter = trace.slice(iLive).reduce((m, t) => (t.emissive > m.emissive ? t : m), trace[iLive]);
   const settled = trace[trace.length - 1];
@@ -436,7 +483,7 @@ const back = await guarded('the recharge could be watched', () => {
   for (let k = 0; k < 4; k++) D.advance(F);
   return {
     recharged: window.__RECHARGED.length - rechargedBefore,
-    ghost, litAfter, settled, iLive,
+    ghost, litAfter, settled, iLive, minRing: +minRing.toFixed(4),
     met, opened: window.__OPEN.length - opensBefore,
     phase: A().quiz.phase,
     panel: !!document.querySelector('.quiz-root.show'),
@@ -450,7 +497,12 @@ ok('the re-activation is a visible STEP, not a silent swap',
 ok('…and it POPS: the brightest frame after it overshoots where it settles',
   back.litAfter?.emissive > back.settled?.emissive * 1.15,
   `peak ${back.litAfter?.emissive} vs settled ${back.settled?.emissive}`);
-ok('…and the ring is full again', back.settled?.ring >= back.ghost?.ring, `${back.ghost?.ring} → ${back.settled?.ring}`);
+// The arc filled up on the way here (it is nearly full on the last ghosted
+// frame by definition — that is what "nearly recharged" looks like), and it is a
+// WHOLE circle once the boxes are live.
+ok('…and the arc filled, and is a full circle now the boxes are live',
+  back.minRing < 0.6 && back.settled?.ring >= 0.999,
+  `arc ${back.minRing} → ${back.settled?.ring}`);
 ok('THE PROMISE: the very next beacon opens a question',
   !!back.met && back.met.active === true && back.opened === 1 && back.panel === true,
   back.met ? `active=${back.met.active}, ${back.opened} opened, phase '${back.phase}'` : 'no beacon hit');
@@ -517,15 +569,31 @@ ok('…and over a whole frozen-clock race the boxes keep firing',
    with every question answered correctly. What is measured is the fraction of
    the beacons a child drove through that actually asked them something.
 
-   THE FLOOR. Measured on this build: 70% / 80% / 67% (7/10, 8/10, 6/9 —
-   tracks 0/1/2, seed 3), 72% overall. Measured against a mutant that restores
-   ONLY the Wave-5 beacon-side cadence gate, with everything else in this pass
-   left in place: 38% / 67% / 50%, 49% overall — and every one of those misses
-   invisible to the child. The floor is 0.60 per race and 0.65 across the three:
-   under the measured spread with room for AI and seed drift, and far above what
-   the old behaviour produces. It is a floor to be FAILED rather than widened,
-   because the thing it is really watching for is a second silent reason for a
-   box to decline creeping back in.
+   TWO FLOORS, AND THE SECOND ONE IS THE IMPORTANT ONE.
+
+   The RATIO floor is what round 1 shipped: of the beacons a child drove
+   through, how many asked them something. Measured on this build: 67% / 80% /
+   73% (8/12, 8/10, 8/11 — tracks 0/1/2, seed 3), 73% overall; across three
+   seeds and nine races it spans 55%–80%, 70% overall. Against a mutant that
+   restores ONLY the Wave-5 beacon-side cadence gate: 38% / 67% / 50%, 49%
+   overall, every miss invisible to the child. Floor 0.55 per race, 0.65 across
+   the three.
+
+   THE ABSOLUTE FLOOR EXISTS BECAUSE THE RATIO ALONE GETS GREENER AS THE GAME
+   GETS EMPTIER. A critic built a starvation mutant — RESPAWN_S 60 → 150 and
+   nothing else, i.e. beacons that barely come back — and the entire gate passed
+   with the RATIO IMPROVING to 82% while the child answered 14 questions instead
+   of 20. A ratio is a fraction of whatever is left on the track; halve the
+   track and it rises. So the count itself is asserted: boxes OPENED per race
+   and across the three. Measured here: 8 / 8 / 8 = 24 (Wave 4, the feel this
+   pass is chasing back: 8 / 8 / 8 = 24; the broken build: 6 / 6 / 6 = 18; the
+   starvation mutant: 5 / 5 / 4 = 14). Floors 7 per race and 22 across the
+   three — under Wave 4 with room for seed and AI drift, above everything that
+   has ever been wrong here.
+
+   Both are floors to be FAILED rather than widened: what they really watch for
+   is a second silent reason for a box to decline, and a retune that pays for
+   the rate by emptying the track.
 
    Against the pre-5.1 build this section does not merely dip below the floor:
    `quiz:beacon` does not exist there, so no encounter is ever recorded and the
@@ -534,39 +602,93 @@ ok('…and over a whole frozen-clock race the boxes keep firing',
    is unobservable, which is how it shipped.
    ═══════════════════════════════════════════════════════════════════════════ */
 console.log('\n  6. the cadence: most of the boxes a child drives through are live');
-const FLOOR_PER_RACE = 0.60;
+// WHY THE PER-RACE FLOORS ARE LOW AND THE TOTALS CARRY THE ASSERTION.
+// Running three seeds instead of one immediately falsified the per-race floors
+// this section shipped with (7 opened, 0.55 ratio): seed 11 track 0 measures
+// 6/11 = 54.5%, and it fails BOTH. It is not a regression — Wave 4 opened 6 on
+// that same seed and track. A single race's count is a property of the seed and
+// the track's beacon layout as much as of the cadence rule, so a tight per-race
+// floor calibrated on seed 3 (which happens to give 8/8/8) is measuring the
+// seed, not the game. The floors that MEAN something are the totals, where the
+// layout noise averages out: per seed (24 / 25 / 28 measured, Wave 4's worst
+// seed 24) and across all nine races (77 measured, Wave 4 69).
+// The per-race floors stay, but as what they honestly are — a hard "this race
+// was not starved" catch, set below the worst legitimate case rather than at
+// it. The starvation mutant (RESPAWN_S 150 → 5/5/4 per race, 14 per seed) still
+// fails all three: per-race count, per-seed total and grand total.
+const FLOOR_PER_RACE = 0.50;
 const FLOOR_OVERALL = 0.65;
+// …and the number the ratio cannot see: how many questions a child was actually
+// asked. See the note above — this is the assertion the starvation mutant fails.
+const MIN_OPENED_PER_RACE = 5;
+const MIN_OPENED_TOTAL = 22;
+// THE SEEDS ARE PART OF THE ASSERTION, NOT A DETAIL OF IT.
+// Round 2 of this section drove seed 3 only, and measured 8/8/8 = 24 against
+// floors of 7 and 22 — margins of one and two. Every argument this wave
+// actually turned on happened on a seed that gate never ran: round 1's claimed
+// "+2 questions" was a seed-3 artifact that vanished across seeds, and seed 11
+// track 0 is where BOTH the 55% ratio floor and the old 20-token race live —
+// the two numbers the floors below are calibrated against. A gate whose floors
+// are tuned on cases it does not execute is documentation, not a gate.
+// Nine races: three seeds x three tracks. Measured 77 opened across them.
+const SEEDS = [3, 11, 27];
+const MIN_OPENED_ALL_SEEDS = 66;   // 77 measured; Wave 4 = 69; broken = 58
 const rows = [];
-for (const track of [0, 1, 2]) {
+for (const seed of SEEDS) for (const track of [0, 1, 2]) {
   await boot({ racerId: 'nitzotz', results: [], championshipRace: 0,
     garageMetBoreg: true, garageTokenIntroSeen: true, quizBoxIntroSeen: true });
-  await startRace({ track, difficulty: track + 1, seed: 3 });
-  const r = await guarded(`track ${track}: the engaged race could be driven`, () => {
+  await startRace({ track, difficulty: track + 1, seed });
+  const r = await guarded(`seed ${seed} track ${track}: the engaged race could be driven`, () => {
     const D = window.__DEBUG, A = () => D.engine.active, F = 1 / 60;
     for (let i = 0; i < 60 * 1800 && !window.__LAST_RESULT__; i++) window.__drive(F);
     const res = window.__LAST_RESULT__;
     return {
       met: window.__MET.length, live: window.__MET.filter(m => m.active).length,
       opened: window.__OPEN.length, soft: window.__SOFT.length,
+      // Question IDs in ask order — a race must never ask the same question
+      // twice. quiz.js reshuffles and refills the pool when it is exhausted, so
+      // this is a real edge: COOLDOWN_S's own note records that at 7s the
+      // theoretical worst case (37 questions) exceeds the tier-1 pool (36).
+      // Not reachable at today's 8-9 per race; it opens the moment anyone
+      // pushes the rate again, which is exactly what this wave just did.
+      askedIds: window.__OPEN.slice(),
       finished: !!res,
       tokens: res?.tokens, quiz: res?.tokensFromQuiz,
       pickups: res?.tokensFromPickups, finish: res?.tokensFinishBonus, place: res?.place,
     };
   });
-  rows.push({ track, ...r });
+  rows.push({ track, seed, ...r });
   const frac = r.met ? r.opened / r.met : 0;
-  console.log(`     track ${track}: ${r.opened}/${r.met} beacons opened a box (${(frac * 100).toFixed(0)}%)`
+  const tag = `seed ${seed} track ${track}`;
+  console.log(`     ${tag}: ${r.opened}/${r.met} beacons opened a box (${(frac * 100).toFixed(0)}%)`
     + ` · ${r.soft} soft token(s) · banked ${r.pickups}+${r.quiz}q+${r.finish}f = ${r.tokens}, P${r.place}`);
-  ok(`track ${track}: the driver really met beacons and finished`,
+  ok(`${tag}: the driver really met beacons and finished`,
     r.met >= 4 && r.finished === true, `${r.met} met, finished ${r.finished}`);
-  ok(`track ${track}: at least ${(FLOOR_PER_RACE * 100).toFixed(0)}% of them opened a question`,
+  ok(`${tag}: at least ${(FLOOR_PER_RACE * 100).toFixed(0)}% of them opened a question`,
     frac >= FLOOR_PER_RACE, `${(frac * 100).toFixed(0)}% (${r.opened}/${r.met})`);
-  ok(`track ${track}: every beacon met is accounted for — opened or paid`,
+  ok(`${tag}: and at least ${MIN_OPENED_PER_RACE} boxes actually OPENED (the track is not starved)`,
+    r.opened >= MIN_OPENED_PER_RACE, `${r.opened} opened`);
+  ok(`${tag}: every beacon met is accounted for — opened or paid`,
     r.opened + r.soft === r.met, `${r.opened} opened + ${r.soft} soft = ${r.opened + r.soft} vs ${r.met} met`);
+  ok(`${tag}: no question was asked twice in the same race`,
+    new Set(r.askedIds).size === r.askedIds.length,
+    `${r.askedIds.length} asked, ${new Set(r.askedIds).size} distinct`);
 }
 const M = rows.reduce((s, r) => s + r.met, 0), O = rows.reduce((s, r) => s + r.opened, 0);
-ok(`across all three tracks, at least ${(FLOOR_OVERALL * 100).toFixed(0)}% of boxes met opened a question`,
+// Per-seed totals as well as the grand total: a seed that starves must not be
+// averaged out of sight by two that do not.
+const worstSeedOpened = Math.min(...SEEDS.map(s =>
+  rows.filter(r => r.seed === s).reduce((n, r) => n + r.opened, 0)));
+console.log(`     totals: ${O}/${M} opened across ${rows.length} races`
+  + ` · worst seed ${worstSeedOpened} · ` + SEEDS.map(s =>
+    `seed ${s}: ${rows.filter(r => r.seed === s).reduce((n, r) => n + r.opened, 0)}`).join(', '));
+ok(`across all ${rows.length} races, at least ${(FLOOR_OVERALL * 100).toFixed(0)}% of boxes met opened a question`,
   M > 0 && O / M >= FLOOR_OVERALL, `${O}/${M} = ${M ? ((O / M) * 100).toFixed(0) : 0}%`);
+ok(`…and at least ${MIN_OPENED_TOTAL} questions were asked per seed (worst seed)`,
+  worstSeedOpened >= MIN_OPENED_TOTAL,
+  `worst seed opened ${worstSeedOpened} (Wave 4: 24 · broken: 18 · starvation mutant: 14)`);
+ok(`…and at least ${MIN_OPENED_ALL_SEEDS} across all ${SEEDS.length * 3} races`,
+  O >= MIN_OPENED_ALL_SEEDS, `${O} opened (Wave 4: 69 · broken: 58 · round 1: 59)`);
 // The economy side of the same change, stated here so a retune that fixes the
 // cadence by paying for it cannot pass quietly. D51's most expensive garage ask
 // is 21 tokens and a single winning, fully engaged race must stay under it.
@@ -574,6 +696,46 @@ const MAX_ASK = 21;
 const worst = Math.max(...rows.map(r => r.tokens || 0));
 ok(`…and a winning engaged race still banks under the ${MAX_ASK}-token top ask`,
   worst < MAX_ASK, `worst race banked ${worst} · ${rows.map(r => r.tokens).join(' / ')}`);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   7. THE GAUGE EXISTS ON THE TIER CHILDREN ACTUALLY PLAY ON
+   Round 1 built the recharge ring only at propDensity >= 0.5, and the low tier
+   is 0.35 — so the mesh was never created and the low tier had NO recharge
+   indicator at all: a dim beacon and nothing else, identical at 10% charge and
+   at 85%. Wave 5.1's auto-detect can select low, so that is a tier real
+   children land on, and it is the tier where the one visible pacing rule
+   quietly did not exist. This asserts the gauge on the LIVE low-tier scene —
+   both meshes present, and the arc still filling.
+   ═══════════════════════════════════════════════════════════════════════════ */
+console.log('\n  7. the recharge gauge is built at EVERY quality tier');
+for (const tier of ['low', 'high']) {
+  await boot({ racerId: 'nitzotz', results: [], championshipRace: 0,
+    garageMetBoreg: true, garageTokenIntroSeen: true, quizBoxIntroSeen: true });
+  await evalp((o) => window.__DEBUG.goto('race', o),
+    { track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: false, quality: tier });
+  await wait(200);
+  await installRig();
+  const g = await guarded(`${tier}: a cooldown could be armed`, () => {
+    const D = window.__DEBUG, A = () => D.engine.active, F = 1 / 60;
+    const q = A().quiz;
+    window.__drive(6);
+    const lit = window.__art();
+    for (let i = 0; i < 60 * 240 && q.phase === 'idle'; i++) window.__drive(F);
+    for (let i = 0; i < 60 * 60 && q.phase !== 'idle'; i++) window.__drive(F);
+    const spent = window.__art();
+    window.__drive(3);
+    const half = window.__art();
+    return { tier: D.state().quality, lit, spent, half };
+  });
+  ok(`${tier}: the tier really is '${tier}'`, g.tier === tier, `engine quality '${g.tier}'`);
+  ok(`${tier}: both halves of the gauge are BUILT (arc + the circle it fills)`,
+    g.spent?.ringFill != null && g.spent?.ringTrack === true,
+    `arc ${g.spent?.ringFill != null ? 'present' : 'MISSING'}, track ${g.spent?.ringTrack}`);
+  ok(`${tier}: and the arc reads differently at empty, part-charged and live`,
+    g.spent?.ringFill < 0.35 && g.half?.ringFill > g.spent?.ringFill + 0.15
+    && g.lit?.ringFill >= 0.999,
+    `${g.spent?.ringFill} → ${g.half?.ringFill} → live ${g.lit?.ringFill}`);
+}
 
 ok('no page errors', errs.length === 0, errs[0] || '');
 console.log('  ' + '─'.repeat(76));

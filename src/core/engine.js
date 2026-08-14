@@ -11,8 +11,9 @@ import { clearModals } from '../ui/style.js';
 
 // Quality tiers. `auto` starts at AUTO_START_TIER and is corrected DOWNWARD by a
 // MEASURED probe (see below); the player can override in settings, and an
-// explicit override is permanent — it is the only way to reach גבוה. Builders MUST read engine.q.* rather than hardcoding counts, so the
-// low tier actually holds 60fps on a school laptop.
+// explicit override is permanent — it is the only way to reach גבוה. Builders
+// MUST read engine.q.* rather than hardcoding counts, so the low tier actually
+// holds 60fps on a school laptop.
 //
 // `pixelRatio` is a CAP, not a ratio. It used to be resolved with
 // `Math.min(devicePixelRatio, 2)` at MODULE LOAD, which meant two things: a
@@ -173,6 +174,7 @@ class Engine {
     this.fps = 60;
     this._fpsSamples = [];
     this._lastDraw = 0;      // wall clock of the last presented frame (scene maxFps)
+    this._gotoTicket = 0;    // monotonic navigation ticket — the last caller wins
   }
 
   init(mountEl) {
@@ -335,11 +337,42 @@ class Engine {
   // Scene contract: factory(engine, opts) -> {
   //   scene, camera, update(dt), render?(), resize?(w,h), dispose(), enter?(), exit?()
   // }
+  /**
+   * Change scene.
+   *
+   * RE-ENTRANCY. A scene factory is asynchronous and some of them are SLOW —
+   * the race builds a track, eight karts and their textures (measured at ~1.8s
+   * under SwiftShader, hundreds of ms on real hardware). Anything that can fire
+   * twice inside that window used to corrupt this method in two ways at once:
+   *
+   *   * the second call re-entered while `this.active` still pointed at the
+   *     scene the FIRST call had already disposed, and disposed it again —
+   *     a second `exit()`, a second `dispose()`, and for a menu screen a second
+   *     `releaseBackdrop()` against a refcount that had only been taken once;
+   *   * the scene the first call was building was then assigned to
+   *     `this.active` and immediately overwritten by the second, so it was
+   *     never disposed at all. MEASURED: one double-`goto` orphaned an entire
+   *     race scene — menu bus handlers 10 → 37 and staying there — with its
+   *     input listeners and its GPU geometry, permanently, per occurrence.
+   *
+   * Both are fixed by two lines that cost nothing: the old scene is FORGOTTEN
+   * the moment it is disposed (so nothing can dispose it twice), and every call
+   * takes a ticket. The last caller wins — which is the right answer for a
+   * child, because the last thing they asked for is the thing they want — and a
+   * superseded build is disposed instead of being left running behind the
+   * screen. Not a mutex: a navigation that is genuinely wanted (Escape out of a
+   * race that is still loading) must not be swallowed by one that is stale.
+   */
   async goto(name, opts = {}) {
     const factory = this.scenes.get(name);
     if (!factory) { console.error(`no scene "${name}"`); return; }
+    const ticket = ++this._gotoTicket;
+    const from = this.activeName;    // captured before `active` is forgotten
     if (this.active) {
-      try { this.active.exit?.(); this.active.dispose?.(); } catch (e) { console.error('scene dispose failed', e); }
+      const leaving = this.active;
+      this.active = null;              // forgotten BEFORE the await, not after
+      this.activeName = null;
+      try { leaving.exit?.(); leaving.dispose?.(); } catch (e) { console.error('scene dispose failed', e); }
       this.ui.replaceChildren();
       // Every panel is provably gone — its DOM was just wiped — so the modal
       // registry must say so. A leaked id used to be merely untidy; since the
@@ -349,8 +382,15 @@ class Engine {
       // because it may throw halfway through its own popModal calls.
       clearModals();
     }
-    bus.emit('scene:leaving', this.activeName);
-    this.active = await factory(this, opts);
+    bus.emit('scene:leaving', from);
+    const built = await factory(this, opts);
+    if (ticket !== this._gotoTicket) {
+      // Superseded while we were building. Throw away what we built rather than
+      // showing it or, worse, leaving it alive with nothing pointing at it.
+      try { built?.exit?.(); built?.dispose?.(); } catch (e) { console.error('superseded scene dispose failed', e); }
+      return null;
+    }
+    this.active = built;
     this.activeName = name;
     this.active.resize?.(this.width, this.height);
     this.active.enter?.();

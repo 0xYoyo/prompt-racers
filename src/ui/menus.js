@@ -1060,12 +1060,15 @@ function makeProceduralBackdrop(engine) {
     scene, camera,
     update(dt) { mat.uniforms.uTime.value += dt; },
     resize(w, h) { mat.uniforms.uAspect.value = (w || 16) / (h || 9); },
-    // Re-entering a screen must look exactly like entering it the first time —
-    // the backdrop is now SHARED and outlives the screen that built it (see
-    // acquireBackdrop), so the one piece of state that is visible on a still
-    // frame is put back where a fresh instance would have started. Without this
-    // every preview screenshot would depend on how many frames ran before the
-    // shot, which is the definition of a non-reproducible baseline.
+    // Rewind to the state a freshly built instance would have been in. The
+    // backdrop is now SHARED and outlives the screen that built it (see
+    // acquireBackdrop), so re-entering a screen would otherwise show it wherever
+    // its clock had got to. This one is the whole clock: `uTime` is the only
+    // state this shader has.
+    //
+    // THE SHIPPED BACKDROP DOES NOT IMPLEMENT THIS — see the note in
+    // acquireBackdrop. It matters here because THIS is the backdrop every
+    // module preview and every menus.js-standalone gate renders.
     reset() { mat.uniforms.uTime.value = 9.3; },
     dispose() { offQ(); geo.dispose(); mat.dispose(); },
   };
@@ -1098,10 +1101,42 @@ function makeBackdrop(engine) {
  * then emits `scene:entered`, at which point a count of zero means the game has
  * genuinely left the menus.
  */
+// The cadence every screen whose 3D layer is (or is mostly) the backdrop runs
+// at. 30 rather than the display rate — see the note in baseScreen.
+const BACKDROP_FPS = 30;
+
 let _bd = null;            // the one live backdrop, or null
 let _bdFactory = null;     // which factory built it — setBackdrop() invalidates
 let _bdUsers = 0;          // screens currently showing it
 
+/*
+ * ON `reset()`, AND WHAT SHARING ACTUALLY CHANGED ON SCREEN.
+ *
+ * A shared instance keeps running, so a screen re-entered later shows the
+ * backdrop wherever its clock had got to rather than where a fresh build would
+ * have started it. `reset()` is the hook that rewinds it — and it is only
+ * IMPLEMENTED by the procedural backdrop above, which is what module previews
+ * and the menus.js-standalone gates render. The shipped backdrop is the lead's
+ * live oasis slice (scenes.js -> raceScene), and that scene has no `reset()`:
+ * measured `hasReset:false` on every snapshot of the built game. So in the real
+ * game the optional call does nothing, and the consequence is stated rather than
+ * hidden:
+ *
+ *   the pack in the blurred backdrop has moved on when you come back to the
+ *   title from racer select, instead of being frozen at the same seven-second
+ *   mark every time.
+ *
+ * That is accepted, deliberately: it is a decorative out-of-focus plate, a race
+ * that continues is if anything more truthful than one that restarts, and the
+ * alternative — rebuilding the slice per screen — is the ~1.8s-per-hop cost this
+ * whole change exists to remove. It costs nothing in capture either: dist
+ * screenshots go through `__DEBUG.goto`, which parks the engine headless, so no
+ * wall time passes between a capture's navigation and its frame.
+ *
+ * If the lead wants the frozen-plate behaviour back, the patch belongs in
+ * race.js (not this file): return a `reset()` from the backdrop scene that
+ * re-seeds and re-runs its settle loop, and it is picked up here automatically.
+ */
 function acquireBackdrop(engine) {
   if (_bd && _bdFactory !== _backdropFactory) destroyBackdrop();
   if (!_bd) { _bd = makeBackdrop(engine); _bdFactory = _backdropFactory; }
@@ -1182,25 +1217,34 @@ function baseScreen(engine, opts, build) {
   // presents (engine.draw skips; the previous frame simply stays on screen).
   //
   // The cap is on PRESENTATION, not on the simulation, and that is a measured
-  // choice rather than a shortcut: stepping this backdrop costs 0.10ms a frame
-  // against 6-9ms to draw it, so a sim cap saves ~1% — and it would cost the two
-  // things this project cannot spend. A backdrop advanced in 1/30 chunks is a
-  // real race being handed double its fixed timestep (D5/D11), and a backdrop
+  // choice rather than a shortcut. Stepping this backdrop costs 0.072ms per
+  // fixed step — independently measured twice — which is 4.3ms of CPU per WALL
+  // SECOND, about 0.4% of one core. Capping the sim at 30 would therefore save
+  // ~0.2% of a core: it cannot be what a fan hears, and it would cost two things
+  // that are not for sale at that price. A backdrop advanced in 1/30 chunks is a
+  // real race being handed double its fixed timestep (D5/D11). A backdrop
   // advanced in a variable number of 1/60 sub-steps leaves a fractional
-  // remainder, so `__DEBUG.advance(t)` would land the shader's clock somewhere
-  // that depends on how many frames ran before it. The film grain in
-  // BACKDROP_FRAG is keyed to `floor(uTime*12)`: a remainder of one step there
-  // regrains the entire frame, and every preview screenshot in the repo shifts.
-  const BACKDROP_FPS = 30;
+  // remainder, so `__DEBUG.advance(t)` — the clock every deterministic capture
+  // runs on — would land somewhere that depends on how many frames happened to
+  // run before it; the film grain in BACKDROP_FRAG is keyed to
+  // `floor(uTime*12)`, so one step of remainder regrains the whole image.
+  // Presentation is the expensive half, and it is the half that is capped.
 
   return {
     scene: backdrop.scene,
     camera: backdrop.camera,
-    // Only screens whose entire 3D layer IS the backdrop are capped. Racer
-    // select and the podium composite their own live karts on top of it
-    // (`extra.render`), and those are being looked at and steered — halving
-    // their rate to save a backdrop nobody is watching would be a bad trade.
-    maxFps: extra.render ? 0 : BACKDROP_FPS,
+    // Screens whose entire 3D layer IS the backdrop are capped by default.
+    // A screen that composites its own 3D on top (`extra.render`) decides for
+    // itself, because the answer is not the same for both of them:
+    //   * RACER SELECT sets 30. It draws the whole backdrop PLUS eight live
+    //     karts, and it is the other screen a child sits on while deciding —
+    //     the biggest heat surface in the menus, bigger than the title. What
+    //     the child is reading there (the highlight, the stat bars, the focus
+    //     ring) is DOM and keeps the full rate regardless; only the slow turn
+    //     of the karts halves, which is not visible at that speed.
+    //   * THE PODIUM leaves it uncapped: confetti is fast, short-lived and
+    //     the one moment in the game that is supposed to feel expensive.
+    maxFps: extra.maxFps ?? (extra.render ? 0 : BACKDROP_FPS),
     update(dt) { backdrop.update?.(dt); extra.update?.(dt); },
     render: extra.render,
     resize(w, h2) { backdrop.resize?.(w, h2); extra.resize?.(w, h2); },
@@ -1976,6 +2020,10 @@ export function racerSelectScene(engine, opts = {}) {
         r.autoClear = true;
       },
       dispose: disposeKarts,
+      // See the maxFps note in baseScreen: this screen composites its own karts
+      // over the backdrop, so it opts in explicitly rather than inheriting the
+      // "draws its own 3D, therefore uncapped" default.
+      maxFps: BACKDROP_FPS,
       expose: {
         // What is ACTUALLY standing in each card window, read back off the scene
         // graph — see the seam note above. Same contract as the podium's.
