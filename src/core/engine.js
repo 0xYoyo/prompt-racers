@@ -9,9 +9,9 @@ import { save } from './save.js';
 // engine.js takes from the UI layer.
 import { clearModals } from '../ui/style.js';
 
-// Quality tiers. `auto` starts at AUTO_TIER and is corrected by a MEASURED probe
-// (see below); the player can override in settings, and an explicit override is
-// permanent. Builders MUST read engine.q.* rather than hardcoding counts, so the
+// Quality tiers. `auto` starts at AUTO_START_TIER and is corrected DOWNWARD by a
+// MEASURED probe (see below); the player can override in settings, and an
+// explicit override is permanent — it is the only way to reach גבוה. Builders MUST read engine.q.* rather than hardcoding counts, so the
 // low tier actually holds 60fps on a school laptop.
 //
 // `pixelRatio` is a CAP, not a ratio. It used to be resolved with
@@ -60,27 +60,60 @@ export function effectivePixelRatio(q, dpr) {
 // `high` to almost every machine, including ones with eight weak cores and no
 // GPU worth the name — the exact laptop a school actually owns. Those numbers
 // describe the CPU and say nothing about the thing that is slow here, which is
-// the renderer. So we measure instead: the tier starts at AUTO_TIER and the loop
-// samples the frame times it is already producing.
+// the renderer. So we measure instead: the tier starts at AUTO_START_TIER and
+// the loop samples the frame times it is already producing.
 //
 // Cheap by construction — it allocates one array of 60 numbers and reads a `dt`
 // the loop had computed anyway. It cannot stall the first paint because it does
 // no work before a frame; the first PROBE.warmupFrames are discarded so that
 // shader compilation and texture upload, which happen once, are not mistaken for
 // the steady state.
+//
+// THREE tier constants, and the difference between them is the whole policy:
+//
+//   AUTO_TIER       the FIXED tier a boot lands on when nobody arms the probe.
+//                   Gates, previews and the capture harness get this — see the
+//                   opt-in note below — and it must not move, or every
+//                   screenshot baseline in the repo silently shifts.
+//   AUTO_START_TIER where an AUTO session (a real child, probe armed) begins.
+//   AUTO_MAX_TIER   the ceiling automatic detection may ever reach.
+//
+// Wave 5.1 policy change: automatic detection selects AT MOST בינוני. גבוה is
+// manual-only. Two reasons, and the second is the one that decided it:
+//   * the measured probe picked גבוה on a strong laptop and then the machine ran
+//     hot — a fan at full tilt in a classroom is a worse experience than a
+//     slightly softer sky;
+//   * a session that starts at גבוה and is demoted 60 frames later CHANGES ON
+//     SCREEN in front of the child. Shadows and reflections pop off a second
+//     after the title lands, which reads as a bug. So an auto session starts at
+//     בינוני and the probe may only lower it — never raise it.
+// An explicit choice of גבוה in settings still works and still outranks the
+// probe forever; see setQuality().
 export const AUTO_TIER = 'high';
+export const AUTO_START_TIER = 'medium';
+export const AUTO_MAX_TIER = 'medium';
 // 20 + 40 frames: a third of a second on a machine that is fine, and — the case
 // that matters — only 60 frames on one that is not, which at 5fps is still a
 // twelve-second wait before the tier is corrected. Longer windows measure no
 // better; the median of 40 already survives a GC pause.
-export const PROBE = { warmupFrames: 20, sampleFrames: 40, highMs: 20, mediumMs: 34 };
+//
+// `mediumMs` is now the only threshold: the probe runs AT בינוני and answers one
+// question — can this machine hold it? 34ms is ~30fps. (There was a `highMs`
+// here, for "fast enough to stay at גבוה". Automatic selection can no longer
+// reach גבוה at all, so a threshold for it would be a knob wired to nothing,
+// which is exactly the lie this file's own gate exists to forbid.)
+export const PROBE = { warmupFrames: 20, sampleFrames: 40, mediumMs: 34 };
 
-/** Median real frame time (ms) at AUTO_TIER -> the tier that machine should run. */
+/**
+ * Median real frame time (ms) measured at AUTO_START_TIER -> the tier that
+ * machine should run. Never returns 'high': automatic detection is capped at
+ * AUTO_MAX_TIER by policy, and a garbage measurement falls back to the tier the
+ * session already started on rather than promoting anything.
+ */
 export function tierFromFrameTime(ms) {
-  if (!Number.isFinite(ms) || ms <= 0) return AUTO_TIER;
-  if (ms <= PROBE.highMs) return 'high';       // >= 50fps at גבוה: leave it there
-  if (ms <= PROBE.mediumMs) return 'medium';   // 30-50fps: בינוני buys the headroom
-  return 'low';
+  if (!Number.isFinite(ms) || ms <= 0) return AUTO_START_TIER;
+  if (ms <= PROBE.mediumMs) return AUTO_MAX_TIER;   // >= 30fps at בינוני: stay
+  return 'low';                                     // it cannot hold בינוני
 }
 
 // THE PROBE IS OPT-IN, AND THAT IS WHY THERE IS NO `navigator.webdriver` HERE.
@@ -106,10 +139,17 @@ export function tierFromFrameTime(ms) {
  * What tier a boot starts at, given the saved `quality` key.
  * `auto` (the default) means nobody has chosen and the probe may correct it;
  * a tier name is the player's own choice and outranks any measurement, forever.
+ *
+ * `probing` says whether this boot will actually arm the probe — i.e. whether a
+ * child is playing (main.js) or a gate is capturing (everything else). Only the
+ * probing answer is subject to the AUTO_START_TIER policy; a non-probing boot
+ * lands on the fixed AUTO_TIER exactly as it always has, which is what keeps
+ * every screenshot baseline in the repo where it is.
  */
-export function resolveInitialTier(saved) {
+export function resolveInitialTier(saved, { probing = false } = {}) {
   const explicit = !!(saved && saved !== 'auto' && TIERS[saved]);
-  return { name: explicit ? saved : AUTO_TIER, autoTier: !explicit };
+  if (explicit) return { name: saved, autoTier: false };
+  return { name: probing ? AUTO_START_TIER : AUTO_TIER, autoTier: true };
 }
 
 const FIXED = 1 / 60;         // physics step
@@ -132,6 +172,7 @@ class Engine {
     this.probedFrameMs = 0;   // what the probe measured, for the report/overlay
     this.fps = 60;
     this._fpsSamples = [];
+    this._lastDraw = 0;      // wall clock of the last presented frame (scene maxFps)
   }
 
   init(mountEl) {
@@ -204,7 +245,30 @@ class Engine {
    * measure in the first place.
    */
   enableQualityProbe() {
-    if (this.autoTier && !this._headless) this._probe = { warm: PROBE.warmupFrames, samples: [] };
+    if (!this.autoTier || this._headless) return this;
+    // The auto session's starting tier is applied HERE, before the first frame
+    // is ever drawn, rather than in init(): init() is shared with every gate and
+    // preview, and they must keep landing on the fixed AUTO_TIER. Applying it at
+    // the moment the probe is armed is also what makes "never visibly starts on
+    // גבוה and drops" true — nothing has been rendered yet.
+    const start = resolveInitialTier(save.read('quality'), { probing: true });
+    if (start.name !== this.q?.name) this._applyTier(start.name);
+    this._probe = { warm: PROBE.warmupFrames, samples: [] };
+    return this;
+  }
+
+  /**
+   * Pin a tier for the CAPTURE HARNESS: apply it, end any probe, and record
+   * nothing as a player choice (so the save is untouched and a later boot is
+   * unaffected). core/harness.js calls this so the tier a gate or a preview
+   * screenshot renders at is STATED at one visible call site, instead of being
+   * inherited from whatever init() happened to default to — see D35 and the
+   * opt-in note above. Never called by the game.
+   */
+  pinQuality(name) {
+    if (!TIERS[name]) return this;
+    this._probe = null;
+    if (this.q?.name !== name) this._applyTier(name);
     return this;
   }
 
@@ -291,6 +355,9 @@ class Engine {
     this.active.resize?.(this.width, this.height);
     this.active.enter?.();
     this._acc = 0;
+    // A new scene always presents its first frame immediately, whatever cap it
+    // declares — otherwise the previous scene's last frame stays on screen.
+    this._lastDraw = 0;
     bus.emit('scene:entered', name);
     return this.active;
   }
@@ -376,8 +443,29 @@ class Engine {
     }
   }
 
-  draw() {
+  /**
+   * Present one frame.
+   *
+   * A scene may declare `maxFps` to be drawn at less than the display rate. The
+   * menus do (30): their backdrop is a live slice of a race, and a title screen
+   * left open on a desk was rendering 552 draw calls and 1.2M triangles sixty
+   * times a second for as long as the child was away — which is a fan at full
+   * tilt for a picture that is deliberately out of focus. Skipping the frame
+   * leaves the previous one on screen: nothing is cleared, so the canvas simply
+   * holds, and the DOM menu on top of it animates at the full rate regardless.
+   *
+   * `force` bypasses the cap; the capture harness passes it, because a
+   * screenshot must photograph a frame drawn NOW rather than whatever the
+   * throttle last left in the buffer.
+   */
+  draw(force = false) {
     if (!this.active) return;
+    const cap = this.active.maxFps;
+    if (!force && cap > 0) {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (this._lastDraw && now - this._lastDraw < 1000 / cap - 1) return;
+      this._lastDraw = now;
+    }
     if (this.active.render) this.active.render();
     else if (this.active.scene && this.active.camera) this.renderer.render(this.active.scene, this.active.camera);
   }

@@ -77,21 +77,42 @@
 //
 // Bus events emitted (payload shape at emitResult() below):
 //   quiz:open  quiz:correct  quiz:wrong  quiz:timeout  quiz:close
-//   quiz:deferred — a beacon was driven through but the box did NOT open,
-//   because a teaching card closed less than the applicable gap ago (Wave 5).
-//   Nothing is lost: the beacon respawns and the question comes at the next
-//   box. It is emitted so a gate can prove a deferral actually happened rather
-//   than inferring it from a card that simply never fired. Payload:
-//   { since, gap, deferrals, reason } — `gap` is the gap that was actually
-//   required, which is TEACH_GAP_S until the escalation below shortens it.
+//   quiz:beacon — EVERY beacon a player drives through, live or not:
+//     { i, active, charge, x, y, z }. `active` says whether it opened a
+//     question. Emitted so a gate (and the lead) can measure the one number
+//     that decides whether the boxes feel broken: the fraction of the boxes a
+//     child drives through that actually ask them something.
+//   quiz:softToken — a beacon driven through while it was RECHARGING. It pays
+//     one token and a sparkle and opens nothing; race.js awards it (this module
+//     never imports race.js). Payload { i, x, y, z }.
+//   quiz:recharged — the cooldown ran out and every beacon lit back up. The
+//     re-activation is a visible pop, not a silent swap.
+//
+// ══════════════════════════════════ WAVE 5.1: THE PLAYER CAN SEE WHY (D-quizbox)
+// Wave 5 put a teaching-card cadence gate at the BEACON: a box that arrived
+// inside another card's shadow was consumed and opened nothing. Combined with
+// the answered/ignored cooldowns, roughly two boxes in three ate themselves in
+// silence and the first boxes of a championship fired nothing at all. A child
+// cannot tell that from a bug, and a mechanic a child reads as broken is broken.
+//
+// So the cadence gate is GONE from the beacon (cards still space themselves —
+// noteTeachingCard() is still called when a box episode closes, so the
+// first-token explainer does not land on its heels), and the ONE remaining
+// pacing rule is the cooldown, which is now a thing you can look at:
+//
+//   • the first box of every race is ALWAYS live — no cooldown, no gate;
+//   • while the cooldown drains, every beacon is visibly GHOSTED and its ring
+//     fills back up like a charging battery (writeInstances/applyChargeVisuals);
+//   • when it hits zero the beacons POP back to full, in one visible beat;
+//   • driving through a ghosted beacon is never nothing: it pays one token and
+//     a sparkle (`quiz:softToken`) and the beacon respawns as usual.
 // ═════════════════════════════════════════════════════════════════════════════
 import * as THREE from 'three';
 import { bus } from '../core/bus.js';
 import { makeRng } from '../core/rng.js';
 import { save } from '../core/save.js';
 import {
-  h, injectStyles, pushModal, popModal, modalOpen,
-  teachingCardReady, noteTeachingCard, sinceTeachingCard, TEACH_GAP_S,
+  h, injectStyles, pushModal, popModal, modalOpen, noteTeachingCard,
 } from '../ui/style.js';
 import { registerStrings, t, num, getLang } from '../ui/i18n.js';
 import { QUESTIONS, questionsForDifficulty, tiersForDifficulty, bankStats } from './quizdata.js';
@@ -193,35 +214,77 @@ registerStrings({
 const BEACONS = 6;            // per lap — a player meets 2–3 per lap in practice
 const HIT_RADIUS = 3.4;       // generous: kids should not have to thread a needle
 const HIT_HEIGHT = 4.0;       // vertical tolerance (jumps on Cloud Peak)
-const RESPAWN_S = 26;         // a used beacon comes back later in the race
-// After any question, no beacon can fire for this long. Raised 6 → 10 in the
-// Wave-2 smoothing pass: with three laps and 2–3 beacons met per lap, a six
-// second gap let a second panel open before the world had finished easing back
-// to full speed, so a lap could read as one long slow-motion sequence.
-const COOLDOWN_S = 10;
-// …and a much longer one after a question that timed out. This is the whole
-// answer to "a player who ignores the panel leaves the world slowed for a long
-// stretch": someone who is engaging gets the next question soon, someone who
-// drove straight past gets a proper run of clean racing before the next one.
-// It is a pacing rule, never a punishment — the reward for answering is more
-// questions, not fewer.
-const COOLDOWN_IGNORED_S = 24;
-
-// ── CADENCE ESCALATION (Wave 5, round 2) ────────────────────────────────────
-// A question box that keeps meeting the teaching-card gap must not be starved.
-// The shadows and the beacons are not independent: a box episode occupies ~5s
-// and then casts TEACH_GAP_S of shadow, ~20 of every ~22s beacon cycle on track
-// 0, and trackbuild lays the beacons along the same racing line every lap — so
-// "wait for a clear window" can mean "wait for the whole race". A card that has
-// already stood aside URGENT_AFTER times therefore opens on the SHORTER gap
-// below instead of never: the point of the cadence is that cards do not arrive
-// on each other's heels, not that they stop arriving.
+// A used beacon comes back later in the race. 26 → 60 in Wave 5.1, and this is
+// an ECONOMY number as much as a pacing one, so the reasoning is written down.
 //
-// 6s is the smallest gap that still reads as two separate moments rather than
-// one slideshow (a box episode's own 3·2·1 hand-back is 2.16s of it), and it is
-// only ever reached after two full-length refusals.
-const URGENT_GAP_S = 6;
-const URGENT_AFTER = 2;
+// Every beacon a child drives through now pays exactly one token: a right answer
+// pays it, and a RECHARGING box pays the same one as its soft reward. So beacon
+// income stopped being "how many questions opened" and became "how many beacons
+// were touched" — and touching them is free. Measured on the built game, three
+// tracks, an engaged autopilot answering every question correctly:
+//
+//   RESPAWN_S   beacons met   boxes opened   banked on a won race
+//     26 (old)     10–15          8–10            18 · 20 · 23
+//     55           10–11           8              17 · 18 · 20
+//     60 (here)      7–10          6–7            18 · 16 · 17
+//
+// It is also RACING seconds rather than wall seconds — see the respawn tick in
+// update(). That distinction is worth a token or two on its own: a timed-out
+// question burns 20 wall seconds with the world frozen, so on a wall clock the
+// child who ignored every box got their beacons back FASTEST.
+//
+// 23 is past D51's 21-token maximum garage ask — the number the whole economy is
+// built to stay under — and 20 is outside the 11–19 band flowtest holds a
+// winning engaged race to. At 60s a beacon comes back about a lap and a half
+// later, a race meets 9–10 of them, and the wallet lands back in the band.
+//
+// This is NOT the knob that decides how many boxes FIRE: that is the cooldown
+// below, and it is untouched by this. 6–9 boxes open per race here against 6
+// before, out of 9–10 met rather than ~15 — the fire rate goes from about a
+// third to 67–100%.
+const RESPAWN_S = 60;
+// After any question, no beacon FIRES for this long — and for exactly this long
+// every beacon on the track is visibly ghosted and visibly recharging, so the
+// rule is one a child reads off the road rather than one they have to infer.
+//
+// 10 → 8 in Wave 5.1. The old number was chosen when the cooldown was invisible
+// and a second panel arriving "too soon" was the only failure it could see; the
+// measured cost was that a three-lap race met ~15 beacons and opened 6 of them,
+// with the rest eaten in silence. Eight seconds is still a clear run of racing
+// between two panels (a box episode's own 3·2·1 hand-back is 2.16s of it) and it
+// is short enough that most of the beacons a child drives through are lit:
+// measured fire rate 70% / 80% / 67% on tracks 0/1/2, against ~40% before.
+//
+// WHY NOT 7. Seven measured better still (100% / 80% / 67%) and is the number
+// this pass would otherwise ship. It is not shippable as one line: it fails
+// tests/quizbank.test.mjs, which sizes the QUESTION BANK against a worst case of
+// RACE_CAP_S / (COOLDOWN_S + DISMISS_AFTER_S) questions in one race — at 7 that
+// worst case is 37 and the tier-1 pool holds 36, so a theoretical race could
+// repeat a question. The bank is what would have to move, and that is a
+// different file and a different decision; the note is here so the next person
+// to reach for this constant knows what it is tied to. (That worst case is also
+// now very loose: RESPAWN_S bounds a real race to 9–10 beacons met, which the
+// bank model does not know about.)
+const COOLDOWN_S = 8;
+// …and a longer one after a question that timed out: someone who is engaging
+// gets the next question soon, someone who drove straight past gets a proper
+// run of clean racing before the next one. It is a pacing rule, never a
+// punishment — the reward for answering is more questions, not fewer. 24 → 13:
+// at 24s a timed-out question took the boxes away for most of a lap, which is
+// indistinguishable from the bug this pass exists to remove.
+const COOLDOWN_IGNORED_S = 13;
+// How long the "the boxes are live again" pop lasts. Long enough to be seen
+// from a kart, short enough not to read as a second state.
+const RECHARGE_POP_S = 0.6;
+// What a ghosted beacon looks like, as multipliers on its lit self. The core
+// keeps a trace of light so the beacon is still findable at speed — a beacon
+// that vanishes is a beacon a child stops looking for.
+const GHOST_OPACITY = 0.26;
+const GHOST_EMISSIVE = 0.18;
+// …except the ring and its halo, which ARE the gauge. They stay bright enough
+// to read from a kart, so a ghosted beacon says "recharging, this far along"
+// rather than just "gone".
+const GHOST_INDICATOR = 0.72;
 
 // The world is FROZEN, not slowed, for the whole sequence (Wave 3). This is a
 // TIME SCALE, applied by race.js to its own accumulator (see the seam note at
@@ -600,11 +663,12 @@ function injectQuizCSS() {
 //   • when it defers the save flag is LEFT UNTOUCHED, so the next question box
 //     shows it. A beacon respawns; the explainer is never lost.
 //
-// Wave 5 adds a SECOND reason to wait, and it is deliberately not applied here:
-// the teaching-card cadence (ui/style.js) is checked at the BEACON, so a box
-// that arrives too soon after another card does not open at all. Gating this
-// card instead would hand a child their very first question with the
-// explanation skipped — the one thing the explainer exists to prevent.
+// Wave 5 briefly added a SECOND reason to wait — the teaching-card cadence,
+// checked at the beacon — and Wave 5.1 removed it: a box that declines to fire
+// for a reason a child cannot see is a box a child reads as broken. The only
+// thing that can now hold a box back is the VISIBLE cooldown, and the FIRST box
+// of a race ignores even that, so this explainer always lands on a real
+// question rather than on a beacon that quietly ate itself.
 //
 // The save flag is a new key. `save.js` merges unknown keys against DEFAULTS, so
 // this is safe without editing that file, but the lead must add
@@ -717,6 +781,11 @@ export function createQuizSystem(engine, opts = {}) {
   const wantBeam = q.propDensity >= 0.35;
 
   const geos = [], mats = [], meshes = [];
+  // The two parts that ARE the recharge indicator. They ghost far less than the
+  // rest of the beacon: everything else going dark is what says "spent", and the
+  // ring staying readable is what says "spent, and here is how far back it is".
+  // A gauge you cannot read is not a gauge.
+  const indicatorMats = new Set();
   const keepG = g => { geos.push(g); return g; };
   const keepM = m => { mats.push(m); return m; };
 
@@ -757,7 +826,12 @@ export function createQuizSystem(engine, opts = {}) {
     glowMesh = new THREE.InstancedMesh(glowGeo, glowMat, N);
 
     const satGeo = keepG(new THREE.IcosahedronGeometry(0.3, detail));
-    const satMat = keepM(new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    // transparent from the start: the satellites have to be able to ghost with
+    // the rest of the beacon while it recharges, and flipping `transparent` at
+    // runtime recompiles the material.
+    const satMat = keepM(new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 1,
+    }));
     satMesh = new THREE.InstancedMesh(satGeo, satMat, N * 3);
     for (let i = 0; i < N; i++) {
       for (let k = 0; k < 3; k++) satMesh.setColorAt(i * 3 + k, new THREE.Color(SAT_COLORS[k]));
@@ -770,6 +844,7 @@ export function createQuizSystem(engine, opts = {}) {
         color: 0xd0b6ff, emissive: 0x7b4bff, emissiveIntensity: 1.9,
         roughness: 0.3, transparent: true, opacity: 0.9,
       }));
+      indicatorMats.add(ringMat);
       ringMesh = new THREE.InstancedMesh(ringGeo, ringMat, N);
     }
     if (wantBeam) {
@@ -788,14 +863,69 @@ export function createQuizSystem(engine, opts = {}) {
         color: 0x8ce6ff, transparent: true, opacity: 0.42, depthWrite: false,
         side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
       }));
+      indicatorMats.add(padMat);
       padMesh = new THREE.InstancedMesh(padGeo, padMat, N);
     }
+    // NAMED, because the gates read the real scene graph rather than a flag:
+    // "the beacons are ghosted" is a claim about a material, and the only honest
+    // way to check it is to walk the live scene and look at that material.
+    coreMesh.name = 'quiz:beacon-core';
+    satMesh.name = 'quiz:beacon-sats';
+    glowMesh.name = 'quiz:beacon-glow';
+    if (ringMesh) ringMesh.name = 'quiz:beacon-ring';
+    if (beamMesh) beamMesh.name = 'quiz:beacon-beam';
+    if (padMesh) padMesh.name = 'quiz:beacon-pad';
     for (const m of [beamMesh, padMesh, glowMesh, ringMesh, coreMesh, satMesh]) {
       if (!m) continue;
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       m.frustumCulled = false;
       meshes.push(m);
       group.add(m);
+    }
+  }
+
+  /* ── THE VISIBLE COOLDOWN ─────────────────────────────────────────────────
+     The pacing rule is only allowed to exist because it is legible, so the
+     beacon art carries it. Every beacon material's LIT values are recorded once
+     here, and every frame the whole set is scaled between "ghosted" and "lit"
+     by the cooldown — plus a short overshoot on the frame it comes back, which
+     is the pop that says "they are live again" without a word of UI.
+     One cooldown drives all six beacons, so this is six material writes a frame
+     and not one per instance. */
+  const litMats = mats.map(m => ({
+    mat: m, opacity: m.opacity, emissiveIntensity: m.emissiveIntensity ?? 0,
+    indicator: indicatorMats.has(m),
+  }));
+  let cooldown = 0;          // seconds left before the boxes are live again
+  let cooldownFull = 0;      // …of how many, so the recharge ring has a scale
+  let popT = 0;              // the re-activation flash, counting down
+  let firstBoxDone = false;  // the FIRST box of a race ignores the cooldown
+
+  /** 0 → just spent, 1 → fully charged. What the ring shows.
+   *  `opts.forceCharge` pins it for screenshots (the previews are frozen, so
+   *  nothing would ever drain a real cooldown there). */
+  function chargeFrac() {
+    if (opts.forceCharge != null) return opts.forceCharge;
+    if (cooldown <= 0 || cooldownFull <= 0) return 1;
+    return Math.max(0, Math.min(1, 1 - cooldown / cooldownFull));
+  }
+  /** True when driving through a beacon opens a question. */
+  function beaconsLive() {
+    if (opts.forceCharge != null) return false;
+    return cooldown <= 0;
+  }
+
+  function applyChargeVisuals() {
+    const live = beaconsLive();
+    const pop = popT > 0 ? popT / RECHARGE_POP_S : 0;      // 1 → 0 over the beat
+    const kO = (live ? 1 : GHOST_OPACITY) + pop * 0.3;
+    const kE = (live ? 1 : GHOST_EMISSIVE) + pop * 1.4;
+    const iO = (live ? 1 : GHOST_INDICATOR) + pop * 0.3;
+    const iE = (live ? 1 : GHOST_INDICATOR) + pop * 1.4;
+    for (const g of litMats) {
+      const o = g.indicator ? iO : kO, e = g.indicator ? iE : kE;
+      g.mat.opacity = Math.min(1, g.opacity * o);
+      if (g.emissiveIntensity) g.mat.emissiveIntensity = g.emissiveIntensity * e;
     }
   }
 
@@ -808,6 +938,17 @@ export function createQuizSystem(engine, opts = {}) {
 
   function writeInstances() {
     if (!N) return;
+    applyChargeVisuals();
+    // THE RECHARGE RING. While the boxes are spent the halo ring is small and
+    // grows back as the cooldown drains — a battery filling, read at a glance
+    // from a kart — and on the frame it completes it overshoots once. A child
+    // never has to be told the boxes are coming back; they can watch it.
+    const charge = chargeFrac();
+    const pop = popT > 0 ? popT / RECHARGE_POP_S : 0;
+    const ringScale = beaconsLive() ? 1 + pop * 0.28 : 0.34 + 0.66 * charge;
+    // …and while it recharges the ring spins faster, so the beacon reads as
+    // BUSY rather than as dead.
+    const ringSpin = beaconsLive() ? 1.25 : 3.1;
     for (const b of beacons) {
       const on = b.alive ? 1 : 0.0001;
       const bob = Math.sin(vis * 1.7 + b.phase) * 0.22;
@@ -827,9 +968,12 @@ export function createQuizSystem(engine, opts = {}) {
         _s.set(on, on, on);
       }
       if (ringMesh) {
-        _q.setFromAxisAngle(_axis, -vis * 1.25 + b.phase);
+        _q.setFromAxisAngle(_axis, -vis * ringSpin + b.phase);
+        const rs = on * ringScale;
+        _s.set(rs, rs, rs);
         _m.compose(_p, _q, _s);
         ringMesh.setMatrixAt(b.i, _m);
+        _s.set(on, on, on);
       }
       if (beamMesh) {
         _p.set(b.pos.x, b.pos.y - 1.45, b.pos.z);
@@ -838,7 +982,7 @@ export function createQuizSystem(engine, opts = {}) {
         _m.compose(_p, _q, _s);
         beamMesh.setMatrixAt(b.i, _m);
 
-        const halo = on * (1 + Math.sin(vis * 2.2 + b.phase) * 0.12);
+        const halo = on * ringScale * (1 + Math.sin(vis * 2.2 + b.phase) * 0.12);
         _p.set(b.pos.x, b.pos.y - 1.49, b.pos.z);
         _q.setFromAxisAngle(_up, vis * 0.5);
         _s.set(halo, halo, halo);
@@ -948,10 +1092,6 @@ export function createQuizSystem(engine, opts = {}) {
   let phase = 'idle';
   let phaseT = 0;            // seconds in the current phase (REAL time)
   let beat = -1;             // last countdown beat emitted during `resume`
-  let cooldown = 0;
-  // How many beacons in a row have stood aside for the teaching-card cadence.
-  // Drives the escalation above; reset the moment a box actually opens.
-  let cadenceDeferrals = 0;
   let scale = 1;             // the time scale handed back to race.js
   let shown = null;          // { data, order, correctSlot, limit }
   const asked = [];          // ids opened by THIS system, in order (see quiz:open)
@@ -1064,6 +1204,12 @@ export function createQuizSystem(engine, opts = {}) {
     // pause menu. The beacon that triggered us has already been consumed and
     // will respawn, so nothing is lost — the question simply comes later.
     if (modalOpen('quiz')) return;
+    // A box has now opened this race, so the "the first box is always live"
+    // exemption is spent. It is set HERE rather than at the beacon because the
+    // previews and the gates force-open questions through this same door: a
+    // forced question is still a question the child has been asked, and a beacon
+    // met right after one must obey the cooldown like any other.
+    firstBoxDone = true;
     // First box this child has ever met: explain what a box IS first. If
     // anything else owns the screen, introDue() is false and the flag is left
     // alone, so the NEXT box explains instead (the registry policy, D15/D18).
@@ -1237,9 +1383,13 @@ export function createQuizSystem(engine, opts = {}) {
     phaseT = 0;
     beat = -1;
     cooldown = lastResult?.timedOut ? COOLDOWN_IGNORED_S : COOLDOWN_S;
+    cooldownFull = cooldown;      // the denominator the recharge ring fills over
+    popT = 0;
     // The whole episode — explainer, question, feedback, 3·2·1 — is ONE
     // teaching card, and this is the moment it lets go of the screen. The
-    // cadence clock starts here, so the next card (and the next box) waits.
+    // cadence clock starts here so the OTHER cards (the first-token explainer)
+    // do not land on its heels. It no longer gates question boxes — that gate
+    // is what Wave 5.1 removed; see the beacon hit in update().
     noteTeachingCard();
     bus.emit('quiz:close', lastResult);
   }
@@ -1257,11 +1407,28 @@ export function createQuizSystem(engine, opts = {}) {
     vis += dt;
 
     if (!freeze) {
-      if (cooldown > 0) cooldown = Math.max(0, cooldown - dt);
-      for (const b of beacons) {
-        if (b.alive) continue;
-        b.respawn -= dt;
-        if (b.respawn <= 0) b.alive = true;
+      if (cooldown > 0) {
+        cooldown = Math.max(0, cooldown - dt);
+        // The moment it completes is an EVENT, not a silent flag flip: the
+        // beacons flash back to full and say so on the bus.
+        if (cooldown === 0) { popT = RECHARGE_POP_S; bus.emit('quiz:recharged', {}); }
+      }
+      if (popT > 0) popT = Math.max(0, popT - dt);
+      // Respawn is RACING time, not wall time: it only ticks while the world is
+      // actually running. A panel freezes the world (D11/D20 — a child is never
+      // charged race time for reading), and a beacon that quietly recharged
+      // itself behind a question the child was reading is the same dishonesty
+      // as a lap timer that did. It is also the difference between a rule and a
+      // loophole: a question that TIMES OUT burns 20 wall seconds, and while
+      // respawn drained through it a child who ignored every box got the
+      // beacons back faster than one who answered them — and, now that every
+      // beacon pays a token, got paid more for ignoring the game.
+      if (phase === 'idle') {
+        for (const b of beacons) {
+          if (b.alive) continue;
+          b.respawn -= dt;
+          if (b.respawn <= 0) b.alive = true;
+        }
       }
     }
 
@@ -1271,50 +1438,42 @@ export function createQuizSystem(engine, opts = {}) {
     const blocked = modalOpen('quiz');
 
     if (phase === 'idle' && enabled && !freeze && !blocked
-        && ctx?.racing !== false && body && cooldown <= 0) {
+        && ctx?.racing !== false && body) {
       const hit = findHit(body.position);
       if (hit) {
+        // ── THE ONE RULE, AND IT IS VISIBLE ──────────────────────────────────
+        // A beacon opens a question unless the boxes are recharging, and while
+        // they are recharging you can SEE it: ghosted core, ring filling back
+        // up. There is no second, invisible reason a box can decline to fire —
+        // Wave 5's teaching-card gate lived here and is gone. Cards still space
+        // themselves (close() below still calls noteTeachingCard(), so the
+        // first-token explainer does not land on a box's heels); what changed is
+        // that a CARD's cadence can no longer eat a BOX.
+        //
+        // And the FIRST box of every race is live whatever the clock says. A
+        // fresh race starts with cooldown 0 anyway; stating it as its own
+        // condition is what makes it a promise rather than an accident, and it
+        // is the promise the gate holds us to.
+        const live = !firstBoxDone || beaconsLive();
+        const charge = chargeFrac();
         hit.alive = false;
         hit.respawn = RESPAWN_S;
-        // ── TEACHING-CARD CADENCE (Wave 5) ─────────────────────────────────
-        // A question box is a teaching card: on a fresh save the first one
-        // opens the "what a question box is" explainer, and every one of them
-        // ends in the feedback panel a child reads. So it obeys the same gap
-        // as the other cards (ui/style.js): not within TEACH_GAP_S of the
-        // previous card's close.
-        //
-        // The check is HERE, at the beacon, and NOT inside openQuestion(),
-        // for two reasons. First, this is the only trigger a child can
-        // actually produce — openQuestion() is also the previews' and the
-        // harness's force-open, which must stay deterministic. Second, the
-        // explainer must never be skipped INDEPENDENTLY of its question: if
-        // introDue() were the thing gated, a child's very first box would ask
-        // a question they had never had explained. Deferring the whole box
-        // keeps the pair together.
-        //
-        // Deferring costs nothing and queues nothing: the beacon has been
-        // consumed and respawns in RESPAWN_S, and the lap has five more, so
-        // the question simply arrives at the next box (D15/D18's rule for the
-        // quiz, applied to a second reason for waiting). The save flag is
-        // untouched, so the explainer is still owed and still comes.
-        //
-        // ESCALATION (round 2). Deferring forever is the same thing as
-        // dropping: box episodes and beacons are NOT independent — an episode
-        // is ~5s of screen plus TEACH_GAP_S of shadow, ~20 of every ~22s
-        // beacon cycle, and the beacons sit on the racing line the child is
-        // already following. So a box that has stood aside URGENT_AFTER times
-        // opens on URGENT_GAP_S instead. The gap that is actually applied is
-        // reported on the event, so a gate can tell a full-length refusal from
-        // an escalated one.
-        const gap = cadenceDeferrals >= URGENT_AFTER ? URGENT_GAP_S : TEACH_GAP_S;
-        if (!teachingCardReady(gap)) {
-          cadenceDeferrals++;
-          bus.emit('quiz:deferred', {
-            since: sinceTeachingCard(), gap, deferrals: cadenceDeferrals, reason: 'cadence',
-          });
+        bus.emit('quiz:beacon', {
+          i: hit.i, active: live, charge,
+          x: hit.pos.x, y: hit.pos.y, z: hit.pos.z,
+        });
+        if (live) {
+          openQuestion();          // …which is what marks the exemption spent
         } else {
-          cadenceDeferrals = 0;
-          openQuestion();
+          // Driving through a recharging box is never nothing. One token and a
+          // sparkle — the same pickup path a gold token takes, awarded by
+          // race.js because this module must not import it. It pays once per
+          // beacon LIFE (the beacon is consumed here and respawns on the normal
+          // RESPAWN_S path), exactly like a token pickup, so it cannot be
+          // farmed by circling.
+          bus.emit('quiz:softToken', {
+            i: hit.i, x: hit.pos.x, y: hit.pos.y, z: hit.pos.z,
+          });
         }
       }
     }
@@ -1397,6 +1556,15 @@ export function createQuizSystem(engine, opts = {}) {
     get lastVia() { return lastVia; },
     /** Is the one-time first-question-box explainer on screen right now? */
     get introOpen() { return !!introEl; },
+    /** Would driving through a beacon RIGHT NOW open a question? This is the
+     *  same predicate the art shows, so a gate can pair "the code says live"
+     *  with "the materials look live" and catch the two drifting apart. */
+    get beaconsLive() { return beaconsLive(); },
+    /** 0 → just spent, 1 → charged. The number the recharge ring draws. */
+    get charge() { return chargeFrac(); },
+    get cooldownLeft() { return cooldown; },
+    /** Has a box opened yet this race? Until it has, the cooldown is ignored. */
+    get firstBoxDone() { return firstBoxDone; },
     /** Force a question open — used by previews and by the dev harness. */
     openQuestion(pick) { openQuestion(pick); },
     /** The player's "I have read it" — feedback → 3·2·1 → resume. */
@@ -1439,6 +1607,10 @@ function previewScene(engine, o = {}) {
     // a question box: the explainer is forced on for previewIntro and forced
     // OFF for every other preview, and never writes the flag either way.
     forceIntro: !!o.intro, introPersist: false,
+    // null → the beacons are LIVE. A number pins them to that much charge, so
+    // the "recharging" screenshot is the same scene as the "live" one with the
+    // one thing under test changed.
+    forceCharge: o.charge ?? null,
   });
   scene.add(quiz.group);
 
@@ -1523,6 +1695,15 @@ function pickDemoQuestion(id, difficulty) {
 
 /** The beacons in their track context, next to the gold tokens they must not be confused with. */
 export function preview(engine) { return previewScene(engine); }
+
+/** The SAME beacon while the boxes are recharging: ghosted core and satellites,
+ *  ring pulled in to show a part-filled charge. Shot next to preview() above,
+ *  the pair is the whole legibility claim — a child can tell at a glance which
+ *  of the two they are driving at. */
+export function previewRecharging(engine) { return previewScene(engine, { charge: 0.45 }); }
+
+/** Almost charged: the ring nearly full, moments before the boxes pop back on. */
+export function previewRecharged(engine) { return previewScene(engine, { charge: 0.92 }); }
 
 /** The question panel, open and waiting for 1/2/3. */
 export function previewQuestion(engine) {

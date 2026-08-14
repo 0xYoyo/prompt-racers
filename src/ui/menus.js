@@ -213,6 +213,7 @@ registerStrings({
     'menu.set.q.low': 'נמוך',
     'menu.set.q.medium': 'בינוני',
     'menu.set.q.high': 'גבוה',
+    'menu.set.q.auto': 'המשחק בוחר לבד עד בינוני. גבוה נבחר רק ידנית.',
     'menu.set.sound': 'צלילים',
     'menu.set.on': 'דולק',
     'menu.set.off': 'כבוי',
@@ -319,6 +320,7 @@ registerStrings({
     'menu.set.q.low': 'Low',
     'menu.set.q.medium': 'Medium',
     'menu.set.q.high': 'High',
+    'menu.set.q.auto': 'Auto-detect goes up to Medium. High is a manual choice.',
     'menu.set.sound': 'Sound',
     'menu.set.on': 'On',
     'menu.set.off': 'Off',
@@ -767,6 +769,9 @@ const MENU_CSS = `
 .mn-drow{display:flex;align-items:center;justify-content:space-between;gap:14px;
   padding:12px 4px;border-block-end:1px solid var(--stroke)}
 .mn-drow>span{font-size:15px;font-weight:700}
+/* The quality row's policy line: automatic detection stops at בינוני. Sits under
+   the row it explains, inside the dialog's own inline padding. */
+.mn-qnote{margin:-6px 4px 2px;font-size:12px;line-height:1.45;color:var(--txt-dim)}
 .mn-seg{display:flex;gap:6px;background:rgba(0,0,0,.35);padding:4px;border-radius:var(--r-pill);
   border:1px solid var(--stroke)}
 .mn-seg button{font-family:var(--font);font-size:13px;font-weight:800;color:var(--txt-dim);
@@ -1055,6 +1060,13 @@ function makeProceduralBackdrop(engine) {
     scene, camera,
     update(dt) { mat.uniforms.uTime.value += dt; },
     resize(w, h) { mat.uniforms.uAspect.value = (w || 16) / (h || 9); },
+    // Re-entering a screen must look exactly like entering it the first time —
+    // the backdrop is now SHARED and outlives the screen that built it (see
+    // acquireBackdrop), so the one piece of state that is visible on a still
+    // frame is put back where a fresh instance would have started. Without this
+    // every preview screenshot would depend on how many frames ran before the
+    // shot, which is the definition of a non-reproducible baseline.
+    reset() { mat.uniforms.uTime.value = 9.3; },
     dispose() { offQ(); geo.dispose(); mat.dispose(); },
   };
 }
@@ -1068,6 +1080,43 @@ function makeBackdrop(engine) {
   }
   return makeProceduralBackdrop(engine);
 }
+
+/* ── the backdrop is ONE instance, reused across screens ──────────────────────
+ *
+ * It used to be built per screen, and the lead's real backdrop (scenes.js) is a
+ * live slice of the oasis track: a full track, eight karts and seven simulated
+ * seconds of settling, MEASURED at ~1.8s of work per screen entry under
+ * SwiftShader — paid again on every hop between the title, racer select, the
+ * collection and back. Nothing about that scene depends on which screen is in
+ * front of it, so one instance now serves all of them.
+ *
+ * It is not immortal, which is the other half of the trade: holding a second
+ * race scene alive DURING a race would double the GPU memory on the machine
+ * least able to afford it. So the instance is refcounted and dropped the moment
+ * a scene that does not want a backdrop takes the screen — engine.goto()
+ * disposes the old scene (release) before it builds the new one (acquire), and
+ * then emits `scene:entered`, at which point a count of zero means the game has
+ * genuinely left the menus.
+ */
+let _bd = null;            // the one live backdrop, or null
+let _bdFactory = null;     // which factory built it — setBackdrop() invalidates
+let _bdUsers = 0;          // screens currently showing it
+
+function acquireBackdrop(engine) {
+  if (_bd && _bdFactory !== _backdropFactory) destroyBackdrop();
+  if (!_bd) { _bd = makeBackdrop(engine); _bdFactory = _backdropFactory; }
+  else _bd.reset?.();
+  _bdUsers++;
+  return _bd;
+}
+function releaseBackdrop() { _bdUsers = Math.max(0, _bdUsers - 1); }
+function destroyBackdrop() {
+  try { _bd?.dispose?.(); } catch (e) { console.error('backdrop dispose failed', e); }
+  _bd = null; _bdFactory = null; _bdUsers = 0;
+}
+// ONE subscription for the lifetime of the module — not one per screen, which is
+// the shape that leaks.
+bus.on('scene:entered', () => { if (_bdUsers === 0) destroyBackdrop(); });
 
 /* ══════════════════════════════════════════════════════════════ scene base ══ */
 
@@ -1090,7 +1139,7 @@ function baseScreen(engine, opts, build) {
   const savedLang = save.read('lang');
   if (savedLang && savedLang !== getLang()) setLang(savedLang);
   const instant = !!opts?.instant || REDUCED();
-  const backdrop = makeBackdrop(engine);
+  const backdrop = acquireBackdrop(engine);
   const mount = engine?.ui || document.body;
 
   const root = h('div.mn-root' + (instant ? '.mn-instant' : ''));
@@ -1126,9 +1175,32 @@ function baseScreen(engine, opts, build) {
 
   const extra = build(api) || {};
 
+  // Backdrop cadence. The engine steps every screen at a fixed 1/60 (D5/D11) and
+  // PRESENTED every one of those frames, which on the home screen meant 552 draw
+  // calls and 1.2M triangles sixty times a second behind a still picture — the
+  // "the menu heats the laptop after a few minutes" report. `maxFps` halves the
+  // presents (engine.draw skips; the previous frame simply stays on screen).
+  //
+  // The cap is on PRESENTATION, not on the simulation, and that is a measured
+  // choice rather than a shortcut: stepping this backdrop costs 0.10ms a frame
+  // against 6-9ms to draw it, so a sim cap saves ~1% — and it would cost the two
+  // things this project cannot spend. A backdrop advanced in 1/30 chunks is a
+  // real race being handed double its fixed timestep (D5/D11), and a backdrop
+  // advanced in a variable number of 1/60 sub-steps leaves a fractional
+  // remainder, so `__DEBUG.advance(t)` would land the shader's clock somewhere
+  // that depends on how many frames ran before it. The film grain in
+  // BACKDROP_FRAG is keyed to `floor(uTime*12)`: a remainder of one step there
+  // regrains the entire frame, and every preview screenshot in the repo shifts.
+  const BACKDROP_FPS = 30;
+
   return {
     scene: backdrop.scene,
     camera: backdrop.camera,
+    // Only screens whose entire 3D layer IS the backdrop are capped. Racer
+    // select and the podium composite their own live karts on top of it
+    // (`extra.render`), and those are being looked at and steered — halving
+    // their rate to save a backdrop nobody is watching would be a bad trade.
+    maxFps: extra.render ? 0 : BACKDROP_FPS,
     update(dt) { backdrop.update?.(dt); extra.update?.(dt); },
     render: extra.render,
     resize(w, h2) { backdrop.resize?.(w, h2); extra.resize?.(w, h2); },
@@ -1137,7 +1209,9 @@ function baseScreen(engine, opts, build) {
     dispose() {
       for (const c of cleanups) { try { c(); } catch (e) { console.error(e); } }
       try { extra.dispose?.(); } catch (e) { console.error(e); }
-      backdrop.dispose?.();
+      // NOT disposed — released. The next menu screen reuses it; leaving the
+      // menus altogether is what frees it (see acquireBackdrop).
+      releaseBackdrop();
       root.remove();
     },
     ...(extra.expose || {}),
@@ -2442,7 +2516,20 @@ export function overlayRoot(dialogClass = '') {
       }
       api.onClose?.();
     },
-    focusFirst() { requestAnimationFrame(() => (focusables()[0] || dialog).focus({ preventScroll: true })); },
+    // Focus lands NOW, and again on the next frame. It used to be the frame
+    // alone, which quietly made "where is the keyboard?" a question about how
+    // fast the page happens to be producing frames: on a machine (or a headless
+    // gate) throttled to ~9 frames a second, the safe answer in a destructive
+    // confirm was not focused for over a tenth of a second after the dialog was
+    // on screen, and a key pressed in that window went to the button behind it.
+    // The dialog is already in the document by the time this is called, so the
+    // synchronous focus is correct on its own; the frame is kept because the
+    // pop-in animation can otherwise scroll the dialog into view mid-transform.
+    focusFirst() {
+      const target = () => focusables()[0] || dialog;
+      target().focus({ preventScroll: true });
+      requestAnimationFrame(() => target().focus({ preventScroll: true }));
+    },
   };
 
   function onKey(e) {
@@ -2674,10 +2761,17 @@ export function settingsOverlay(opts = {}) {
           { value: 'low', label: t('menu.set.q.low') },
           { value: 'medium', label: t('menu.set.q.medium') },
           { value: 'high', label: t('menu.set.q.high') },
-        ], quality === 'auto' ? (engine?.q?.name || 'high') : quality, v => {
+        // With `auto` in the save nobody has chosen, so the segment that lights
+        // up is whatever the engine actually settled on. The fallback is בינוני,
+        // not גבוה: automatic detection is capped there (see AUTO_MAX_TIER in
+        // core/engine.js), so גבוה can only ever be lit by a real choice.
+        ], quality === 'auto' ? (engine?.q?.name || 'medium') : quality, v => {
           if (engine?.setQuality) engine.setQuality(v); else save.set({ quality: v });
           build();
         })),
+      // …and the row says so out loud, because a child who picks גבוה and comes
+      // back later must not read the automatic בינוני as the game overruling them.
+      h('div.mn-qnote', null, t('menu.set.q.auto')),
       h('div.mn-drow', null,
         h('span', null, t('menu.set.sound')),
         segmented([

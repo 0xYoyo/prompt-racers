@@ -20,7 +20,7 @@ import {
   asphaltTexture, sandTexture, rockTexture, stoneWallTexture, curbTexture,
   metalTexture, woodTexture, stripeTexture, canvasTexture, disposeTextureCache,
 } from '../gfx/textures.js';
-import { applyTheme, getTheme } from '../gfx/sky.js';
+import { applyTheme, getTheme, disposeSkyTextureCache, PERF_STATS } from '../gfx/sky.js';
 import { dressTrack } from '../gfx/props.js';
 // ALL world lettering — here, in props.js and on the gantry — is authored and
 // drawn by src/track/signdata.js. See its header for why there is exactly one
@@ -548,6 +548,94 @@ function chequerTexture(size = 128) {
     }
   }, { wrap: THREE.RepeatWrapping });
 }
+
+// ---------------------------------------------------------------------------
+// PER-(TRACK, TIER) BUILD CACHES  (Wave 5.1 — scene-transition freezes)
+// ---------------------------------------------------------------------------
+//
+// A track is rebuilt on nearly every scene change: the title backdrop, racer
+// select, the collection screen, every race and the podium all call
+// `buildTrack`. Two things inside it are pure analysis rather than geometry —
+// they read the spline, the terrain and the seeded prop layout and produce an
+// ANSWER — and both were being recomputed from scratch every single time:
+//
+//   * the signage occlusion search (`placeSignage`). Every candidate board is
+//     probed on a 21 x 9 grid across BOTH lettered planes, from six read
+//     distances back, for up to 7 outward steps x 18 nudges x 2 sides x ~12
+//     boards. That is a few million segment/triangle tests: MEASURED at ~560 ms
+//     of pure JS on every entry, the largest non-GPU cost of any transition.
+//   * `auditTrackClearance`, the "nothing is standing in the road" guard. Its
+//     header claims ~30 ms; measured, its `closestT` sweep alone is ~210 ms.
+//
+// Both are deterministic functions of (track, quality tier) — same spline, same
+// seeded props, same occluders — so each runs once per variant and the answer is
+// reused. Only DATA is cached (numbers and vectors; no geometry, no materials,
+// no THREE resources that could be disposed out from under a live scene), the
+// maps are bounded, and nothing in a scene teardown clears them: that is the
+// whole point. Previews that want a clean slate call
+// `disposeTrackBuildCaches()` explicitly.
+// EVERY CAP HERE IS SIZED ABOVE ITS KEY SPACE, not above the steady state of one
+// session. `variantKey` carries the quality tier, so a player who touches the
+// settings toggle mid-session multiplies the key count by three — and a cache
+// capped under its key space does not degrade gracefully, it thrashes: it evicts
+// the entry it is about to need next and repays the full cost on every
+// transition. (The sky cache shipped that bug for one round; see SKY_TEX_MAX.)
+//
+//   SIGN_SPOTS:  3 tracks x 3 tiers x 2 dress x 2 orient       = 36, capped at 40
+//   AUDITED:     the same 36, x 2 strictnesses                 = 72, capped at 80
+//
+// The game only ever uses the dressed / oriented / warn corner of that space —
+// six live keys between them. The caps are sized for the whole space anyway,
+// because the previews reach the rest of it and a cap that holds only while
+// nobody passes an option is not a bound. Above the key space, eviction is
+// unreachable and the eviction policy stops mattering. Both hold plain data
+// (~1.5 KB per sign entry, one short string per audit entry), so a fully
+// occupied SIGN_SPOTS is ~60 KB — the headroom costs nothing worth counting.
+const SIGN_SPOTS = new Map();
+const SIGN_SPOTS_MAX = 40;
+const AUDITED = new Set();
+const AUDITED_MAX = 80;
+
+/**
+ * Everything the two analyses above can possibly depend on.
+ *
+ * `opts.dress` is in the key for a reason that is currently latent rather than
+ * live: `dressTrack` runs BEFORE `placeSignage` and its props are occluders, so
+ * an undressed build sees a different world and legitimately places boards
+ * differently. No shipped caller passes `dress:false`, so the two would never
+ * collide today — but a key that is right only because of who happens to call it
+ * is the seam this project keeps losing days to.
+ */
+function variantKey(def, q, opts = {}) {
+  return [def.id, q.propDensity, q.crowdDensity, q.drawDistance, q.texSize, !!q.shadows,
+    opts.dress !== false, opts.signOrientation !== false].join('|');
+}
+
+/** Cached spots are handed out as copies so a scene can never mutate the cache. */
+function cloneSpots(spots) {
+  return spots.map(s => ({
+    p: { x: s.p.x, y: s.p.y, z: s.p.z }, gy: s.gy, cy: s.cy,
+    n: new THREE.Vector3(s.n.x, s.n.y, s.n.z),
+    U: new THREE.Vector3(s.U.x, s.U.y, s.U.z),
+    pw: s.pw, ph: s.ph, blocked: s.blocked,
+  }));
+}
+
+function rememberSpots(key, spots) {
+  while (SIGN_SPOTS.size >= SIGN_SPOTS_MAX) SIGN_SPOTS.delete(SIGN_SPOTS.keys().next().value);
+  SIGN_SPOTS.set(key, cloneSpots(spots));
+}
+
+/** Entries held by the build caches — for gates and perf overlays. */
+export function trackBuildCacheSize() { return { signSpots: SIGN_SPOTS.size, audited: AUDITED.size }; }
+
+/**
+ * Forget every cached placement/audit. EXPLICIT, and called from nothing the
+ * game runs — the module previews below want a clean slate on teardown, the
+ * game does not, and making every scene change pay for a preview's tidiness is
+ * the regression this cache exists to remove.
+ */
+export function disposeTrackBuildCaches() { SIGN_SPOTS.clear(); AUDITED.clear(); }
 
 // ---------------------------------------------------------------------------
 // buildTrack
@@ -1206,6 +1294,12 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
    */
   const OCC_CELL = 8;
   function buildOccluderIndex(meshes) {
+    // THE WORK SITE for the signage occlusion search, and therefore where it is
+    // counted (see PERF_STATS in gfx/sky.js). This index is built once and only
+    // when the search below actually runs — it is the ~50 ms prologue to the
+    // ~560 ms of segment tests — and it exists in this form with or without the
+    // SIGN_SPOTS cache, so deleting the cache cannot delete the counter with it.
+    PERF_STATS.signSearches++;
     const tris = [];
     const cells = new Map();
     const m4 = new THREE.Matrix4();
@@ -1368,7 +1462,17 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
    * axis over.
    */
   const SIGN_THICK = 0.10;
-  function signBlockedProbes(index, t, centre, u = null, w = 0, h = 0, n = null, bandY = 0.22) {
+  /**
+   * @param budget  abandon as soon as this many probes are blocked. The caller
+   *   only ever compares candidates and keeps the SMALLEST count, so a candidate
+   *   that has already matched the best-so-far cannot change the outcome no
+   *   matter how the remaining 2000-odd segment tests come out. The winning
+   *   candidate is by definition the one nothing beat, so its count is always
+   *   exact; only the counts of losers are truncated, and nothing reads those.
+   *   Worth doing because this loop is 21 x 9 probes on two planes from six read
+   *   distances — 2268 segment/triangle tests per candidate position.
+   */
+  function signBlockedProbes(index, t, centre, u = null, w = 0, h = 0, n = null, bandY = 0.22, budget = Infinity) {
     if (!index || !index.tris.length) return 0;
     const probes = [];
     const planes = n ? [SIGN_THICK / 2, -SIGN_THICK / 2] : [0];
@@ -1394,7 +1498,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       const ex = rp.x, ey = rp.y + 3.25, ez = rp.z;
       for (const q of probes) {
         if (Math.hypot(q.x - ex, q.y - ey, q.z - ez) < 2) continue;
-        if (segmentBlocked(index, ex, ey, ez, q.x, q.y, q.z, 0.5, 1.0)) blocked++;
+        if (segmentBlocked(index, ex, ey, ez, q.x, q.y, q.z, 0.5, 1.0) && ++blocked >= budget) return blocked;
       }
     }
     return blocked;
@@ -1421,13 +1525,24 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
     // What it gets instead is the plateau EDGE (see edgeSeek), which is scenery
     // no other track can have.
     const maxOut = SKY_TRACK ? 17 : 34;
-    const occl = buildOccluderIndex(signOccluders());
-    if (globalThis.__SIGN_DEBUG__) group.userData.__occlTest = (a,b,c,d,e,f) => segmentBlocked(occl,a,b,c,d,e,f,0.5,1.0);
+    // The occluder index is only needed when the search actually runs, and
+    // building it is ~50 ms of its own. Lazy, so a cache hit pays neither.
+    let occl = null;
+    const ensureOccl = () => (occl ??= buildOccluderIndex(signOccluders()));
+    if (globalThis.__SIGN_DEBUG__) group.userData.__occlTest = (a,b,c,d,e,f) => segmentBlocked(ensureOccl(),a,b,c,d,e,f,0.5,1.0);
+
     // Candidates first, tiles second. Which LINE a board carries cannot be
     // decided inside this loop any more: it depends on how many boards survive
     // the ground/occlusion search, and that is only known once the loop ends.
-    const spots = [];
-    for (let i = 0; i < nSign; i++) {
+    //
+    // ...and the whole search runs ONCE per (track, tier) — see the build-cache
+    // note at the top of the file. `spotKey` includes nSign because the board
+    // budget, and therefore which line each slot is measured against, is a
+    // function of the tier's prop density.
+    const spotKey = variantKey(def, q, opts) + '|' + nSign;
+    const cached = SIGN_SPOTS.get(spotKey);
+    const spots = cached ? cloneSpots(cached) : [];
+    if (!cached) for (let i = 0; i < nSign; i++) {
       // NUDGE, DON'T DROP. A candidate whose ground is missing or whose view is
       // blocked used to be abandoned, so a tier that asked for twelve boards
       // shipped ten and two authored lines reached nobody. It now tries the same
@@ -1446,7 +1561,9 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       // corridor, so it is given up only to save a line from a prop.
       for (const flip of [1, -1]) {
         for (const nudge of [0, 0.34, -0.34, 0.17, -0.17, 0.26, -0.26, 0.09, -0.09]) {
-          const cand = trySpot(i, (i + 0.5 + nudge) / nSign, flip);
+          // The best count found so far is a hard ceiling on anything that could
+          // still win, so hand it down as the probe budget.
+          const cand = trySpot(i, (i + 0.5 + nudge) / nSign, flip, spot ? spot.blocked : Infinity);
           if (!cand) continue;
           if (!spot || cand.blocked < spot.blocked) spot = cand;
           if (spot.blocked === 0) break;
@@ -1455,6 +1572,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       }
       if (spot) spots.push(spot);
     }
+    if (!cached) rememberSpots(spotKey, spots);
 
     // WHICH LINE THIS SLOT WILL CARRY, decided before the search rather than
     // after it, because the probe band depends on how that line SETS: a wrapped
@@ -1471,7 +1589,7 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
       return inkBand(SIGN_SET.lines[tile] ?? SIGN_SET.lines[0], SIGN_TILE_ASPECT).halfY;
     }
 
-    function trySpot(i, frac, flip = 1) {
+    function trySpot(i, frac, flip = 1, budget = Infinity) {
       const bandY = bandForSlot(i);
       const t = ((startT + frac + srng.range(-0.006, 0.006)) % 1 + 1) % 1;
       // keep the start/finish complex clear — the gantry is the read there
@@ -1562,7 +1680,8 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
         // The TEXT BAND, not just the centre and not just the corners — see
         // signBlockedProbes. Keep walking inward while anything is blocked, but
         // remember the least-blocked position so a board is never lost outright.
-        const blocked = signBlockedProbes(occl, tc, { x: p.x, y: cy, z: p.z }, U, pw, ph, n, bandY);
+        const cap = Math.min(budget, put ? put.blocked : Infinity);
+        const blocked = signBlockedProbes(ensureOccl(), tc, { x: p.x, y: cy, z: p.z }, U, pw, ph, n, bandY, cap);
         if (!put || blocked < put.blocked) put = { p, gy, cy, blocked };
         if (blocked === 0) break;
       }
@@ -1695,7 +1814,21 @@ export function buildTrack(idOrIndex, engine, opts = {}) {
   // owned geometry stands in the drivable corridor. Nothing here has collision,
   // so anything that does is a wall karts drive through. ~30 ms, build-time
   // only, and it self-reports with the offending mesh's name.
-  if (opts.audit !== false) auditTrackClearance(api, { throwOnFail: !!opts.strictAudit });
+  // ...and it runs ONCE per (track, tier, strictness). The geometry it sweeps is
+  // deterministic for a variant, so re-auditing on every scene entry can only
+  // ever reach the same verdict — at ~210 ms a time, on the transition path.
+  if (opts.audit !== false) {
+    const aKey = variantKey(def, q, opts) + '|' + (opts.strictAudit ? 'strict' : 'warn');
+    if (!AUDITED.has(aKey)) {
+      auditTrackClearance(api, { throwOnFail: !!opts.strictAudit });
+      // Under strictAudit a failure throws, so the key is never recorded and the
+      // next build re-audits. In warn mode the audit has already logged its
+      // findings; repeating the identical console report on every scene entry
+      // was noise, not a second opinion.
+      while (AUDITED.size >= AUDITED_MAX) AUDITED.delete(AUDITED.values().next().value);
+      AUDITED.add(aKey);
+    }
+  }
 
   return api;
 }
@@ -1736,6 +1869,9 @@ const AUDIT_SKIP = new Set(['road', 'paint', 'kerbs', 'runoff', 'terrain', 'star
  * @returns {Array<{mesh,count,x,y,z,t,lateral,height}>} one entry per offending mesh
  */
 export function auditTrackClearance(track, opts = {}) {
+  // Counted at the work, not at the AUDITED memo that skips it — see PERF_STATS
+  // in gfx/sky.js. This line survives any revert of the memo.
+  PERF_STATS.trackAudits++;
   const { group, spline } = track;
   const byMesh = new Map();
   const v = new THREE.Vector3();
@@ -1896,7 +2032,10 @@ function wrap(engine, ctx, place) {
     dispose() {
       track.dispose();
       rig.dispose();
+      // Preview teardown, and only preview teardown, asks for a clean slate.
       disposeTextureCache();
+      disposeSkyTextureCache();
+      disposeTrackBuildCaches();
     },
   };
 }

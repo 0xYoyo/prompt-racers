@@ -380,6 +380,24 @@ export function raceScene(engine, opts = {}) {
 
   // A correct quiz answer pays tokens; the quiz applies the boost itself.
   const offQuiz = backdrop ? null : bus.on('quiz:correct', ({ tokens: n }) => { S.tokens += n || 0; S.quizTokens += n || 0; });
+  // ── the soft reward for a RECHARGING question box (Wave 5.1) ───────────────
+  // A ghosted beacon is visibly not going to ask anything, but driving through
+  // one must still feel like touching something rather than like a bug that
+  // swallowed a pickup. So it pays exactly what a gold token pays — one token,
+  // the same `token:pickup` event, the same sparkle at the thing you touched —
+  // and nothing else: no modal, no freeze, no combo.
+  //
+  // It cannot be farmed. quiz.js consumes the beacon before it emits, so a
+  // beacon pays at most once per life and comes back on the same RESPAWN_S as
+  // any other; circling one pays nothing. The combo is deliberately NOT
+  // advanced: the combo is the reward for a clean line through a token row, and
+  // a ghosted box is not one.
+  const offSoftToken = backdrop ? null : bus.on('quiz:softToken', ({ x, y, z }) => {
+    if (S.phase !== 'racing' || S.finished) return;
+    S.tokens += 1;
+    bus.emit('token:pickup', { tokens: S.tokens, combo: S.combo });
+    fx?.spawn('token', { x, y, z });
+  });
   // Pause: freeze the sim entirely. Input is disabled too so a held key does not
   // accumulate while the overlay is up.
   const offPause = backdrop ? null : bus.on('race:pause', () => setPaused(true));
@@ -848,7 +866,7 @@ export function raceScene(engine, opts = {}) {
     playerMesh, aiKarts,   // exposed for the automated P0 gates (orientation, steering)
     setPaused,
     dispose() {
-      offQuiz?.(); offPause?.(); offResume?.();
+      offQuiz?.(); offSoftToken?.(); offPause?.(); offResume?.();
       intro?.dispose();          // also releases the 'intro' modal id
       quiz?.dispose();
       fx?.dispose();

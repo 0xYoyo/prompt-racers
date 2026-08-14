@@ -14,7 +14,8 @@
 //   3. A budget hardcoded as a constant instead of read from engine.q, which
 //      makes the low tier a label rather than a saving. README's constraints
 //      table promises the opposite in writing.
-//   4. An automatic tier probe that overrules a tier the player chose by hand.
+//   4. An automatic tier probe that overrules a tier the player chose by hand,
+//      or one that reaches גבוה on its own (Wave 5.1: auto tops out at בינוני).
 //   5. A backgrounded tab that keeps simulating, keeps the synth running, and
 //      returns with a stalled clock to catch up on.
 //
@@ -25,7 +26,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import * as THREE from 'three';
 import {
-  TIERS, AUTO_TIER, PROBE, engine,
+  TIERS, AUTO_TIER, AUTO_START_TIER, AUTO_MAX_TIER, PROBE, engine,
   effectivePixelRatio, tierFromFrameTime, resolveInitialTier,
 } from '../src/core/engine.js';
 import { bus } from '../src/core/bus.js';
@@ -160,19 +161,80 @@ console.log('\n  \x1b[1mauto tier probe\x1b[0m');
 const engineCode = engineSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 ok('the guess-probe is gone (no deviceMemory / hardwareConcurrency heuristic)',
   !/deviceMemory|hardwareConcurrency/.test(engineCode));
-ok('a fast frame keeps גבוה', tierFromFrameTime(8) === 'high');
-ok('a 25ms frame picks בינוני', tierFromFrameTime(25) === 'medium');
+ok('a fast frame keeps בינוני', tierFromFrameTime(8) === 'medium');
+ok('a 25ms frame keeps בינוני', tierFromFrameTime(25) === 'medium');
 ok('a 50ms frame picks נמוך', tierFromFrameTime(50) === 'low');
-ok('the thresholds are ordered and sane', PROBE.highMs < PROBE.mediumMs && PROBE.highMs >= 16);
-ok('a nonsense measurement falls back to the fixed tier, never to a random one',
-  tierFromFrameTime(NaN) === AUTO_TIER && tierFromFrameTime(0) === AUTO_TIER && tierFromFrameTime(-1) === AUTO_TIER);
+ok('the threshold is sane (~30fps at בינוני)', PROBE.mediumMs >= 20 && PROBE.mediumMs <= 40,
+  `${PROBE.mediumMs}ms`);
+ok('a nonsense measurement falls back to the auto START tier, never to a random one',
+  tierFromFrameTime(NaN) === AUTO_START_TIER && tierFromFrameTime(0) === AUTO_START_TIER
+  && tierFromFrameTime(-1) === AUTO_START_TIER);
+
+// ── the Wave 5.1 policy: automatic detection tops out at בינוני ──────────────
+//
+// The bug this forbids is not a crash either — it is a strong laptop being
+// handed גבוה, running the fans up in a classroom, and (worse) a session that
+// starts on גבוה and drops a second later IN FRONT OF THE CHILD, shadows and
+// reflections popping off as if something had broken. Four assertions, because
+// each fails to a different plausible way of reintroducing it: the pure
+// function; the whole reachable input domain of that function; the tier an auto
+// session actually BOOTS at; and the player's own choice, which must still win.
+console.log('\n  \x1b[1mauto never reaches גבוה (Wave 5.1)\x1b[0m');
+
+ok('the auto ceiling is בינוני, and it is below גבוה',
+  AUTO_MAX_TIER === 'medium' && TIERS[AUTO_MAX_TIER].drawDistance < TIERS.high.drawDistance,
+  `${AUTO_MAX_TIER}`);
+// Every frame time a real machine can produce, plus the garbage. 800 samples is
+// a sweep, not a spot check: a threshold table that grows a `high` branch again
+// is caught wherever that branch sits.
+const sweep = [NaN, Infinity, -Infinity, 0, -1, -0.0001];
+for (let ms = 0.1; ms <= 400; ms += 0.5) sweep.push(ms);
+const promoted = sweep.filter(ms => tierFromFrameTime(ms) === 'high');
+ok('tierFromFrameTime can NEVER return high, at any frame time',
+  promoted.length === 0, `${promoted.length}/${sweep.length} inputs promoted (${promoted.slice(0, 4).join(', ')})`);
+ok('…and it always returns a tier that exists',
+  sweep.every(ms => !!TIERS[tierFromFrameTime(ms)]));
+ok('a probing (auto) boot starts at בינוני, not גבוה',
+  resolveInitialTier('auto', { probing: true }).name === AUTO_START_TIER
+  && AUTO_START_TIER !== 'high',
+  resolveInitialTier('auto', { probing: true }).name);
+ok('…so does a boot with no save at all',
+  resolveInitialTier(undefined, { probing: true }).name === AUTO_START_TIER);
+ok('…and a corrupt saved tier',
+  resolveInitialTier('ultra', { probing: true }).name === AUTO_START_TIER);
+// The other half of the policy: גבוה is still REACHABLE, by hand, forever.
+ok("an explicit 'high' still resolves to high even on a probing boot",
+  resolveInitialTier('high', { probing: true }).name === 'high'
+  && resolveInitialTier('high', { probing: true }).autoTier === false);
+// enableQualityProbe() is what applies the start tier, so that a gate — which
+// never calls it — keeps landing on the fixed AUTO_TIER. Asserted on the source,
+// because the alternative regression (moving it into init()) is invisible to any
+// unit that has no WebGL context to init against.
+ok('the auto start tier is applied when the PROBE is armed, not in init()',
+  /enableQualityProbe\(\)\s*\{[\s\S]{0,900}?resolveInitialTier\([\s\S]{0,80}?probing:\s*true/.test(engineSrc)
+  && !/init\(mountEl\)\s*\{[\s\S]{0,400}?probing:\s*true/.test(engineSrc));
+
+// THE COMPATIBILITY ASSERTION. Gates, previews and the capture harness must keep
+// rendering at the tier every screenshot baseline in this repo was captured at.
+// They get it because they never arm the probe — and, since Wave 5.1, because
+// the harness says so explicitly instead of inheriting it (core/harness.js).
+const harnessSrc = src('src/core/harness.js');
+ok('a NON-probing boot still lands on the historical fixed tier',
+  resolveInitialTier('auto').name === AUTO_TIER && AUTO_TIER === 'high',
+  `${resolveInitialTier('auto').name}`);
+ok('…the harness pins that same tier by name, at its own call site',
+  /HARNESS_TIER\s*=\s*AUTO_TIER/.test(harnessSrc) && /pinQuality\(HARNESS_TIER\)/.test(harnessSrc));
+ok('…and pinning records no player choice (the save is untouched)',
+  !/pinQuality\(name\)\s*\{[\s\S]{0,400}?save\.set/.test(engineSrc));
+ok('…but a run that asked for a tier of its own keeps it',
+  /engine\.autoTier/.test(harnessSrc) && /if \(o\.quality\) engine\.setQuality\(o\.quality\)/.test(harnessSrc));
 ok('the probe window is cheap (< 100 frames total)',
   PROBE.warmupFrames + PROBE.sampleFrames < 100, `${PROBE.warmupFrames}+${PROBE.sampleFrames}`);
 ok('the probe discards warm-up frames (shader compile is not the steady state)',
   PROBE.warmupFrames >= 10);
 
 // A tier the player chose by hand must survive every later boot untouched.
-ok("save 'auto' starts at the fixed tier and stays probe-eligible",
+ok("save 'auto' starts at the fixed tier (non-probing) and stays probe-eligible",
   resolveInitialTier('auto').name === AUTO_TIER && resolveInitialTier('auto').autoTier === true);
 ok("no save at all behaves like 'auto'",
   resolveInitialTier(undefined).name === AUTO_TIER && resolveInitialTier(undefined).autoTier === true);
@@ -268,6 +330,54 @@ ok('choosing a tier ends the probe for this session', engine._probe === null);
 ok('choosing a tier clears autoTier, so no later boot re-probes', engine.autoTier === false);
 ok('the chosen tier reboots unchanged', resolveInitialTier(save.read('quality')).name === 'low');
 save._replace({ quality: 'auto' });
+
+// ── the probe, driven frame by frame ────────────────────────────────────────
+// The assertions above are about pure functions; this one drives the real loop
+// hook, because the policy has to hold in the object a child actually runs, and
+// the two ways it could break there are both invisible to a pure function: an
+// auto session that boots on גבוה before the probe has measured anything, and a
+// fast machine promoted back up once it has.
+const armed = () => {
+  engine.autoTier = true;
+  engine._headless = false;
+  engine.hidden = false;
+  engine.q = TIERS.high;                 // whatever init() left behind
+  engine.probedFrameMs = 0;
+  engine.enableQualityProbe();
+  return engine;
+};
+const runProbe = ms => {
+  armed();
+  const start = engine.q.name;
+  for (let i = 0; i < PROBE.warmupFrames + PROBE.sampleFrames; i++) engine._probeFrame(ms / 1000);
+  return { start, end: engine.q.name };
+};
+const fast = runProbe(6), slow = runProbe(60), edge = runProbe(PROBE.mediumMs - 1);
+ok('arming the probe drops an auto session to בינוני before the first frame',
+  fast.start === AUTO_START_TIER, `started at ${fast.start}`);
+ok('a fast machine is NOT promoted to גבוה by the probe', fast.end === AUTO_MAX_TIER,
+  `6ms frames → ${fast.end}`);
+ok('…nor by a frame time right on the threshold', edge.end === AUTO_MAX_TIER,
+  `${PROBE.mediumMs - 1}ms frames → ${edge.end}`);
+ok('a machine that cannot hold בינוני IS dropped to נמוך', slow.end === 'low',
+  `60ms frames → ${slow.end}`);
+ok('…and the probe reports what it measured', engine.probedFrameMs > 0,
+  `${engine.probedFrameMs.toFixed(1)}ms`);
+// The player's choice still ends it, exactly as before.
+armed();
+engine.setQuality('high');
+for (let i = 0; i < 200; i++) engine._probeFrame(0.5);
+ok("a hand-picked גבוה survives 200 slow frames (the probe is over)",
+  engine.q.name === 'high' && engine._probe === null && engine.autoTier === false,
+  `q=${engine.q.name}`);
+// …and arming the probe again in that session must not undo it.
+engine.enableQualityProbe();
+ok('…and re-arming does nothing once a tier was chosen by hand',
+  engine.q.name === 'high' && engine._probe === null);
+save._replace({ quality: 'auto' });
+engine.autoTier = true;
+engine._probe = null;
+engine._headless = false;
 
 // ── 7. the AI kart LOD (Wave 5) ──────────────────────────────────────────────
 //

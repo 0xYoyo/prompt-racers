@@ -657,15 +657,46 @@ ok('…nor does the next RACE, on the same save', !(await vis('.qzint-scrim')) &
    This section drives a REAL first race — a save that has never seen an
    explainer, the intro card on, real beacons and real token pickups — and
    measures when each card owns the screen. It asserts the PROPERTY (a gap, a
-   count, a deferral that comes back) and never the wording: D42.
+   count, a card that comes back) and never the wording: D42.
    ────────────────────────────────────────────────────────────────────────── */
-const TEACH_GAP_S = 15;      // ui/style.js
-const URGENT_GAP_S = 6;      // quiz.js — the escalated gap, i.e. the FLOOR
-const URGENT_AFTER = 2;      // quiz.js — deferrals before the floor applies
+/* WAVE 5.1 REWRITE. Round 2 of this section pinned a cadence gate that sat at
+   the BEACON: a question box that arrived inside another teaching card's shadow
+   was consumed and opened nothing. Measured on the built game that ate roughly
+   two boxes in three, and the first boxes of a championship fired nothing at
+   all — a child reads that as a broken pickup, and the assertions here were
+   pinning the breakage in place. So the contract this section holds has moved,
+   deliberately, in one direction:
+
+     • TEACHING CARDS still space themselves. The gap lives in ui/style.js and
+       the card that still consults it is race.js's first-token explainer; 11d
+       asserts its magnitude, where the constant actually is.
+     • QUESTION BOXES are never deferred by it. The only thing that can hold a
+       box back is quiz.js's VISIBLE cooldown — ghosted beacons, a filling
+       recharge ring, a soft token if you drive through one anyway — and the
+       first box of a race ignores even that. `quiz:deferred` is gone from the
+       bus; 11c asserts that a frozen teaching clock now costs the child NO
+       questions at all, which is the exact inverse of what it used to assert
+       and therefore goes red against the old code.
+     • The per-box detail (ghosting, the recharge ring, the soft token, the
+       fire rate) is tools/quizboxtest.mjs. This section stays what it is: the
+       ONBOARDING DENSITY gate.                                              */
+const TEACH_GAP_S = 15;      // ui/style.js — the nominal teaching-card gap
+const CARD_FLOOR_S = 6;      // race.js — the first-token card's escalated floor
+const BOX_COOLDOWN_S = 8;    // quiz.js — the visible box cooldown, i.e. box→box
 const WINDOW_S = 90;         // "the first ninety seconds"
 const DRIVE_S = 95;
 const READ_S = 1.2;          // the child looks at the card before dismissing it
-const MAX_CARDS = 5;         // the intro card + at most four question boxes
+// 5 → 7 in Wave 5.1, and this is the one number this pass actually spends.
+// Round 2 bought its budget of five by DEFERRING question boxes at the beacon,
+// which is the mechanism 5.1 removed: the boxes it declined to open were the
+// game's whole teaching surface, and it declined silently. Seven is the intro
+// card + the first-token explainer + five question boxes, measured on a real
+// first race, and what stops it being a slideshow is the gap rather than the
+// count — asserted separately just below, and observed at 7.3–17.8s.
+// MAX_OPENERS is untouched at 2, because THAT is the onboarding number: two
+// one-time cards in the first ninety seconds. A question box is not onboarding,
+// it is the game.
+const MAX_CARDS = 7;
 const MAX_OPENERS = 2;       // …of which at most two are one-time/opening cards
 
 console.log('\n  11. onboarding density: teaching cards in the first 90s\n  ' + '─'.repeat(74));
@@ -695,7 +726,16 @@ async function bootFresh(opts) {
   await evalp(()=>{
     const D = window.__DEBUG, A = () => D.engine.active;
     window.__EV = []; window.__DEF = []; window.__PICK = []; window.__PHASE = [];
+    window.__MET = []; window.__SOFT = [];
+    // `quiz:deferred` no longer exists (Wave 5.1). It is still SUBSCRIBED to, on
+    // purpose: if anything ever re-introduces a beacon-side deferral this array
+    // stops being empty and 11c goes red, instead of the gate quietly measuring
+    // a bus event nobody emits.
     D.bus.on('quiz:deferred', e => window.__DEF.push({ t: window.__T, since: e.since, gap: e.gap }));
+    // Every beacon actually driven through, live or recharging — the number the
+    // fire-rate claim is made of.
+    D.bus.on('quiz:beacon', e => window.__MET.push({ t: window.__T, active: !!e.active }));
+    D.bus.on('quiz:softToken', () => window.__SOFT.push(window.__T));
     D.bus.on('token:pickup', () => window.__PICK.push(window.__T));
     const st = {};
     window.__sample = () => {
@@ -772,7 +812,9 @@ const NAME = { ic:'intro card', tok:'first-token explainer', qint:'  ↳ first-b
 console.log('     TIMELINE — synthetic wall seconds from the race opening:');
 for (const e of [...evAll].sort((a,b)=>a.open-b.open))
   console.log(`       ${e.open.toFixed(2).padStart(7)}s → ${e.close.toFixed(2).padStart(7)}s  ${NAME[e.kind]}`);
+const met = await evalp(()=>window.__MET);
 console.log(`     ${inWin.length} cards in the first ${WINDOW_S}s (${openers.length} of them one-time/opening cards)` +
+            ` · ${met.length} beacon(s) driven through, ${met.filter(m=>m.active).length} of them live` +
             ` · ${defs.length} box(es) deferred on cadence`);
 console.log(`     token pickups (${picks.length}): ${picks.map(x=>x.toFixed(1)).join(' ') || 'none'}`);
 
@@ -790,14 +832,16 @@ ok('the race really did run inside the window', p.raceTime > 40, `${p.raceTime.t
 // that DELETED the first-token explainer, which is what 11a now pins below.
 const inRace = cards.filter(c=>c.kind!=='ic');
 const gaps = inRace.slice(1).map((c,i)=>({ from:inRace[i].kind, to:c.kind, gap:c.open-inRace[i].close }));
-// The FLOOR, not the nominal gap: a box that has already stood aside
-// URGENT_AFTER times opens on URGENT_GAP_S rather than never (quiz.js), so a
-// legitimate gap in a real race can be as short as that. The nominal 15s is
-// asserted directly, at a provoked beacon, in 11d — asserting it here would
-// only be asserting track geometry, since track 0's beacons are ~22s apart and
-// no pair of them is ever closer than 15s whatever the constant says.
-const tooClose = gaps.filter(g=>g.gap < URGENT_GAP_S-0.05);
-ok(`no in-race teaching card opens within the ${URGENT_GAP_S}s floor of the previous one closing`,
+// The FLOOR, not the nominal gap. Two different rules meet here and the floor
+// is the lower of them: box → box is the visible cooldown (BOX_COOLDOWN_S,
+// quiz.js), and a first-token explainer that has already stood aside twice opens
+// on CARD_FLOOR_S rather than never (race.js). The nominal 15s is asserted
+// directly, at a provoked pickup, in 11d — asserting it here would only be
+// asserting track geometry, since track 0's beacons are ~22s apart and no pair
+// of them is ever closer than 15s whatever the constant says.
+const FLOOR_S = Math.min(CARD_FLOOR_S, BOX_COOLDOWN_S);
+const tooClose = gaps.filter(g=>g.gap < FLOOR_S-0.05);
+ok(`no in-race teaching card opens within the ${FLOOR_S}s floor of the previous one closing`,
    inRace.length>1 && tooClose.length===0,
    tooClose.length ? tooClose.map(g=>`${g.from}→${g.to} ${g.gap.toFixed(2)}s`).join(', ')
                    : `min ${Math.min(...gaps.map(g=>g.gap)).toFixed(1)}s · ` + gaps.map(g=>g.gap.toFixed(1)+'s').join(' '));
@@ -846,17 +890,21 @@ ok('[control] …and the very same pickup DOES open the explainer', fired, `at $
 ok('[control] …and only now is the one-time flag written', (await tokenFlag())===true);
 await tap('Escape'); await wait(120); await drive(0.5);   // …and the race carries on
 ok('[control] the race is running again after it', !(await probe()).tok);
-/* ── 11c. the box deferral, provoked rather than waited for ─────────────────
-   On this track the beacons happen to sit far enough apart that the cadence
-   rarely bites inside one race, and "drive until it does" is how a gate ends up
-   asserting over an empty sample set (GAPS: modaltest's own "0 quiz samples").
-   So it is produced deterministically instead, through the one thing this file
-   already owns: the clock. Holding the teaching clock still is exactly "no wall
-   time has passed since the last card" — the state a deferral is defined by.  */
+/* ── 11c. THE INVERSION: a card's shadow no longer eats a question box ──────
+   Round 2 of this file asserted the opposite of what follows, and it was right
+   about the mechanism and wrong about the game: with the teaching clock held
+   still (i.e. "no wall time has passed since the last card"), EVERY beacon was
+   consumed and NOT ONE opened a box. That is the state a child hits after any
+   question — and they cannot see it, so they read the boxes as broken.
+
+   So the same provocation is kept, exactly, and the expected answer is flipped.
+   Holding the clock is now supposed to cost the child nothing at all: cards
+   space themselves, boxes do not. This assertion goes red against the pre-5.1
+   code, which is the whole point of keeping the section.                     */
 // Warm-up: one COMPLETE box episode, so a teaching card has provably just
 // closed and the cadence clock is genuinely armed. (Without it the clock could
-// still be at its "no card this race" value, where nothing defers and the whole
-// check would pass for the wrong reason.)
+// still be at its "no card this race" value, where nothing would be gated and
+// the whole check would pass for the wrong reason.)
 let boxesDone = 0;
 for (let i=0; i<140 && boxesDone===0; i++) {
   await drive(0.5);
@@ -870,91 +918,79 @@ ok('[frozen clock] a question box opened and closed first', boxesDone>0, `${boxe
 // Both candidate clocks are held: performance.now (style.js's default) and
 // engine.time (what harness.js should hand setTeachingClock, so that a gate
 // which steps the sim faster than real time still measures a truthful gap).
-// Freezing both means this check reads the same either way.
+// Freezing both means this check reads the same either way. The BOX cooldown is
+// deliberately NOT frozen — it drains on the real frame dt, which is what makes
+// it a rule about the road rather than a rule about a card.
 await evalp(()=>{ window.__DEF.length = 0; window.__EV.length = 0;
+  window.__MET.length = 0; window.__SOFT.length = 0;
   window.__driveFrozen = secs => { const F=1/60, D=window.__DEBUG, t0=D.engine.time;
-    for (let i=0,n=Math.round(secs/F); i<n; i++) { D.advance(F); D.engine.time = t0; window.__sample(); } }; });
+    for (let i=0,n=Math.round(secs/F); i<n; i++) { D.advance(F); D.engine.time = t0; window.__sample();
+      // the child answers, so the run does not stall on one open panel
+      const q = D.engine.active.quiz;
+      if (q.phase==='question') document.querySelectorAll('.quiz-root.show .quiz-opt')[q.correctSlot]?.click();
+      else if (q.phase==='feedback') q.dismiss('key');
+      const scrim = document.querySelector('.qzint-scrim, .grgtok-scrim');
+      if (scrim && scrim.offsetParent!==null) scrim.querySelector('button')?.click();
+    } }; });
 await evalp(()=>window.__driveFrozen(60));            // 60s of racing, clock held
 const frozen = await evalp(()=>({ defs: window.__DEF.length,
+  met: window.__MET.length, live: window.__MET.filter(m=>m.active).length,
   boxes: window.__EV.filter(e=>e.kind==='box').length, phase: window.__DEBUG.engine.active.quiz.phase }));
-ok('[frozen clock] beacons were driven through', frozen.defs>0, `${frozen.defs} deferred`);
-ok('[frozen clock] …and NOT ONE of them opened a box', frozen.boxes===0 && frozen.phase==='idle',
-   `${frozen.boxes} boxes, phase ${frozen.phase}`);
-await evalp(()=>{ window.__T += 60; window.__DEBUG.engine.time += 60; });   // …and time moves on again
-let rq = await probe(), reopened = false;
-for (let i=0;i<80 && !reopened;i++) { await drive(0.5); rq = await probe(); reopened = rq.box; }
-ok('…and the very next beacon opens one once the gap has passed', reopened,
-   reopened ? `box at ${rq.t.toFixed(1)}s` : 'no box in 40s of driving');
-ok('…so a deferred question is postponed, never dropped',
-   reopened && (await evalp(()=>window.__EV.filter(e=>e.kind==='box').length))>0);
+ok('[frozen clock] beacons were driven through', frozen.met>0, `${frozen.met} beacon(s)`);
+ok('[frozen clock] …and the frozen card clock deferred NOT ONE of them',
+   frozen.defs===0, `${frozen.defs} quiz:deferred events (the event should not exist)`);
+ok('[frozen clock] …and boxes opened anyway — a card shadow costs no questions',
+   frozen.boxes>0 && frozen.live>0,
+   `${frozen.live}/${frozen.met} beacons live → ${frozen.boxes} box episode(s)`);
 
-/* ── 11d. THE MAGNITUDE, and the escalation floor ───────────────────────────
-   11a's pair-gap check is satisfied by TRACK GEOMETRY — track 0's beacons are
-   ~22s apart, so no pair of them is ever closer than 15s whether the constant
-   is 15, 5 or absent — and 11c's frozen clock only proves "some nonzero gap is
-   enforced": it catches teachingCardReady(0.25) and passes anything from ~3s
-   up. Mutating quiz.js to teachingCardReady(5) therefore left this whole file
-   printing "all modal checks passed".
-   So the magnitude is asserted where it can only come from the constant: a
-   beacon driven through at a KNOWN `since`, strictly between the escalated
-   floor and the nominal gap. At since≈8s a first-time beacon must defer (8 <
-   15) — a 5s constant opens a box there instead — and once it has stood aside
-   URGENT_AFTER times the SAME 8s must let one through (8 > 6), which is the
-   floor that stops a deferral from becoming a deletion.                     */
-const PROBE_SINCE = 8;
-console.log(`\n     11d. a beacon provoked at since≈${PROBE_SINCE}s (between the ${URGENT_GAP_S}s floor and the ${TEACH_GAP_S}s gap)`);
-await bootFresh({ introCard:false });
-let warmed = 0;
-for (let i=0; i<160 && warmed===0; i++) {
-  await drive(0.5);
-  const st = await probe();
-  // The save is fresh here, so the first-token explainer fires on the first
-  // pickup and would otherwise hold the screen for the whole warm-up.
-  if (st.tok) { await drive(READ_S); await tap('Escape'); await wait(60); }
-  else if (st.qint) { await drive(READ_S); await tap('Escape'); await wait(60); }
-  else if (st.box) { await drive(READ_S); await tap('Digit1'); await wait(60);
-                     await drive(1); await tap('Space'); await wait(60); await drive(3); }
-  warmed = await evalp(()=>window.__EV.filter(e=>e.kind==='box' && e.close!=null).length);
-}
-ok('[magnitude] a question box opened and closed first', warmed>0, `${warmed} box episode(s)`);
-// Jump BOTH clocks (performance.now's stand-in and engine.time, which is what
-// harness.js hands setTeachingClock) forward to put `since` exactly on the
-// probe point, then hold them there so it stays there for the whole drive.
-const jump = await evalp(t=>{
-  window.__driveHeld = (secs, stopOnDefer) => { const F=1/60, D=window.__DEBUG,
-    t0=D.engine.time, T0=window.__T;
-    for (let i=0,n=Math.round(secs/F); i<n; i++) {
-      D.advance(F); D.engine.time = t0; window.__T = T0; window.__sample();
-      if (D.engine.active.quiz.phase!=='idle') break;
-      if (stopOnDefer && window.__DEF.length>0) break;
-    } };
-  const closed = window.__EV.filter(e=>e.kind==='box' && e.close!=null).pop();
-  if (!closed) return { since:null, moved:0, ok:false };
-  const since = window.__T - closed.close;
-  const d = t - since;
-  if (d > 0) { window.__T += d; window.__DEBUG.engine.time += d; }
-  window.__EV.length = 0; window.__DEF.length = 0;
-  return { since:+since.toFixed(2), moved:+d.toFixed(2), ok:d>0 };
-}, PROBE_SINCE);
-ok('[magnitude] the clock was placed on the probe point and held', jump.ok===true,
-   `since was ${jump.since}s, moved +${jump.moved}s`);
-await evalp(()=>window.__driveHeld(60, true));
-const m1 = await evalp(()=>({ defs: window.__DEF.map(d=>({ since:+d.since.toFixed(2), gap:d.gap })),
-  boxes: window.__EV.filter(e=>e.kind==='box').length }));
-const d1 = m1.defs[0];
-ok(`[magnitude] the first beacon at since≈${PROBE_SINCE}s DEFERS — a ${TEACH_GAP_S}s gap, not a 5s one`,
-   m1.boxes===0 && m1.defs.length===1 && d1.since > URGENT_GAP_S+0.5 && d1.since < TEACH_GAP_S-0.5,
-   m1.boxes ? `a box OPENED at since ${d1?.since ?? '?'}s` : `deferred at since ${d1?.since}s (required gap ${d1?.gap}s)`);
-// …and the same 8s lets a box through once the card has been refused enough
-// times. Without this the gate would be satisfied by a cadence that never opens
-// anything at all, which is the round-1 bug wearing the gate's own clothes.
-await evalp(()=>window.__driveHeld(90, false));
-const m2 = await evalp(()=>({ defs: window.__DEF.length,
-  boxes: window.__EV.filter(e=>e.kind==='box').length,
-  gaps: window.__DEF.map(d=>d.gap), phase: window.__DEBUG.engine.active.quiz.phase }));
-ok(`[magnitude] …and after ${URGENT_AFTER} refusals the SAME ${PROBE_SINCE}s opens one (the floor)`,
-   m2.boxes===1 && m2.defs>=URGENT_AFTER,
-   `${m2.defs} deferrals (required gaps ${m2.gaps.join(',')}) then ${m2.boxes} box`);
+/* ── 11d. THE MAGNITUDE, at the rule that survived ──────────────────────────
+   Round 2 asserted the magnitude of the BEACON-side teaching gap: a beacon at a
+   known `since` had to defer on 15s and not on 5s. That rule is gone, and a
+   magnitude assertion has to follow its constant rather than be deleted — the
+   thing 11c can be satisfied by is "some cooldown exists", and a cooldown of
+   zero would satisfy it just as happily as a cooldown of seven.
+
+   So the magnitude now lives where the pacing does: the VISIBLE cooldown. Right
+   after a box episode closes it must be a real gap (not 0, and not the old 24s
+   that took the boxes away for most of a lap), the beacons must actually LOOK
+   spent while it drains — asserted on the live material, not on a flag — and
+   the very next beacon inside it must pay the soft token instead of nothing. */
+console.log(`\n     11d. the magnitude of the visible cooldown (${BOX_COOLDOWN_S}s), read off the scene`);
+// One evaluate, because both halves have to be read off the SAME scene: the lit
+// baseline (whatever the art is worth, "ghosted" only means something against
+// it), then one provoked box episode, then the same material again.
+const mag = await evalp(async ()=>{
+  const D=window.__DEBUG, A=D.engine.active, q=A.quiz, F=1/60;
+  let core=null; A.scene.traverse(o=>{ if(o.name==='quiz:beacon-core') core=o; });
+  const read = () => core && ({ opacity:+core.material.opacity.toFixed(3),
+                                emissive:+core.material.emissiveIntensity.toFixed(3) });
+  const step = () => {
+    D.advance(F); window.__T+=F; window.__sample();
+    if (q.phase==='question') document.querySelectorAll('.quiz-root.show .quiz-opt')[q.correctSlot]?.click();
+    else if (q.phase==='feedback') q.dismiss('key');
+    const scrim = document.querySelector('.qzint-scrim, .grgtok-scrim');
+    if (scrim && scrim.offsetParent!==null) scrim.querySelector('button')?.click();
+  };
+  // 1. wait until the boxes are actually live and nothing is on screen
+  for (let i=0;i<60*60 && !(q.beaconsLive && q.phase==='idle');i++) step();
+  const lit = read();
+  // 2. drive into one, answer it, and let the whole episode close
+  for (let i=0;i<60*90 && q.phase==='idle';i++) step();
+  const opened = q.phase!=='idle';
+  for (let i=0;i<60*40 && q.phase!=='idle';i++) step();
+  return { lit, opened, spent: read(), left:+q.cooldownLeft.toFixed(2),
+           live:q.beaconsLive, charge:+q.charge.toFixed(3) };
+});
+ok('[magnitude] the beacon core is on the live scene graph and lit',
+   !!mag.lit && mag.lit.opacity>0.5 && mag.opened,
+   mag.lit ? `opacity ${mag.lit.opacity}, emissive ${mag.lit.emissive}` : 'quiz:beacon-core not found');
+ok(`[magnitude] a closed box leaves a real cooldown of about ${BOX_COOLDOWN_S}s`,
+   mag.left > BOX_COOLDOWN_S-2 && mag.left <= BOX_COOLDOWN_S+0.5 && mag.live===false,
+   `${mag.left}s left, beaconsLive ${mag.live}, charge ${mag.charge}`);
+ok('[magnitude] …and the beacons LOOK spent while it drains (live material, not a flag)',
+   !!mag.lit && mag.spent.opacity < mag.lit.opacity*0.5 && mag.spent.emissive < mag.lit.emissive*0.5,
+   `core opacity ${mag.lit?.opacity} → ${mag.spent?.opacity}, emissive ${mag.lit?.emissive} → ${mag.spent?.emissive}`);
+
 
 ok('no page errors', errs.length===0, errs[0]||'');
 console.log('  ' + '─'.repeat(74));
