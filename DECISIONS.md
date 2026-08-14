@@ -1368,3 +1368,136 @@ time.** D17's rule stated properly: a rebate is below the SPEND, not below a con
 tier cuts and checked against `tierForScore`, so "precise prompt" provably means "you built a
 tier-3 part", in both languages. It was the one badge with neither a derivation nor a string
 assertion, while GAPS names it as the first thing to check after any economy change.
+
+# ═══ WAVE 5.1 — regression fixes ═══
+
+## D52 — A box may only decline to fire for a reason the child can see
+Wave 5 gave question boxes a second, invisible reason to stay shut: a 15s teaching-card
+cadence checked at the beacon. It interacted with D16's answered/ignored cooldown and only
+~every third box fired, with the first boxes of a championship firing nothing. The bug was
+not the deferral — it was that **the beacon was consumed before the decision**
+(`hit.alive = false; hit.respawn = RESPAWN_S` ran, and only then did the code decide not to
+open), so a deferred box was an eaten box and a child could not tell it from a crash.
+
+Boxes no longer consult the teaching-card clock at all. The cooldown is the only pacing
+rule, and it is now **game language rather than bookkeeping**: charging beacons ghost, a
+constant-diameter ring fills with a bright arc, re-activation pops and announces itself, and
+driving through a charging box pays a soft reward instead of nothing. Cards still space
+themselves off box episodes — that half was never the problem.
+
+**The soft reward's currency is time, not tokens, and that is the load-bearing choice.**
+Round 1 paid a token for touching a ghosted box. That quietly made beacon income "how many
+beacons were touched", which collided with D51's 21-token ceiling, which forced `RESPAWN_S`
+26 → 60 to hold the ceiling — which starved the track. Questions per engaged race landed at
+6.6 against Wave 4's 7.7: the round improved the fire *rate* from 49% to 72% purely by
+meeting a third fewer beacons, and reported it as a win. Paying 1.2s off the recharge
+instead cannot inflate the wallet, which freed `RESPAWN_S` back to 30 and took questions to
+**8.6 mean / 77 over nine races** (Wave 4: 7.7/69; broken: 6.4/58) with tokens 15–19 and a
+worst race of 19. It is also the better teaching object: the boxes come back sooner because
+you went and got them.
+
+**A ratio gets greener as the game gets emptier.** The round-1 gate asserted the fire rate
+and a token ceiling. A starvation mutant — `RESPAWN_S` 60 → 150, nothing else — passed the
+*entire* gate with the ratio *improving* to 82% while the child answered 14 questions instead
+of 20. Any metric that is a fraction of what is left on the track rises when you halve the
+track. The count itself is now asserted, and that absolute floor is the only assertion the
+mutant fails.
+
+**And the gate ran one seed.** Section 6 drove seed 3, where the build happens to measure
+8/8/8 against floors of 7 and 22 — margins of one and two. Every argument this wave actually
+turned on happened on seeds it never ran: round 1's claimed "+2 questions" was a seed-3
+artifact that vanished across seeds, and seed 11 track 0 is where both the worst ratio and the
+old 20-token race live. Widened to three seeds × three tracks, the section **immediately
+falsified its own floors** — seed 11 track 0 opens 6/11 = 54.5% and failed both, though Wave 4
+also opened 6 there, so it was never a regression. A single race's count is a property of the
+seed and the beacon layout as much as of the cadence rule. The per-race floors are now honest
+"not starved" catches set below the worst legitimate case; the totals carry the assertion.
+
+## D53 — Presentation is not simulation, and the leak was in the navigation, not the scene
+The home screen ramped fans after minutes of idling. Nothing countable leaked: across 60
+navigations and 10 simulated idle minutes, bus subscriptions, DOM listeners, ResizeObservers
+and node counts all returned to identical numbers. **The menu was presenting a 552-draw-call,
+1,225,167-triangle live race scene every frame behind a static menu**, and rebuilding it on
+every screen hop (median 1809 ms). One shared refcounted backdrop and a 30fps presentation cap
+took entry to 65 ms median.
+
+The brief asked for the *simulation* capped. It is not, deliberately: the backdrop sim
+measures 0.072 ms per fixed step — ~4.3 ms per wall second, 0.4% of a core — against 6–9 ms to
+draw it, so a 1/30 sim cap would save ~0.2% of a core while handing a real race double its
+fixed timestep (D5/D11) and re-graining every preview shot keyed to `floor(uTime*12)`.
+**Cap what costs, not what looks like it costs.**
+
+The actual leak was elsewhere and was found by a critic, not by the 20-cycle walk.
+`engine.goto()` disposed `this.active`, awaited the factory, and assigned only afterwards —
+so a second navigation arriving inside that ~1.8s window disposed the outgoing scene twice
+and orphaned the incoming one forever. There is no navigation lock in menus.js, and a child
+double-clicking "start race" is the most likely way an 8-to-15-year-old enters a race. Five
+un-awaited pairs: bus subscriptions **10 → 145**, window listeners **1 → 21**, heap **+13 MB**,
+permanently. Fixed with a monotonic ticket plus forgetting the outgoing scene before the
+await; last caller wins, so an Escape out of a still-loading race is not swallowed.
+
+**Honesty note carried deliberately into this entry:** the cycle-counting assertions were
+green on the pre-fix build too. They caught nothing; they are a future guard. The `goto`
+orphan is their first real catch, and the write-up should not credit the walk with a
+discovery it did not make.
+
+## D54 — Auto-detect stops at בינוני, and the gate tier is stated rather than inherited
+Auto-detect handed גבוה to any machine that could hold 50fps, which on a strong laptop meant
+a tier school hardware cannot run. First-run auto-detect now selects **at most בינוני**;
+גבוה is a manual choice and still outranks the probe permanently.
+
+The compatibility trap was that gates and previews got their tier *by construction* — they
+never call `enableQualityProbe()`, so they inherited whatever the auto default happened to be,
+and moving that default would have silently shifted every screenshot baseline in the repo.
+Resolved by applying the auto session's medium **inside `enableQualityProbe()`**, before any
+frame, leaving `init()` — shared with every gate — untouched, and by having the harness state
+`AUTO_TIER` at its own call site. The gate tier is now a line a reader can see rather than a
+default they must infer. `PROBE.highMs` was deleted outright: a knob wired to nothing.
+
+Art consequence, checked rather than assumed: בינוני reads as a deliberate tier on all three
+tracks (shadows, crowd, bunting, sign legibility, circuit's neon road reflections all survive;
+oasis' distant mesas flatten, which reads as a hazier hour). נמוך had one real defect — see D55.
+
+## D55 — The contact shadow drew every frame for five waves and nobody could see it
+נמוך has `shadows: false`, and at the tier auto-detect can now select, the kart read as pasted
+onto the road on both daylight tracks. The first diagnosis was that the existing contact-shadow
+plane never drew a pixel, because its falloff came from a `createRadialGradient` CanvasTexture
+and such textures were said to upload fully transparent under ANGLE/SwiftShader. **That is
+false and the retraction matters more than the fix**, because it nearly became a project-wide
+ban on a technique the game depends on: `gfx/props.js glowTexture()` is exactly that pattern
+and renders in every race frame, as do the sky, the signage and the garage.
+
+Measured by toggling `visible` on the real build and diffing framebuffers, the retired card
+moved 20,715 px on oasis and 26,911 px on cloud. It rasterised every frame, every tier, since
+Wave 1. It was simply **below the perceptual floor**: peak alpha 0.55 × material opacity 0.85
+= 0.47 of black over near-black asphalt, ~2.5 per channel. An authoring bug wearing a driver
+bug's clothes.
+
+Two rules came out of it. **Ground-shadow work is judged as a rendered-pixel delta, never as
+"the mesh is in the graph"** — every assertion in the original gate was CPU-side, so the bug
+the builder *believed in* would have passed it. And **an opaque debug material is not a
+visibility probe** for a card relying on `renderOrder:-1`/`depthWrite:false`: forcing it opaque
+moves it into the opaque pass, where it draws before the road and the road covers it. The
+"solid red quad proves nothing renders" step was measuring its own instrumentation.
+
+The replacement is a computed `DataTexture` — chosen for determinism and one shared texture
+across eight karts, *not* because canvas is broken — created only for karts that cast no real
+shadow. Since `createKartLOD` forces `shadows:false`, that means rivals get it at every tier,
+where they had been nearly floating too.
+
+## D56 — Race 2 was already fixed, and engagement is under-rewarded, not over-rewarded
+Item 5 was briefed to tighten race 2 until clean driving alone stops winning. Measured over 40
+seeds it already does: clean-driving-only finishes **3.73 mean with zero wins in 40**, dead
+centre of the 3rd–4th target, and it survives the restored 8.6-question cadence at 3.48. The
+tightening had landed earlier in Wave 5 (`TRACK_PACE.circuit` 0.96 → 0.98). **Nothing was
+retuned** — and the check that made that safe was running the old constant against the *new*
+cadence: at 0.96 an engaged child now reads 2.80 with 2 wins in 40, so the earlier retune is
+load-bearing under the restored question count rather than incidental.
+
+A correct quiz answer is worth **0.03–0.10 of a finishing place** (0.16–0.38s of lap time)
+against 7.2–9.5s for one garage tier. The quiz boost is 1.30× while a purple drift release is
+1.38×, and a clean lap is already inside a drift boost about two thirds of the time, so most
+answers land on top of a stronger boost and buy only the difference. So race 2's old walkover
+was a **pace** problem, not an engagement one — and the tempting fix was measured before being
+rejected: raising the boost to 1.45× hands race 1 to any child who answers (22/40 → 40/40 wins)
+and still never wins race 2. The boost constant stays, and the gate now goes red if it moves.

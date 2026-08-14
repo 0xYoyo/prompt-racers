@@ -1801,7 +1801,7 @@ class AudioSystem {
     // one's tail is a phasing buzz, not a louder cue. The gap is under the
     // physical minimum between two beacons, so no real event is ever lost.
     for (const e of ['quiz:softToken', 'quiz:soft', 'quiz:softtoken']) {
-      on(e, () => { if (!this._retrigger('quiz.soft', 0.12)) this.play('token.pickup'); });
+      on(e, () => { if (!this._retrigger('quiz.soft', 0.12)) this.play('quiz.soft'); });
     }
     for (const e of ['quiz:recharged', 'quiz:recharge']) {
       on(e, () => { if (!this._retrigger('quiz.recharged', 0.35)) this.play('quiz.recharged'); });

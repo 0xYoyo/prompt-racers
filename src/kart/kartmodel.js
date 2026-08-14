@@ -31,6 +31,10 @@ const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _down = new THREE.Vector3(0, -1, 0);
+// scratch for the raked contact shadow (see rakeBlob) — never allocate per frame
+const _bx = new THREE.Vector3(), _bz = new THREE.Vector3();
+const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4();
+const _m3 = new THREE.Matrix4(), _m4 = new THREE.Matrix4();
 const lerp = (a, b, t) => a + (b - a) * t;
 // frame-rate independent smoothing
 const approach = (cur, target, k, dt) => cur + (target - cur) * (1 - Math.exp(-k * dt));
@@ -201,6 +205,62 @@ const BLOB_HALF_X = 1.70, BLOB_HALF_Z = 2.30;   // plane half-extents, metres
 const BLOB_Y = 0.022;                            // metres above the road (see the mesh below)
 const BLOB_OPACITY = 0.68;
 let _blobTex = null;
+
+/* ---- the rake ---------------------------------------------------------- */
+//
+// ROUND 3. With the blob at the alpha above, cloud at נמוך reads solved and oasis
+// does NOT — and the reason is measurable rather than arguable. Masked A/B (kart
+// bodies masked out, only ground pixels counted, t=25, seed 12345):
+//
+//                          px changed   mean Δ   road base   Δ as % of base
+//   real cast shadow גבוה    64,158      53.3       103          51.7%
+//   blob נמוך  (oasis)       25,305      25.1        78.5        31.9%
+//   blob נמוך  (cloud)       28,772      51.5       169.4        30.4%
+//
+// The blob darkens its own footprint by the SAME ~31% on both tracks. So depth is
+// not the difference — AREA AND SHAPE is. Oasis' key light sits at 15° of
+// elevation, which rakes a real cast shadow into a long offset smear covering 2.5x
+// the blob's pixels, while the blob is a symmetric 3.4 x 4.6 m rectangle centred
+// under the kart, where the bodywork hides most of it from the chase camera.
+//
+// So: skew and offset the footprint along the sun's ground-projected direction, at
+// UNCHANGED alpha. NOT more black — the road is already near-black and the retired
+// pre-Wave-1 card died of exactly that misjudgement. This is free area.
+//
+// The transform is the affine approximation of the real thing: the shadow of a
+// solid of height H under a light at elevation `el` is the Minkowski sum of its
+// footprint with a ground segment of length H*cot(el) pointing away from the light.
+// A Minkowski sum is not affine, but stretching the footprint by that length along
+// the segment and sliding it half the length forward gives the same near edge (the
+// contact patch stays put), the same far end, and the same swept area. One matrix,
+// no extra geometry, no extra draw call, no extra alpha.
+//
+// Driven from the REAL elevation, never a hardcoded rake, because the three themes
+// differ enormously: oasis 15°, cloud 13°, night circuit 38° (a moon). A low light
+// gets a long smear, a high one stays nearly symmetric — which is the honest cue.
+// Height of the mass whose shadow is being faked. Between the tub top (0.63 m)
+// and the helmet (~1.25 m), and then TUNED AGAINST THE REAL THING rather than
+// argued: at 0.70 the masked ground A/B on oasis moves 68,910 px against the real
+// cast shadow's 64,158 at גבוה — the same order, a touch over. 0.85 overshot to
+// 78,121, which is a fake shadow bigger than the true one.
+const BLOB_CAST_H = 0.70;
+const BLOB_SKEW_MAX = 4.0;     // metres; past this the smear leaves the road
+/**
+ * Ground-projected shadow rake for a sun/moon direction.
+ * @param {{x:number,y:number,z:number}} sunDir  unit vector pointing AT the light
+ * @returns {{x:number, z:number, len:number}}  unit ground direction the shadow
+ *   points (away from the light) and the smear length in metres. len === 0 means
+ *   "no usable direction" — the caller keeps today's symmetric blob.
+ */
+export function blobRake(sunDir) {
+  if (!sunDir) return { x: 0, z: 1, len: 0 };
+  const hx = sunDir.x || 0, hz = sunDir.z || 0, hy = sunDir.y || 0;
+  const hl = Math.hypot(hx, hz);
+  // Straight overhead (or below the horizon): no rake, symmetric blob.
+  if (!(hl > 1e-4) || hy <= 1e-3) return { x: 0, z: 1, len: 0 };
+  const len = clamp(BLOB_CAST_H * (hl / hy), 0, BLOB_SKEW_MAX);
+  return { x: -hx / hl, z: -hz / hl, len };
+}
 
 export function blobShadowTexture() {
   if (_blobTex) return _blobTex;
@@ -404,6 +464,12 @@ export function createKart(opts = {}) {
   // bodyPivot would tip up on its edge in every corner. The weld never traverses
   // the root, and `blob` is in weldStatics' stop set as well.
   let blob = null, blobMat = null;
+  // The rake, in WORLD ground space, from the composition point (race.js) — the
+  // only place that owns both the sky rig and the karts. kartmodel is a leaf and
+  // must never import gfx/sky.js. No option => len 0 => today's symmetric blob,
+  // so every preview, the garage, racer select and the menus are untouched.
+  const rake = blobRake(opts.sunDir);
+  const RAKED = rake.len > 1e-3;
   if (!shadows) {
     blobMat = new THREE.MeshBasicMaterial({
       map: blobShadowTexture(), transparent: true, depthWrite: false,
@@ -421,6 +487,48 @@ export function createKart(opts = {}) {
     blob.renderOrder = -1;   // first of the transparents: under smoke, flames, dust
     blob.castShadow = blob.receiveShadow = false;
     group.add(blob);
+    if (RAKED) {
+      // The rake is a shear+stretch, which position/quaternion/scale cannot
+      // express, so the card drives its own local matrix. position/scale are still
+      // written every frame (the airborne shrink reads blob.scale) — they are just
+      // consumed by rakeBlob() instead of by three's compose step.
+      blob.matrixAutoUpdate = false;
+      rakeBlob(1);
+    }
+  }
+
+  // Rebuild the card's local matrix for the current kart heading and a uniform
+  // scale `s` (the airborne shrink). Allocation-free: every temporary is module
+  // scope. The rake is fixed in WORLD space while the card's parent yaws with the
+  // kart, so the direction has to be re-expressed in kart space each frame.
+  function rakeBlob(s) {
+    // kart's own axes, flattened to the ground plane
+    _bx.set(1, 0, 0).applyQuaternion(group.quaternion); _bx.y = 0;
+    _bz.set(0, 0, -1).applyQuaternion(group.quaternion); _bz.y = 0;
+    const lx = Math.hypot(_bx.x, _bx.z) || 1, lz = Math.hypot(_bz.x, _bz.z) || 1;
+    // the rake direction in the card's own 2D frame (+X = kart right, +Y = nose)
+    const a = (rake.x * _bx.x + rake.z * _bx.z) / lx;
+    const b = (rake.x * _bz.x + rake.z * _bz.z) / lz;
+    // Half-extent of the CARD along that direction — the rectangle's support
+    // function, |a|·halfX + |b|·halfZ, not an ellipse radius. Using the right one
+    // matters: it is what makes the stretch add exactly rake.len of length at
+    // every heading, so the shadow does not grow and shrink as the kart turns.
+    const rAlong = Math.max(0.5, Math.abs(a) * BLOB_HALF_X + Math.abs(b) * BLOB_HALF_Z);
+    const k = 1 + rake.len / (2 * rAlong);
+    // Rz(phi) maps the card's +Y onto (a, b), so a plain Y scale inside that frame
+    // stretches along the rake and leaves the perpendicular width alone.
+    const phi = Math.atan2(-a, b);
+    _m1.makeRotationX(-Math.PI / 2);
+    _m2.makeRotationZ(phi);
+    _m3.makeScale(s, s * k, 1);
+    _m4.makeRotationZ(-phi);
+    blob.matrix.copy(_m1).multiply(_m2).multiply(_m3).multiply(_m4);
+    // …then slide half the added length forward, so the contact patch under the
+    // tyres stays where it was and the whole gain is smear pointing away from the
+    // sun. Card +Y is the kart's nose, which is -Z in the parent group.
+    const h = rake.len * 0.5 * s;
+    blob.matrix.setPosition(a * h, BLOB_Y, -b * h);
+    blob.matrixWorldNeedsUpdate = true;
   }
 
   /* ---------------- chassis -------------------------------------- */
@@ -1686,6 +1794,7 @@ export function createKart(opts = {}) {
       blobMat.opacity = BLOB_OPACITY * (1 - st.air * 0.9);
       const s = 1 - st.air * 0.30;
       blob.scale.set(s, s, 1);
+      if (RAKED) rakeBlob(s);
     }
   }
 
@@ -1709,6 +1818,9 @@ export function createKart(opts = {}) {
     bodyPivot, driverPivot, headPivot, steerPivot,
     // null whenever the kart casts a real shadow — the gate reads this
     blobShadow: blob,
+    // the rake actually in force, or null for the symmetric default — the gate
+    // reads this alongside the card's real world footprint
+    blobRake: blob && RAKED ? rake : null,
     update, setParts, dispose,
     // handy for the race camera / HUD
     get width() { return 1.55; },

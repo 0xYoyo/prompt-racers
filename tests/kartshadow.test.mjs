@@ -271,6 +271,157 @@ dcard.material.dispose = () => { freed = true; orig(); };
 dk.dispose();
 ok('dispose() frees the card material (it is kart-owned, not shared)', freed);
 
+/* ───────────────────────────────────────────────────────────────────────────
+   THE RAKE (round 3).
+
+   Round 2's blob darkened its own footprint by ~31% of the road's brightness on
+   BOTH daylight tracks — and cloud read solved while oasis did not. So depth was
+   never the difference: AREA AND SHAPE was. Oasis' key light sits at 15° of
+   elevation and rakes a real cast shadow into a long offset smear covering 2.5x
+   the blob's pixels, while the blob was a symmetric rectangle centred under the
+   kart, where the bodywork hides most of it from the chase camera.
+
+   So the card is now sheared and slid along the sun's ground projection, at
+   UNCHANGED alpha. The bugs that buys, and which this section exists to stop:
+
+   a. THE RAKE THAT IGNORES THE SUN — one hardcoded direction or length for all
+      three themes. The night circuit is lit by a moon at 38°; oasis by a sun at
+      15°. A low light must smear much further than a high one, or the cue lies.
+   b. THE RAKE BAKED IN KART SPACE — the seam that would look right in exactly
+      one screenshot. The direction is fixed in WORLD space while the card's
+      parent yaws with the kart, so it has to be re-expressed every frame. Get
+      that wrong and the shadow spins with the kart through every corner.
+   c. THE RAKE THAT LEAKS INTO THE MENUS. No sunDir => the old symmetric blob,
+      byte for byte, so the garage, racer select, the podium and every preview
+      are untouched.
+   d. A HAND-BUILT MATRIX THAT LOSES FLATNESS. The shear cannot be expressed as
+      position/quaternion/scale, so the card composes its own local matrix — and
+      a mistake there tips it onto its edge, which is failure mode 3 all over
+      again. Re-run the lean test with a rake in force.
+   e. THE WIRING NEVER MADE. kartmodel is a leaf and must not import gfx/sky.js,
+      so race.js — which owns both the lighting rig and the karts — passes
+      rig.sunDir in. If that call site loses the option, every CPU assertion here
+      still passes and the game silently goes back to symmetric blobs.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+console.log('\n  \x1b[1m…and the rake follows the sun\x1b[0m');
+
+const DEG = Math.PI / 180;
+// Same construction as gfx/sky.js sunDirection(); the themes' real numbers.
+const sunAt = (elev, az) => new THREE.Vector3(
+  Math.sin(az * DEG) * Math.cos(elev * DEG), Math.sin(elev * DEG), Math.cos(az * DEG) * Math.cos(elev * DEG));
+const OASIS_SUN = sunAt(15, 215);   // low desert sun  → long smear
+const NIGHT_SUN = sunAt(38, 42);    // high circuit moon → nearly symmetric
+
+const rLow = KM.blobRake(OASIS_SUN), rHigh = KM.blobRake(NIGHT_SUN);
+ok('a low sun rakes further than a high one', rLow.len > rHigh.len && rHigh.len > 0.2,
+  `15° → ${rLow.len.toFixed(2)} m, 38° → ${rHigh.len.toFixed(2)} m`);
+ok('…and it points AWAY from the light, not at it',
+  rLow.x * OASIS_SUN.x + rLow.z * OASIS_SUN.z < -0.7 && rHigh.x * NIGHT_SUN.x + rHigh.z * NIGHT_SUN.z < -0.7);
+ok('no sun direction at all => no rake (menus/garage/previews unchanged)',
+  KM.blobRake(null).len === 0 && KM.blobRake({ x: 0, y: 1, z: 0 }).len === 0);
+
+// The card's REAL world footprint, not the option it was handed: extent along a
+// ground direction, and how far its centre has slid from the kart's own origin.
+const _fv = new THREE.Vector3();
+function footprint(kart, dx, dz) {
+  kart.group.updateMatrixWorld(true);
+  const c = cards(kart)[0];
+  const pa = c.geometry.attributes.position;
+  let lo = Infinity, hi = -Infinity, cx = 0, cz = 0;
+  for (let i = 0; i < pa.count; i++) {
+    _fv.fromBufferAttribute(pa, i).applyMatrix4(c.matrixWorld);
+    const t = _fv.x * dx + _fv.z * dz;
+    lo = Math.min(lo, t); hi = Math.max(hi, t);
+    cx += _fv.x / pa.count; cz += _fv.z / pa.count;
+  }
+  const g = kart.group.getWorldPosition(new THREE.Vector3());
+  return { len: hi - lo, ox: cx - g.x, oz: cz - g.z };
+}
+
+const kDef = KM.createKart({ engine: eng('low'), parts: P2 });
+const kLow = KM.createKart({ engine: eng('low'), parts: P2, sunDir: OASIS_SUN });
+const kHigh = KM.createKart({ engine: eng('low'), parts: P2, sunDir: NIGHT_SUN });
+
+ok('a kart built with a sun direction reports its rake', !!kLow.blobRake && kLow.blobRake.len > 0.2);
+ok('…and one built without reports none', kDef.blobRake === null);
+
+const fDef = footprint(kDef, rLow.x, rLow.z);
+const fLow = footprint(kLow, rLow.x, rLow.z);
+const fHighOwn = footprint(kHigh, rHigh.x, rHigh.z);
+const fDefHigh = footprint(kDef, rHigh.x, rHigh.z);
+
+ok('the default card is symmetric: centred on the kart', Math.hypot(fDef.ox, fDef.oz) < 1e-6,
+  `offset ${Math.hypot(fDef.ox, fDef.oz).toFixed(6)} m`);
+ok('a raked card is LONGER along the sun line', fLow.len > fDef.len + 1.5,
+  `${fDef.len.toFixed(2)} → ${fLow.len.toFixed(2)} m`);
+ok('…and OFFSET, so the smear leaves the kart instead of hiding under it',
+  fLow.ox * rLow.x + fLow.oz * rLow.z > 0.8,
+  `${(fLow.ox * rLow.x + fLow.oz * rLow.z).toFixed(2)} m down-sun`);
+// The whole point of driving it from the real elevation: 38° must not smear like 15°.
+ok('a high moon smears far less than a low sun (elevation really drives it)',
+  fHighOwn.len - fDefHigh.len > 0.2 && (fHighOwn.len - fDefHigh.len) < (fLow.len - fDef.len) * 0.6,
+  `+${(fHighOwn.len - fDefHigh.len).toFixed(2)} m vs +${(fLow.len - fDef.len).toFixed(2)} m`);
+
+// (b) The rake is a WORLD direction. Yaw the kart hard and the smear must keep
+// pointing the same way across the track — not rotate with the bodywork.
+const gr = { steer: 0, speed01: 0.8, drifting: false, driftCharge01: 0, airborne: false, boosting: false };
+kLow.group.position.set(-9, 0, 4);
+kLow.group.rotation.y = 2.3;
+kLow.update(1 / 60, gr);
+const fYaw = footprint(kLow, rLow.x, rLow.z);
+const oLen = Math.hypot(fYaw.ox, fYaw.oz) || 1;
+ok('the smear keeps its world direction when the kart turns',
+  (fYaw.ox * rLow.x + fYaw.oz * rLow.z) / oLen > 0.99,
+  `cos = ${((fYaw.ox * rLow.x + fYaw.oz * rLow.z) / oLen).toFixed(4)}`);
+// The raw extent along a fixed world line changes with yaw for ANY rectangle, so
+// the invariant is the extent the rake ADDS over an unraked card at the same yaw:
+// that must stay the rake's length however the kart is pointing.
+kDef.group.position.copy(kLow.group.position);
+kDef.group.rotation.y = kLow.group.rotation.y;
+const addedYaw = fYaw.len - footprint(kDef, rLow.x, rLow.z).len;
+ok('…and adds the same length however the kart is pointing',
+  Math.abs(addedYaw - rLow.len) < 0.15 && Math.abs((fLow.len - fDef.len) - rLow.len) < 0.15,
+  `+${(fLow.len - fDef.len).toFixed(2)} m at 0°, +${addedYaw.toFixed(2)} m at 132°, rake ${rLow.len.toFixed(2)} m`);
+ok('…and slides by half that length, so the contact patch stays put',
+  Math.abs(oLen - rLow.len / 2) < 0.1, `${oLen.toFixed(2)} m vs ${(rLow.len / 2).toFixed(2)} m`);
+kDef.group.position.set(0, 0, 0); kDef.group.rotation.y = 0; kDef.group.updateMatrixWorld(true);
+
+// (d) Failure mode 3, re-run with the hand-built matrix in force.
+const rakedCard = cards(kLow)[0];
+for (let i = 0; i < 90; i++) {
+  kLow.update(1 / 60, { steer: 1, speed01: 1, drifting: true, driftCharge01: 1, driftDir: 1, airborne: false, boosting: true });
+}
+kLow.group.updateMatrixWorld(true);
+ok('a RAKED card is still perfectly flat while the kart leans', upness(rakedCard) > 0.999,
+  `up·n = ${upness(rakedCard).toFixed(5)}`);
+ok('…and still sits just above the road', Math.abs(rakedCard.getWorldPosition(new THREE.Vector3()).y) <= 0.06);
+// airborne shrink still reaches the raked matrix
+const airLen = (() => {
+  for (let i = 0; i < 60; i++) kLow.update(1 / 60, Object.assign({}, gr, { airborne: true }));
+  return footprint(kLow, rLow.x, rLow.z).len;
+})();
+ok('the raked card shrinks airborne too (the shrink reaches the matrix)', airLen < fLow.len - 0.3,
+  `${fLow.len.toFixed(2)} → ${airLen.toFixed(2)} m`);
+const rgid = rakedCard.geometry, rmid = rakedCard.material;
+for (let i = 0; i < 240; i++) kLow.update(1 / 60, gr);
+ok('raking allocates no geometry or material per frame',
+  rakedCard.geometry === rgid && rakedCard.material === rmid);
+
+// (e) THE SEAM. kartmodel cannot import gfx/sky.js, so the rake only exists if
+// race.js hands it in — at BOTH kart call sites (the player and the rivals).
+const raceSrc = readFileSync(resolve(root, 'src/race/race.js'), 'utf8');
+const callSite = fn => {
+  const i = raceSrc.indexOf(fn + '({');
+  return i < 0 ? '' : raceSrc.slice(i, raceSrc.indexOf('})', i));
+};
+ok('race.js passes the rig\'s sun direction to the player kart',
+  /sunDir\s*:\s*rig\.sunDir/.test(callSite('createKart')), 'createKart call site');
+ok('…and to every rival kart (one shadow vocabulary for all eight)',
+  /sunDir\s*:\s*rig\.sunDir/.test(callSite('createKartLOD')), 'createKartLOD call site');
+ok('kartmodel.js still does not import the sky (it is a leaf)',
+  !/from\s+['"][^'"]*gfx\/sky/.test(src));
+
 /* ═══════════════════════════════════════════════════════════════════════════
    THE RENDERED-FRAME A/B — the gate that would actually have caught the bug.
 
@@ -313,11 +464,31 @@ ok('dispose() frees the card material (it is kart-owned, not shared)', freed);
 
    All three must hold, per track. Against HEAD's kartmodel.js rebuilt into a
    scratch tree, MIN_PEAK and MIN_MEAN both fail on all three tracks.
+
+   ROUND 3 adds the one number the rake is FOR, and it is an area number because
+   the rake adds no alpha at all. Same A/B, same frames, after the shear:
+
+                       px changed      mean delta      peak delta
+     oasis  symmetric    25,648           25.0            136
+     oasis  raked        69,337           28.5            167
+     night  symmetric    23,019           18.4            143
+     night  raked        44,866           17.9            189
+     cloud  symmetric    29,175           51.3            244
+     cloud  raked        95,015           64.2            292
+
+   MIN_RAKE_PX = 38,000 — 15% below the weakest raked reading (44,866, the night
+     circuit, whose 38° moon is deliberately the shallowest rake) and comfortably
+     above BOTH the symmetric blob (max 29,175) and the retired card (max
+     26,911). Unlike MIN_PX this one really discriminates: it is the only
+     assertion in the file that fails if the shear silently stops happening —
+     which is exactly what the race.js call site losing `sunDir` would cause.
+     The mean/peak floors are unchanged, because the rake is at UNCHANGED alpha
+     and must never be allowed to "pass" by getting darker instead of longer.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 console.log('\n  \x1b[1m…and it actually darkens the screen (rendered A/B on dist)\x1b[0m');
 
-const MIN_PX = 12000, MIN_MEAN = 14, MIN_PEAK = 100;
+const MIN_PX = 12000, MIN_MEAN = 14, MIN_PEAK = 100, MIN_RAKE_PX = 38000;
 const TRACKS = [[0, 'oasis'], [1, 'night'], [2, 'cloud']];
 const DIST = resolve(root, 'dist/index.html');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -384,6 +555,7 @@ if (!existsSync(DIST)) {
       ok(`${name} @נמוך: hiding the blobs changes >= ${MIN_PX} px`, r.px >= MIN_PX, d);
       ok(`${name} @נמוך: …by a mean of >= ${MIN_MEAN} (the perceptual floor)`, r.mean >= MIN_MEAN, d);
       ok(`${name} @נמוך: …and its core is dark, peak >= ${MIN_PEAK}`, r.peak >= MIN_PEAK, d);
+      ok(`${name} @נמוך: …and the sun rakes it wide, >= ${MIN_RAKE_PX} px`, r.px >= MIN_RAKE_PX, d);
     }
   } finally {
     await browser.close();

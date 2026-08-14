@@ -28,7 +28,7 @@
     "idle": "node tools/idletest.mjs",
     "garage": "node tools/garagetest.mjs",
     "select": "node tools/selecttest.mjs",
-    "gate": "npm run build && npm test && node tools/verify.mjs && node tests/audio.test.mjs && npm run layout && node tools/flowtest.mjs && node tools/transitiontest.mjs && node tools/modaltest.mjs && node tools/quizboxtest.mjs && node tools/hometest.mjs && node tools/idletest.mjs && node tests/introcard.test.mjs && node tools/garagetest.mjs && node tools/selecttest.mjs"
+    "gate": "npm run build && npm test && node tools/verify.mjs && node tests/audio.test.mjs && npm run layout && node tools/flowtest.mjs && node tools/transitiontest.mjs && node tools/modaltest.mjs && node tools/quizboxtest.mjs && node tools/hometest.mjs && node tools/idletest.mjs && node tests/introcard.test.mjs && node tests/kartshadow.test.mjs && node tools/garagetest.mjs && node tools/selecttest.mjs"
   },
   "keywords": [],
   "author": "",

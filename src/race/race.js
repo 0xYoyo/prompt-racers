@@ -213,7 +213,13 @@ export function raceScene(engine, opts = {}) {
   const player = new KartBody({
     spline, stats: racer.stats, startSlot: slots[0], parts: toPhysicsParts(parts), surface,
   });
-  const playerMesh = createKart({ racer, parts: toVisualParts(parts), engine });
+  // `sunDir` rakes the fake contact shadow along the sun's ground projection (see
+  // blobRake in kartmodel.js). It is passed from HERE and nowhere else: race.js is
+  // the composition point that owns both the lighting rig and the karts, and
+  // kartmodel is a leaf that must not import gfx/sky.js. It only affects karts that
+  // carry a blob (no real shadow); everything that builds a kart without a rig —
+  // garage, racer select, menus, every preview — gets the symmetric default.
+  const playerMesh = createKart({ racer, parts: toVisualParts(parts), engine, sunDir: rig.sunDir });
   scene.add(playerMesh.group);
 
   const field = createAIField(spline, def, engine, {
@@ -247,7 +253,7 @@ export function raceScene(engine, opts = {}) {
     const cheap = engine.q.propDensity < 0.5;
     const mk = createKartLOD({
       racer: k.racer, parts: aiVisualParts, engine,
-      lod: cheap ? 'low' : 'high', merge: true,
+      lod: cheap ? 'low' : 'high', merge: true, sunDir: rig.sunDir,
     });
     scene.add(mk.group);
     aiKarts.push({ ...k, mesh: mk });

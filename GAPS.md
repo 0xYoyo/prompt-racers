@@ -377,3 +377,64 @@ editing, so some Wave-4 commits contain states that were not gate-green at that 
 recoverable — D25's whole lesson — so the practice stays, but a future lead should either
 commit per-agent-report or accept that intermediate commits are snapshots, not releases.
 Also fixed this wave: `.tmp/` was being tracked, 2021 files and 1.0GB.
+
+## Wave 5.1 — what this wave did not close
+
+### Starting a championship still freezes on the FIRST visit to each track
+Every later visit is now free (warm transitions went 1673–3529 ms → 207–912 ms), but the
+first entry to a track a session has not seen yet still blocks about **6–7 seconds headless**,
+up to 15 s on a loaded machine, which we estimate at roughly **1.5–2 seconds on a real
+mid-range laptop**. It is the one-time cost of baking that track's twelve large textures, its
+sky, and its signage occlusion layout. Of the four freezes the player reported, this is the
+only one still present, and only the first time each track is seen. Closing it means baking a
+track ahead of time on idle frames — a new system rather than a cache, so it was deliberately
+left. The gate holds it under a cold ceiling so a regression there still fails.
+
+### Kart contact shadow on oasis at נמוך is only partly closed
+The blob darkens its footprint by 31.9% of local road brightness on oasis and 30.4% on cloud —
+the same relative occlusion — but oasis asphalt is much darker in absolute terms (base sum-RGB
+78.5 vs 169.4), so that is 8.4 per channel there against 17 on cloud. Cloud reads grounded;
+oasis still reads slightly pasted at chase distance. **It is not a dark-road limit:** the
+player's real cast shadow on the same track at גבוה moves 64,158 ground px (4.46% of frame) at
+mean Δ 53.3, against the blob's 25,305 px (1.76%) at mean Δ 25.1 — 2.5× the area and 2.1× the
+darkening. The deficit is mostly **area and shape**, not opacity: oasis' low sun rakes the real
+shadow into a long offset smear while the blob is a symmetric footprint. Do NOT close this by
+adding black — the surface is already near-black, and the retired card's failure (D55) was
+exactly a contrast misjudgement. Both numbers reproduce with `.tmp/gt/ab3.mjs`.
+
+### Race 3's target is only half met — an upgrade alone wins the finale
+Measured over 40 seeds: a clean, unengaged, stock driver finishes **3.90** (0 wins in 40, 15
+podiums, +2.2s), and the same driver answering all eight questions finishes **3.40**. That half
+is on target. But **a tier-2 kart with zero questions answered finishes 1.10 and wins 36 of
+40**, and tier-3 wins 40 of 40 — so "winning realistically requires a decent upgrade **plus**
+engagement" is really just "requires a decent upgrade". The cause is that `aiPartTier` caps the
+finale's opponents at tier-2, so a child arriving on tier-2 meets an equally-equipped field on
+the geometry with the least room to defend. This is the same fault as the upgraded-kart
+inversion already logged, not a second one. It was **flagged rather than retuned** because
+Wave 5's brief froze race 3. The one measured lever is putting the finale's opponents on tier-3
+parts.
+
+### Race 2 cannot be won by quiz engagement alone
+Race 2 hits its "clean driving lands 3rd–4th" target exactly (3.73 mean, 0 wins in 40), and an
+upgrade wins it (tier-2 2.17, tier-3 1.63). But the other half of the target — "winning wants an
+upgrade **or** solid quiz engagement" — is unmet: a fully engaged child with a stock kart never
+wins race 2 on any of 40 seeds, and still does not at any plausible boost buff. Race 2's win is
+gated on the garage, full stop. Closing it means either a race-2-only boost or loosening the
+pace, and loosening breaks the 3rd–4th target the playtest asked for. Left as a deliberate open
+question for the next playtest rather than resolved by measurement alone.
+
+### The idle soak is compressed, and one half of idle cost is still unmeasured
+`tools/idletest.mjs` now burns 25 real seconds on the real rAF loop and bounds timer callbacks
+and DOM mutations, which is what catches per-second and per-present regressions. But the bulk of
+its soak is still simulated time via `__DEBUG.advance`, which passes zero wall time and performs
+zero presents. KB-per-present is reported rather than asserted, because SwiftShader gives only
+~30 real presents in 25 s and the figure swung 0.3 → 10.5 KB across identical runs. A per-present
+allocation smaller than the noise floor would still hide.
+
+### `preview.mjs` screenshots are not reproducible, and never were
+Established while auditing this wave's pixel evidence: `tools/shot.mjs` is byte-exact
+(0 of 1,440,000 pixels differ across two runs) because `__DEBUG.goto` parks the engine headless,
+so only whole `advance()` steps pass. `tools/preview.mjs` never sets `_headless` — the real loop
+keeps stepping on wall-clock dt — so it differs from itself at **~80% of pixels at title and 43%
+at podium**, before-vs-before. Any pixel-count claim in this repo's history that rests on
+`preview.mjs` is weaker than it reads. Use `shot.mjs` for pixel evidence.
