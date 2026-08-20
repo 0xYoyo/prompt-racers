@@ -147,6 +147,27 @@ ok('TOKEN_CLUSTERS_PER_LAP imports from race.js (not scraped)',
 //     pickups on `cloud`, because a row is 3–4 tokens laid ACROSS the road and
 //     lap 2 comes back on a slightly different line. It put a 23-token race on
 //     the board against a 21-token ask. The ROW is the unit that had to retire.
+//
+// WAVE 6 ROUND 2 — the alternative was measured and REJECTED, so nobody has to
+// guess at it again. A critic measured `token:pickup` per lap on the built game
+// (winning, fully engaged, seed 3) and found the shipped rows are all collected
+// inside the first ~35 s: oasis 4/0/0, circuit 4/1/0, cloud 4/0/0. The proposed
+// fix was to keep row-level retirement but give the row a lap-plus respawn so a
+// pickup moment lands on later laps too. Both variants were built and driven:
+//
+//   rows  respawn   pickups (oasis / circuit / cloud)   per-lap          verdict
+//     2     55 s     5 / 6 / 5                          3/0/2 3/1/2 2/0/3  ceiling
+//     3     55 s     7 / 13 / 8                         4/0/3 4/4/5 4/0/4  wallet 25
+//
+// PICKUP_CEIL is 6 (see the flow gate: it is whatever is left under the 21-token
+// top ask once the richest quiz and the best finish are paid), so the 3-row
+// variant puts a 25-token race on the board — the exact failure D39/D51 exist to
+// prevent — and the 2-row variant lands circuit ON the ceiling while dropping the
+// lap from the brief's three visible clusters to two. Lap times are 45–56 s, so a
+// respawn short enough to pay on EVERY lap pays three times per row and is richer
+// still. Within the income the top ask leaves, ~4 row-passes a race is the whole
+// budget: it buys either three rows once (shipped) or two rows twice, and no
+// arrangement of it puts a moment on all three laps. Logged in GAPS instead.
 ok('the lap shows a child three or more pickup rows, not one',
   TOKEN_CLUSTERS_PER_LAP >= 3, `${TOKEN_CLUSTERS_PER_LAP} rows a lap`);
 ok('…and a row that has been collected never comes back this race',

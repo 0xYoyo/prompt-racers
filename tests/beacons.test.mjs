@@ -111,17 +111,28 @@ for (const id of ['oasis', 'circuit', 'cloud']) {
 
   // Each beacon may only move FORWARD, and only inside its own segment, so the
   // token-cluster reasoning behind the original offsets is not thrown away.
-  // The ideal schedule is re-derived here rather than imported, deliberately —
-  // it is laid across the lap MINUS the two start/finish keep-out arcs (Wave 6,
-  // below), and a gate that asked quiz.js where its own ideals are could not
-  // notice that arithmetic changing.
-  const usable = Math.max(L * 0.25, L - 2 * KEEPOUT_M);
-  const idealM = i => KEEPOUT_M + ((i + 0.62) / 6) * usable;
+  // The ideal schedule is re-derived here rather than imported, deliberately: a
+  // gate that asked quiz.js where its own ideals are could not notice that
+  // arithmetic changing. It is the Wave 3 rhythm across the WHOLE lap, with the
+  // Wave 6 keep-out applied as a CLAMP — only an ideal that lands inside the
+  // zone moves, and only to the near edge of it. (Round 1 re-spaced all six
+  // across `L - 2*KEEPOUT`; that moved every beacon on every track and broke
+  // the teaching-card floor and the question cadence. See quiz.js.)
+  const idealM = i => {
+    const raw = ((i + 0.62) / 6) * L;
+    if (raw < KEEPOUT_M) return KEEPOUT_M;
+    if (L - raw < KEEPOUT_M) return L - KEEPOUT_M;
+    return raw;
+  };
+  // The clamp lands a clamped ideal a HAIR outside the zone edge rather than on
+  // it (quiz.js's KEEPOUT_EPS_M), so a clamped beacon reads a metre "behind"
+  // the edge this gate re-derives. That much slack, and no more.
+  const CLAMP_SLACK_M = 1;
   let worstAdv = 0, backwards = 0;
   for (const b of plan) {
     const ideal = (((startT + idealM(b.i) / L) % 1) + 1) % 1;
-    const adv = ((TrackSpline.deltaT(b.t, ideal) + 1) % 1) * L;
-    if (adv > L / 2) backwards++;
+    const adv = TrackSpline.deltaT(b.t, ideal) * L;      // signed, ±L/2
+    if (adv < -CLAMP_SLACK_M) backwards++;
     worstAdv = Math.max(worstAdv, adv);
   }
   ok(`${id}: beacons only move forward, within their segment`,
@@ -149,7 +160,11 @@ for (const id of ['oasis', 'circuit', 'cloud']) {
         line), not from startT. This is what makes the first-token teaching card
         precede the first-quiz card on a fresh save, without the modal registry
         or the cadence logic knowing anything about track layout. */
-  ok(`${id}: the shipped keep-out is at least ${KEEPOUT_S}s at ${SPEED} m/s`,
+  // Honest label (round 2): this assertion measures the CONSTANT, not the
+  // layout — it stayed green in round 1's predecessor while beacons sat 3 m from
+  // the line, which is why the two measured assertions below exist and are the
+  // ones that bite. Kept only so the constant cannot be quietly shrunk to zero.
+  ok(`${id}: the BEACON_KEEPOUT_M constant has not been shrunk below ${KEEPOUT_S}s`,
      BEACON_KEEPOUT_M >= KEEPOUT_M, `${BEACON_KEEPOUT_M}m shipped vs ${KEEPOUT_M}m required`);
   {
     let worstFwd = Infinity, worstBack = Infinity, worstB = null;

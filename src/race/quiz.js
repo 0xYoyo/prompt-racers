@@ -463,15 +463,43 @@ const SEARCH_STEP_M = 2;
    lap crossing needs: the lap banner and jingle run ~1.7 s, and a beacon inside
    that lands a full-screen freeze on top of them.
 
-   Implemented as the smallest change that can hold it: the six ideal t's are
-   spaced across the lap MINUS the two keep-out arcs instead of across the whole
-   lap (so they stay in order, evenly spaced, and each ideal is legal by
-   construction), and the forward search then simply cannot select a candidate
-   inside the zone. The runway/curvature tiering is untouched — it just chooses
-   from a window that stops at the zone. */
+   Implemented as a CLAMP, not a re-spacing (Wave 6 round 2). The first cut
+   re-spaced all six ideals across `L - 2*KEEPOUT`, which moved every beacon on
+   every track: oasis went 119/332/519/723/890/3 m → 200/375/519/680/889/1010 m.
+   That perturbed the whole lap's pacing and, measured on the built game, broke
+   two things this rule had no business touching — the 6 s floor between two
+   in-race teaching cards (modaltest: 10.0 s → 5.08 s) and Wave 5.1's restored
+   question cadence (quizboxtest: 22 → 21 questions on the worst seed). Only the
+   LAST beacon was ever illegal, one per track (oasis 3 m after the line, circuit
+   53 m before it, cloud 62 m); the other five on each track never needed to move
+   at all. So the rule now does exactly two things and nothing else:
+     • an ideal t that lands INSIDE the zone is pushed to the near edge of the
+       zone (the edge on the side it came from — the smallest legal move);
+     • the forward runway search may not select a candidate inside the zone.
+   Every other ideal keeps `startT + (i + 0.62)/count` to the metre. */
 const BEACON_FREEZE_SPEED_MS = 28;   // the speed the tiering above is written at
 const BEACON_KEEPOUT_S = 3;          // …of drive, either side of start/finish
 export const BEACON_KEEPOUT_M = BEACON_KEEPOUT_S * BEACON_FREEZE_SPEED_MS;  // 84 m
+const KEEPOUT_EPS_M = 0.5;           // clamp to just OUTSIDE the edge, not onto it
+// KEEPOUT_S is a FLOOR the clamp lands ON, not a gap the layout happens to have.
+// Measured on the shipped plan, nearest beacon in metres (and seconds at 28 m/s)
+// BEFORE / AFTER the line:
+//     oasis    84 m = 3.00 s  /  119 m = 4.25 s
+//     circuit  84 m = 3.00 s  /  166 m = 5.93 s
+//     cloud    84 m = 3.00 s  /  124 m = 4.43 s
+// The "before" column is exactly 84 m on all three tracks because beacon 5 was
+// illegal on all three (53–75 m before the line, and on oasis the runway search
+// then walked it across to 3 m AFTER) and the clamp put each one on the edge.
+// Nothing else moved, which is the whole point of round 2.
+//
+// WARNING to whoever changes beacon placement next: `tools/quizboxtest.mjs`
+// asserts at least 22 questions asked per seed and the shipped layout measures
+// 23 on its worst seed — ONE question of headroom. Beacon positions set the
+// whole lap's question cadence, so ANY placement change can tip that gate, and
+// `tools/modaltest.mjs`'s 6 s floor between two in-race teaching cards is just
+// as sensitive (round 1 took it from 10.0 s to 5.08 s by moving beacons alone).
+// Re-run BOTH after touching anything in this section; neither is a quiz-code
+// gate and neither will be run by anyone who thinks they are only moving art.
 
 /** Metres of arc from `startT` to `t`, forward around the lap. */
 function arcFrom(startT, t, L) { return (((t - startT) % 1 + 1) % 1) * L; }
@@ -480,6 +508,23 @@ function arcFrom(startT, t, L) { return (((t - startT) % 1 + 1) % 1) * L; }
 function inStartKeepout(startT, t, L) {
   const fwd = arcFrom(startT, t, L);
   return fwd < BEACON_KEEPOUT_M || (L - fwd) < BEACON_KEEPOUT_M;
+}
+
+/** `t`, moved the SMALLEST distance that puts it outside the keep-out: to the
+ *  edge of the zone on the side it came from, or not at all if it was already
+ *  legal. A clamp, deliberately — re-spacing the whole schedule to make every
+ *  ideal legal by construction moves the five beacons per track that were never
+ *  illegal, and that is what broke the teaching-card floor and the cadence. */
+function clampOutOfKeepout(startT, t, L) {
+  const fwd = arcFrom(startT, t, L);
+  // A HAIR outside the edge, not exactly on it: `inStartKeepout` is a strict
+  // `<`, and landing a clamped ideal on the boundary to floating-point luck
+  // would let the forward search reject its own a = 0 candidate and leave the
+  // beacon with no candidates at all.
+  const edge = BEACON_KEEPOUT_M + KEEPOUT_EPS_M;
+  if (fwd < BEACON_KEEPOUT_M) return (((startT + edge / L) % 1) + 1) % 1;
+  if (L - fwd < BEACON_KEEPOUT_M) return (((startT - edge / L) % 1) + 1) % 1;
+  return t;
 }
 
 /** Metres of drivable surface straight ahead from `t` at `lateral`, on a heading
@@ -524,15 +569,13 @@ export function planBeacons(spline, startT = 0, count = BEACONS) {
     tokens.push((((startT + (g + 0.5) / TOKEN_GROUPS) % 1) + 1) % 1);
   }
   const span = (L / count) * SEARCH_SPAN;
-  // The lap minus the two keep-out arcs — the road a beacon is allowed to sit
-  // on. The (i + 0.62) rhythm is kept exactly; it is just laid across this arc
-  // rather than across the whole lap, which is what makes every ideal legal by
-  // construction instead of by luck. See BEACON_KEEPOUT_M above.
-  const usable = Math.max(L * 0.25, L - 2 * BEACON_KEEPOUT_M);
   const out = [];
   for (let i = 0; i < count; i++) {
-    const idealM = BEACON_KEEPOUT_M + ((i + 0.62) / count) * usable;
-    const ideal = (((startT + idealM / L) % 1) + 1) % 1;
+    // The (i + 0.62) rhythm across the WHOLE lap, exactly as Waves 3–5 shipped
+    // it; the keep-out then clamps the rare ideal that lands in the zone, and
+    // leaves every other beacon where it has always been. See BEACON_KEEPOUT_M.
+    const ideal = clampOutOfKeepout(
+      startT, (((startT + (i + 0.62) / count) % 1) + 1) % 1, L);
     const prefSide = i % 2 === 0 ? -1 : 1;
     const cands = [];
     for (let a = 0; a <= span; a += SEARCH_STEP_M) {

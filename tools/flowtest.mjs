@@ -1543,9 +1543,17 @@ try {
     // line misses two of the three rows outright on `oasis` on some seeds. It is
     // the ceiling that is doing the work here — the floor is only there so a
     // change that empties the track cannot pass as "income held".
+    // STRICTLY under the ceiling (round 2). `<= PICKUP_CEIL` had no margin at
+    // all: circuit measured exactly 6 against a ceiling of 6, so the gate was
+    // one token from green-and-broken and could not distinguish "held" from
+    // "just made it". The ceiling cannot be raised — it is what is LEFT under
+    // the top ask once the richest quiz and the best finish are paid — so the
+    // headroom has to be taken out of the measurement instead. Measured after
+    // the round-2 beacon clamp: oasis 4, circuit 5, cloud 4 (engaged, winning).
     step('E: …and the extra rows did NOT raise what pickups pay',
-      r.tokensFromPickups >= 2 && r.tokensFromPickups <= PICKUP_CEIL,
+      r.tokensFromPickups >= 2 && r.tokensFromPickups < PICKUP_CEIL,
       `${r.tokensFromPickups} pickups; floor 2, ceiling ${PICKUP_CEIL}`
+      + ` (${PICKUP_CEIL - r.tokensFromPickups} of margin)`
       + ` = ${MAX_COST} − 1 − ${MAX_QUESTIONS_PER_RACE}×${maxReward} quiz − ${FINISH_TOKENS[0]} win`);
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1580,8 +1588,9 @@ try {
       // was checked against) paid 4 on oasis and 7 on circuit. A ceiling gate
       // that only ever looks at the poorest track is not a ceiling gate.
       step('E2: race 2 pays for its rows the same way race 1 does',
-        run2.r.tokensFromPickups >= 2 && run2.r.tokensFromPickups <= PICKUP_CEIL,
-        `${run2.r.tokensFromPickups} pickups on race 2; floor 2, ceiling ${PICKUP_CEIL}`);
+        run2.r.tokensFromPickups >= 2 && run2.r.tokensFromPickups < PICKUP_CEIL,
+        `${run2.r.tokensFromPickups} pickups on race 2; floor 2, ceiling ${PICKUP_CEIL}`
+        + ` (${PICKUP_CEIL - run2.r.tokensFromPickups} of margin)`);
       step('E2: the disengaged run really is disengaged (no quiz income)',
         idle.r.tokensFromQuiz === 0 && idle.opened >= 3 && RI < R1,
         `${idle.opened} boxes met, ${idle.correct} answered → ${RI} banked vs the engaged ${R1}`);
@@ -1767,13 +1776,54 @@ try {
     // …and the toasts, from the same race.
     step('O: the live order really does flip often enough to measure',
       run.flips >= 4 && run.toasts >= 1, `${run.flips} order flips, ${run.toasts} toasts`);
-    step('O: the child is told about fewer changes than the sort makes',
-      run.toasts <= run.flips, `${run.toasts} toasts vs ${run.flips} flips`);
+    // STRICTLY fewer, not `<=`. Round 2: the `<=` form could not fail — the
+    // naive "emit on every change" emitter this replaced produces exactly one
+    // toast per flip (measured: 40 toasts vs 40 flips) and sailed through it. A
+    // gate that cannot go red is a claim of coverage, not coverage. The point of
+    // the hysteresis is that the child is told about FEWER changes than the sort
+    // makes, so that is what is asserted.
+    step('O: the child is told about strictly fewer changes than the sort makes',
+      run.toasts < run.flips,
+      `${run.toasts} toasts vs ${run.flips} flips — ${run.flips - run.toasts} suppressed`);
     step('O: …and no two toasts land inside the hold',
       !(run.minGap < run.holdS), run.toasts < 2 ? `only ${run.toasts} toast` : `closest pair ${run.minGap.toFixed(2)}s apart, hold ${run.holdS}s`);
     step('O: a backdrop race still emits no position toast at all',
       run.backdropRan && run.backdropToasts === 0,
       run.backdropRan ? `${run.backdropToasts} emitted behind the menu` : 'no backdrop race was run');
+
+    /* ── ONE POSITION NOTE ON SCREEN, EVER (Wave 6 round 2) ─────────────────
+       The emit-site hysteresis holds a change for 0.6 s; the HUD note it
+       produces lives 1.5 s plus a 0.26 s fade. Those two numbers do not have to
+       agree, and they did not: measured on oasis seed 3 the toasts landed at
+       1.78 / 3.25 / 4.05 / 4.78 s, so from 4.05 s two notes were on screen at
+       once and from 4.78 s the HUD position read 1 while a live note under it
+       still said "now in second place". A position note is an ABSOLUTE claim,
+       so the only safe number of them on screen is one.
+
+       Driven through the real bus into the real HUD rather than by racing to a
+       lucky pair: the property is "two changes inside one note's life", and
+       waiting for the AI to produce one is how a gate ends up vacuous. */
+    await page.evaluate(o => window.__DEBUG.goto('race', o),
+      { track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: false });
+    const notes = await page.evaluate(async () => {
+      const D = window.__DEBUG;
+      const SEL = '.hud-notes .hud-note.on.up, .hud-notes .hud-note.on.down';
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const shown = () => [...document.querySelectorAll(SEL)].map(n => n.textContent.trim());
+      D.bus.emit('race:position', { from: 5, to: 4 });
+      await sleep(400);
+      const first = shown();
+      // 0.7 s apart — the real 4.05→4.78 s pair, and well inside the note's life.
+      D.bus.emit('race:position', { from: 4, to: 2 });
+      await sleep(300);
+      const both = shown();
+      return { first, both };
+    });
+    step('O: one position change puts exactly one note up',
+      notes.first.length === 1, `${notes.first.length} on screen: ${notes.first.join(' | ') || '—'}`);
+    step('O: …and a second change inside its life REPLACES it, never stacks',
+      notes.both.length === 1 && notes.both[0] !== notes.first[0],
+      `${notes.both.length} on screen: ${notes.both.join(' | ') || '—'}`);
     await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);
   }
 

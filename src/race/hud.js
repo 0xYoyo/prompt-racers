@@ -782,10 +782,12 @@ export function createHUD(engine, opts = {}) {
 
   const timers = new Set();
   const after = (ms, fn) => {
-    if (staticFx) return;
+    if (staticFx) return null;
     const id = setTimeout(() => { timers.delete(id); fn(); }, ms);
     timers.add(id);
+    return id;
   };
+  const cancel = id => { if (id != null) { clearTimeout(id); timers.delete(id); } };
 
   function showBanner(text, sub, kind, holdMs = 1500) {
     bTxt.textContent = text;
@@ -805,8 +807,23 @@ export function createHUD(engine, opts = {}) {
     });
   }
 
-  function showNote(text, ico, kind, holdMs = 1700) {
-    const slot = notePool.find(n => !n.el.classList.contains('on')) || notePool[0];
+  /* `channel` (Wave 6 round 2): notes on the same channel REPLACE each other
+     instead of stacking. A position note makes an absolute claim — "now in 2nd"
+     — and with the 0.6 s hysteresis hold at the emit site, two position changes
+     0.7 s apart (measured: oasis seed 3 toasted at 3.25 / 4.05 / 4.78 s) put two
+     of them on screen at once against a 1.5 s + 0.26 s life. From 4.78 s the HUD
+     number read 1 while a live note under it still said second place. One
+     channel, one slot, one truth. */
+  const noteChan = new Map();          // channel → { slot, timer }
+  function showNote(text, ico, kind, holdMs = 1700, channel = null) {
+    const held = channel ? noteChan.get(channel) : null;
+    if (held) cancel(held.timer);
+    const slot = held?.slot
+      || notePool.find(n => !n.el.classList.contains('on')) || notePool[0];
+    // Anything still fading out on this slot must not clear the note we are
+    // about to put on it — the old fade's onfinish checks this stamp.
+    slot.gen = (slot.gen || 0) + 1;
+    const gen = slot.gen;
     slot.txt.textContent = text;
     slot.ico.textContent = ico || '';
     slot.el.classList.remove('up', 'down', 'gold');
@@ -816,12 +833,14 @@ export function createHUD(engine, opts = {}) {
       { opacity: 0, transform: 'translateY(10px) scale(.9)' },
       { opacity: 1, transform: 'none' },
     ], { duration: 240, easing: 'cubic-bezier(.22,.9,.3,1)' });
-    after(holdMs, () => {
+    const timer = after(holdMs, () => {
+      if (slot.gen !== gen) return;
       const a = pop(slot.el, [{ opacity: 1 }, { opacity: 0, transform: 'translateY(-8px)' }],
         { duration: 260, easing: 'ease-in' });
-      if (a) a.onfinish = () => slot.el.classList.remove('on');
-      else slot.el.classList.remove('on');
+      const off = () => { if (slot.gen === gen) slot.el.classList.remove('on'); };
+      if (a) a.onfinish = off; else off();
     });
+    if (channel) noteChan.set(channel, { slot, timer });
   }
 
   /** n = 3,2,1 then 0 for GO. Anything else hides the gantry. */
@@ -883,7 +902,7 @@ export function createHUD(engine, opts = {}) {
       const to = p?.to ?? last.position;
       const up = p?.from == null ? true : to < p.from;
       showNote(up ? t('hud.overtake', { o: ordinal(to) }) : t('hud.overtaken', { o: ordinal(to) }),
-        up ? '▲' : '▼', up ? 'up' : 'down', 1500);
+        up ? '▲' : '▼', up ? 'up' : 'down', 1500, 'position');
     }),
     bus.on('race:finish', p => {
       const pl = p?.position ?? last.position;
