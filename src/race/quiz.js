@@ -440,6 +440,48 @@ const BEACON_LATERAL = 0.17;  // fraction of the half-width, as before
 const SEARCH_SPAN = 0.6;      // of one beacon spacing — beacons keep their order
 const SEARCH_STEP_M = 2;
 
+/* ── the start/finish keep-out (Wave 6) ───────────────────────────────────────
+   A beacon freezes the world for a question. Two places on the lap must never
+   do that, and they are the SAME place approached from two sides:
+
+     • just AFTER the line — met within a second or two of the lights on lap 1,
+       so the first thing a fresh race does is stop it, and met again on every
+       lap crossing, on top of the lap banner and the lap jingle;
+     • just BEFORE the line — the child is driving the run to the flag, or the
+       run to a new lap, and gets frozen out of it.
+
+   Measured before this rule, the last beacon's ideal t (`startT + 5.62/6`) put
+   it 73–75 m before the line on all three tracks, and on `oasis` the forward
+   runway search then walked it 76 m further — clean across the line, to 3 m
+   AFTER it. A child's first question box arrived at the start banner.
+
+   The threshold is stated in SECONDS and converted here, because seconds is
+   what the rule is about and metres is only how a spline measures. 28 m/s is
+   the same speed the runway tiering above is written against — the top of the
+   20–29 m/s band a kart is doing when a beacon freezes it — so the two rules
+   cannot drift apart by using different physics. THREE seconds is the room the
+   lap crossing needs: the lap banner and jingle run ~1.7 s, and a beacon inside
+   that lands a full-screen freeze on top of them.
+
+   Implemented as the smallest change that can hold it: the six ideal t's are
+   spaced across the lap MINUS the two keep-out arcs instead of across the whole
+   lap (so they stay in order, evenly spaced, and each ideal is legal by
+   construction), and the forward search then simply cannot select a candidate
+   inside the zone. The runway/curvature tiering is untouched — it just chooses
+   from a window that stops at the zone. */
+const BEACON_FREEZE_SPEED_MS = 28;   // the speed the tiering above is written at
+const BEACON_KEEPOUT_S = 3;          // …of drive, either side of start/finish
+export const BEACON_KEEPOUT_M = BEACON_KEEPOUT_S * BEACON_FREEZE_SPEED_MS;  // 84 m
+
+/** Metres of arc from `startT` to `t`, forward around the lap. */
+function arcFrom(startT, t, L) { return (((t - startT) % 1 + 1) % 1) * L; }
+
+/** True if `t` is inside the start/finish keep-out, from either side. */
+function inStartKeepout(startT, t, L) {
+  const fwd = arcFrom(startT, t, L);
+  return fwd < BEACON_KEEPOUT_M || (L - fwd) < BEACON_KEEPOUT_M;
+}
+
 /** Metres of drivable surface straight ahead from `t` at `lateral`, on a heading
  *  `yawDeg` off the track tangent. Marches until the point is wider than the
  *  road (the same off-track test race.js uses), capped at RUNWAY_CAP_M. */
@@ -482,13 +524,25 @@ export function planBeacons(spline, startT = 0, count = BEACONS) {
     tokens.push((((startT + (g + 0.5) / TOKEN_GROUPS) % 1) + 1) % 1);
   }
   const span = (L / count) * SEARCH_SPAN;
+  // The lap minus the two keep-out arcs — the road a beacon is allowed to sit
+  // on. The (i + 0.62) rhythm is kept exactly; it is just laid across this arc
+  // rather than across the whole lap, which is what makes every ideal legal by
+  // construction instead of by luck. See BEACON_KEEPOUT_M above.
+  const usable = Math.max(L * 0.25, L - 2 * BEACON_KEEPOUT_M);
   const out = [];
   for (let i = 0; i < count; i++) {
-    const ideal = (((startT + (i + 0.62) / count) % 1) + 1) % 1;
+    const idealM = BEACON_KEEPOUT_M + ((i + 0.62) / count) * usable;
+    const ideal = (((startT + idealM / L) % 1) + 1) % 1;
     const prefSide = i % 2 === 0 ? -1 : 1;
     const cands = [];
     for (let a = 0; a <= span; a += SEARCH_STEP_M) {
       const t = ((ideal + a / L) % 1 + 1) % 1;
+      // The forward search may not walk a beacon into the start/finish keep-out
+      // — this is the half that actually bit: on oasis the old search advanced
+      // the last beacon 76 m, straight across the line, to 3 m AFTER it. The
+      // a = 0 candidate is always legal (see `usable`), so this can never empty
+      // the candidate list.
+      if (inStartKeepout(startT, t, L)) continue;
       const curvature = spline.maxCurvatureAhead(t, LOOK_AHEAD_M / L);
       const w = spline.widthAt(t);
       const nearToken = tokens.some(tt => Math.abs(TrackSpline.deltaT(t, tt)) * L < TOKEN_CLEAR_M);
@@ -1697,7 +1751,11 @@ function previewScene(engine, o = {}) {
 
   // Gold tokens laid out just short of the beacon — the exact side-by-side a
   // player sees, and the comparison a critic has to be able to make.
-  const bt = ((def.startT + 0.62 / 6) % 1 + 1) % 1;
+  // Ask planBeacons where beacon 0 actually IS rather than re-deriving the ideal
+  // schedule here: this preview drifted off the real placement the moment the
+  // schedule moved (Wave 6's start/finish keep-out), and a framing helper that
+  // points at where a beacon USED to be is a screenshot of nothing.
+  const bt = planBeacons(spline, def.startT ?? 0, BEACONS)[0].t;
   const tGeo = new THREE.OctahedronGeometry(0.62, 0);
   const tMat = new THREE.MeshStandardMaterial({
     color: 0xffd66b, emissive: 0xffb020, emissiveIntensity: 1.6,

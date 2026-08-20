@@ -15,6 +15,13 @@ import { MAX_COST, MIN_COMPLETE_COST, KART_SLOTS, optionsFor, costOf } from '../
 // and its own rebate, for the same reason the line above imports its prices: a
 // copy of them here would pass while the game had moved.
 import { scorePrompt, tokenReward, REBATE_CAP } from '../src/garage/scoring.js';
+// Wave 6 — the pickup economy is now TWO numbers that must be pinned together:
+// how many rows the lap shows a child, and what those rows pay. Imported, not
+// typed, for the same reason the prices are: a copy here would pass while the
+// game moved. race.js is pure enough to import in node (tests/economy.test.mjs
+// has done it since Wave 4).
+import { TOKEN_CLUSTERS_PER_LAP, FINISH_TOKENS } from '../src/race/race.js';
+import { REWARD_TOKENS } from '../src/race/quiz.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -834,7 +841,43 @@ try {
   // ═══════════════════════════════════════════════════════════════════════
   async function seamGates() {
     console.log('  ' + '─'.repeat(70));
-    console.log('  CROSS-MODULE SEAMS (crowd clock · quiz memory)');
+    console.log('  CROSS-MODULE SEAMS (crowd clock · quiz memory · finale scaling)');
+
+    // ── S#0 the finale's field scales with the child's own garage ──────────
+    // Wave 6 made race 3's opponents run a tier above the player's engine/turbo
+    // so an upgrade raises the stage instead of trivialising it (D58). The whole
+    // feature hangs on ONE argument at ONE call site in race.js —
+    // `playerParts: toPhysicsParts(parts)` — and `tests/ai.test.mjs` cannot see
+    // it, because that file builds its own `createAIField` and passes the option
+    // itself. So the entire feature can be inert in the built game with every
+    // balance assertion in the project still green.
+    //
+    // THAT IS NOT HYPOTHETICAL: the line was lost once during Wave 6 to a stale
+    // `.tmp/` restore in a shared tree (D45), and nothing went red. This block
+    // is the only thing in the repo that would have noticed.
+    //
+    // The `wing` case is the D24 seam in its own right. The garage saves
+    // {engine, tires, wing, chassis}; the physics wants {engine, tyres, frame,
+    // turbo}. Handing `createAIField` the RAW save shape resolves `turbo` to
+    // undefined -> tier 0, so a child who spent everything on the turbo would
+    // meet the stock field and the bug would be invisible on the engine case.
+    const partTierFor = (track, difficulty, parts) => page.evaluate(async (t, d, p) => {
+      await window.__DEBUG.goto('race', { track: t, difficulty: d, parts: p, seed: 4242 });
+      return window.__DEBUG.engine.active?.field?.partTier ?? null;
+    }, track, difficulty, parts);
+
+    const finaleStock = await partTierFor(2, 3, {});
+    step('S#0 the finale field is tier 2 for a stock kart (Wave 5.1, unchanged)',
+      finaleStock === 2, `partTier ${finaleStock}`);
+    const finaleEngine = await partTierFor(2, 3, { engine: 2 });
+    step('S#0 …and tier 3 once the child arrives with a tier-2 engine',
+      finaleEngine === 3, `partTier ${finaleEngine} (the scaling is wired through race.js)`);
+    const finaleWing = await partTierFor(2, 3, { wing: 2 });
+    step('S#0 …and for a tier-2 WING too — the save/physics slot names are translated',
+      finaleWing === 3, `partTier ${finaleWing} (garage "wing" -> physics "turbo")`);
+    const race1Upgraded = await partTierFor(0, 1, { engine: 3, wing: 3 });
+    step('S#0 …and race 1 is untouched by the garage, as the blast radius requires',
+      race1Upgraded === 0, `partTier ${race1Upgraded}`);
 
     // ── S#1 the crowd's clock runs backwards at every race start ───────────
     // race.js feeds the crowd `S.clock` during the countdown and `S.raceTime`
@@ -1440,6 +1483,11 @@ try {
     }, answer);
   }
 
+  // The engagement envelope tests/economy.test.mjs is written against, restated
+  // here so the two gates cannot disagree about what "a fully engaged race"
+  // means. Measured on the built game; see that file's header for the runs.
+  const MAX_QUESTIONS_PER_RACE = 9;
+
   async function economyGate() {
     console.log('\n  TOKEN ECONOMY — a winning, fully engaged race\n  ' + '─'.repeat(70));
     const run = await driveRace({ track: 0, difficulty: 1, seed: 3, answer: 'all' });
@@ -1473,6 +1521,33 @@ try {
       r.tokensFromPickups > 0 && r.tokensFromQuiz > 0 && r.tokensFinishBonus > 0,
       `${r.tokensFromPickups} / ${r.tokensFromQuiz} / ${r.tokensFinishBonus}`);
 
+    // ── WAVE 6: THE ROW COUNT AND THE ROW INCOME, PINNED TOGETHER ───────────
+    // Until Wave 6 these were the same number — a taken row came back inside a
+    // lap, so "rows on the lap" × "laps" WAS the income, and the only way to
+    // hold the wallet down was to author one row and give the child one pickup
+    // moment a lap. They are separate levers now (TOKEN_CLUSTERS_PER_LAP for
+    // what the child sees, TOKEN_RESPAWN_S / TOKEN_ROW_CLEAR_S for what it
+    // pays), and BOTH halves need a gate or the change undoes itself:
+    //   • drop the count back to one row and the lap goes quiet again;
+    //   • leave the count up but let the rows pay per lap again and the wallet
+    //     drifts up behind an invariant that still happens to hold.
+    step('E: the lap still shows a child three or more pickup rows',
+      TOKEN_CLUSTERS_PER_LAP >= 3, `${TOKEN_CLUSTERS_PER_LAP} rows a lap`);
+    // The ceiling is DERIVED, not typed: it is whatever is left under the top
+    // ask once the richest possible quiz and the best finish are paid. Retune
+    // anything upstream and this moves with it — D40's rule for badge
+    // thresholds, applied to the one term that has no other guard.
+    const maxReward = Math.max(...[1, 2, 3].map(t2 => REWARD_TOKENS[t2]));
+    const PICKUP_CEIL = MAX_COST - 1 - MAX_QUESTIONS_PER_RACE * maxReward - FINISH_TOKENS[0];
+    // Floor 2, not 3: measured across three tracks × three seeds, the racing
+    // line misses two of the three rows outright on `oasis` on some seeds. It is
+    // the ceiling that is doing the work here — the floor is only there so a
+    // change that empties the track cannot pass as "income held".
+    step('E: …and the extra rows did NOT raise what pickups pay',
+      r.tokensFromPickups >= 2 && r.tokensFromPickups <= PICKUP_CEIL,
+      `${r.tokensFromPickups} pickups; floor 2, ceiling ${PICKUP_CEIL}`
+      + ` = ${MAX_COST} − 1 − ${MAX_QUESTIONS_PER_RACE}×${maxReward} quiz − ${FINISH_TOKENS[0]} win`);
+
     // ─────────────────────────────────────────────────────────────────────────
     // CARRYOVER — the Wave-5 target: the top tier must be REACHABLE.
     //
@@ -1498,6 +1573,15 @@ try {
       // A child who ignores the boxes must still be recognisable AS that child in
       // the numbers — if the two profiles bank the same, the assertions below are
       // measuring nothing.
+      // The row economy on the OTHER track too. This matters more than it looks:
+      // the pickup ceiling above is measured on `oasis`, whose racing line is
+      // the LEANEST of the three, so a change that makes rows pay per lap again
+      // barely moves it — measured, per-token retirement (the mutant this gate
+      // was checked against) paid 4 on oasis and 7 on circuit. A ceiling gate
+      // that only ever looks at the poorest track is not a ceiling gate.
+      step('E2: race 2 pays for its rows the same way race 1 does',
+        run2.r.tokensFromPickups >= 2 && run2.r.tokensFromPickups <= PICKUP_CEIL,
+        `${run2.r.tokensFromPickups} pickups on race 2; floor 2, ceiling ${PICKUP_CEIL}`);
       step('E2: the disengaged run really is disengaged (no quiz income)',
         idle.r.tokensFromQuiz === 0 && idle.opened >= 3 && RI < R1,
         `${idle.opened} boxes met, ${idle.correct} answered → ${RI} banked vs the engaged ${R1}`);
@@ -1571,8 +1655,131 @@ try {
     await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE RACE OPENING, ON THE BUILT GAME (Wave 6, items 3 and 4).
+  //
+  // Two things are measured on ONE fresh-save race, because both are about what
+  // the first minute of a child's first race feels like and neither is worth a
+  // second forty-second run:
+  //
+  //   • THE CARD ORDER. On a fresh save three teaching cards can land in the
+  //     first race: the pre-race welcome card, the first-token explainer, and
+  //     the first-question-box explainer. They must arrive in that order —
+  //     "here is a token, and here is what tokens are" before "here is a
+  //     question box" — and the ONLY thing that makes that true is where the
+  //     track puts the first pickup row relative to the first beacon
+  //     (tests/beacons.test.mjs holds the geometry; this holds the consequence
+  //     on the real build). Measured before the layout rule, `oasis` put a
+  //     beacon 25 m from the back of the grid and the first token row at 94 m,
+  //     so the question-box card came FIRST on the game's first track.
+  //
+  //     Asserted with the state proved reached, not merely "not out of order":
+  //     GAPS records modaltest printing `0 quiz samples` every run for a wave
+  //     because a check whose state is never reached passes vacuously.
+  //
+  //   • THE POSITION TOASTS. `race:position` used to fire the instant the
+  //     spline-progress order flipped, so "נעקפת!" arrived while the rival was
+  //     still visibly beside the child, several times a corner. The unit gate is
+  //     tests/positiontoast.test.mjs; what THIS one adds is the built game's own
+  //     numbers — the live order really does flip more often than the child is
+  //     told, and no two toasts land inside the hold.
+  async function raceOpeningGates() {
+    console.log('\n  RACE OPENING — teaching cards in track order, toasts the eyes agree with\n  ' + '─'.repeat(70));
+    // A genuinely fresh save: none of the three one-time cards seen.
+    await page.evaluate(k => localStorage.setItem(k, JSON.stringify({
+      racerId: 'nitzotz', results: [], championshipRace: 0,
+    })), SAVE_KEY);
+    await page.reload({ waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+    // introCard: true because a fresh save is the one case where a child DOES
+    // see it; the harness default turns it off for autopilot races.
+    await page.evaluate(o => window.__DEBUG.goto('race', o),
+      { track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: true });
+
+    const run = await page.evaluate(async (holdS) => {
+      const D = window.__DEBUG, sc = D.engine.active, q = sc.quiz, STEP = 1 / 60;
+      // The three one-time teaching cards, by the selector each one ships with.
+      const CARDS = [['intro', '.ic-scrim'], ['first-token', '.grgtok-scrim'], ['first-quiz-box', '.qzint-scrim']];
+      const order = [], clicks = new Map();
+      // Toast bookkeeping: what the child was TOLD, against what the order did.
+      const toasts = [];
+      const offPos = D.bus.on('race:position', p => toasts.push({ ...p, at: sc.state.raceTime }));
+      let flips = 0, lastPos = sc.state.position;
+      for (let i = 0; i < 60 * 1800 && !window.__LAST_RESULT__; i++) {
+        D.engine.time += STEP; sc.update(STEP);
+        if (sc.state.position !== lastPos) { flips++; lastPos = sc.state.position; }
+        let handled = false;
+        for (const [name, sel] of CARDS) {
+          const el = document.querySelector(sel);
+          if (!el || el.offsetParent === null) continue;
+          // A card mid-fade can survive its own dismissal for a frame or two;
+          // give up on one that will not close rather than spinning forever.
+          const n = (clicks.get(sel) || 0) + 1;
+          clicks.set(sel, n);
+          if (n > 240) continue;
+          if (!order.some(o => o.sel === sel)) order.push({ name, sel, at: sc.state.raceTime, tokens: sc.state.tokens });
+          el.querySelector('button')?.click();
+          handled = true;
+          break;
+        }
+        if (handled) continue;
+        if (q && q.phase === 'question') {
+          const b = document.querySelectorAll('.quiz-root.show .quiz-opt');
+          if (b[q.correctSlot]) b[q.correctSlot].click();
+        } else if (q && q.phase === 'feedback') q.dismiss('key');
+        // Two laps is enough for both measurements — all three cards land in the
+        // first one, and two laps of racing is 30+ order flips. Driving the
+        // third only costs the gate a minute.
+        if (order.length === 3 && sc.state.lap > 2) break;
+      }
+      offPos();
+      // The backdrop guarantee, checked where it is cheapest to check: a scoped
+      // bus that emits nothing must still emit nothing now that the emit site
+      // has a gate in front of it.
+      // Driven through the REAL backdrop path — the title screen, which runs a
+      // live autopilot race behind its UI — rather than by constructing a scene
+      // with `backdrop: true` here. A guarantee tested on a scene the game never
+      // builds is the Wave-3 lesson about gates that exercise a path no player
+      // can take.
+      await D.goto('menu');
+      let backdropToasts = 0;
+      const offB = D.bus.on('race:position', () => { backdropToasts++; });
+      D.advance(25);
+      offB();
+      const bd = D.state().scene === 'menu';
+      let minGap = Infinity;
+      for (let i = 1; i < toasts.length; i++) minGap = Math.min(minGap, toasts[i].at - toasts[i - 1].at);
+      return {
+        order: order.map(o => o.name), firstTokenAt: order.find(o => o.name === 'first-token')?.at ?? null,
+        toasts: toasts.length, flips, minGap, holdS, backdropRan: bd, backdropToasts,
+        result: window.__LAST_RESULT__ || null,
+      };
+    }, 0.6);
+
+    const seq = run.order.join(' → ');
+    // STATE REACHED, first. An order assertion over two cards, or none, is the
+    // vacuous pass GAPS names.
+    step('O: all three opening teaching cards actually appeared',
+      run.order.length === 3, `saw ${run.order.length}: ${seq || '(none)'}`);
+    step('O: intro card → first-token card → first-quiz card',
+      seq === 'intro → first-token → first-quiz-box', seq || '(none)');
+
+    // …and the toasts, from the same race.
+    step('O: the live order really does flip often enough to measure',
+      run.flips >= 4 && run.toasts >= 1, `${run.flips} order flips, ${run.toasts} toasts`);
+    step('O: the child is told about fewer changes than the sort makes',
+      run.toasts <= run.flips, `${run.toasts} toasts vs ${run.flips} flips`);
+    step('O: …and no two toasts land inside the hold',
+      !(run.minGap < run.holdS), run.toasts < 2 ? `only ${run.toasts} toast` : `closest pair ${run.minGap.toFixed(2)}s apart, hold ${run.holdS}s`);
+    step('O: a backdrop race still emits no position toast at all',
+      run.backdropRan && run.backdropToasts === 0,
+      run.backdropRan ? `${run.backdropToasts} emitted behind the menu` : 'no backdrop race was run');
+    await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);
+  }
+
   if (runs('play')) await mainFlowGates();
   if (runs('play') || runs('econ')) await economyGate();
+  if (runs('play') || runs('opening')) await raceOpeningGates();
   if (runs('champ')) await championshipEndGates();
   if (runs('seam')) await seamGates();
   if (runs('nav')) await navigationWalkGates();

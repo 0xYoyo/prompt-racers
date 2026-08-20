@@ -325,6 +325,25 @@ export function difficulty01(d) {
 //   tier-1 player            1st-2nd (1.2)              2nd-3rd          1st-3rd
 //   tier-2 player            1st                        1st-2nd          1st
 //
+// WAVE 6: oasis 1.03 -> 1.09, measured, and what it cost.
+// -------------------------------------------------------
+// The playtest verdict: race 1 reads as cruising alone. Measured over 40 seeds
+// at 100% pace on a stock kart, a clean player LED race 1 for 46% of its length
+// (race 2: 2.0%, race 3: 3.1%) and won 5 seeds outright. Race 1's opponents are
+// the sloppiest in the game by design, and their catch-up is already pinned at
+// the BAND_CATCH ceiling (bandCatchMax is 1.00x at d01 = 0), so no band setting
+// can put them in front of a clean child — only their own speed can. Measured,
+// stock kart, 40 seeds:
+//
+//   oasis pace   place  wins  %of race led  mean nearest gap  lead changes
+//   1.03 (before) 2.25   5/40     46.0%          0.53s            14.9
+//   1.09 (now)    2.67   0/40     34.9%          0.43s            17.4
+//
+// and an engaged child (x8) still wins it 18 times in 40 (1.68 mean, from
+// 1.45 / 22). Values above ~1.12 take that below 10/40 and break the promise
+// race 1 exists to make — that answering the questions is what wins it.
+// Keyed by track id, so races 2 and 3 are bit-identical (verified per seed).
+//
 // WAVE 5: circuit 0.96 -> 0.98, and why that number was the one that moved.
 // -----------------------------------------------------------------------
 // The calibration above puts the field where the design wants it relative to
@@ -361,13 +380,107 @@ export function difficulty01(d) {
 // making race 3 harder, which Wave 5's brief froze. tests/ai.test.mjs (3b vii)
 // pins the number; GAPS.md carries the measured lever.
 const AI_PACE = 1.00;
-const TRACK_PACE = { oasis: 1.03, circuit: 0.98, cloud: 1.00 };
+const TRACK_PACE = { oasis: 1.09, circuit: 0.98, cloud: 1.00 };
 const paceForDifficulty = () => AI_PACE;
 
 // Championship tier of the opponents' own karts: race 1 stock, race 2 tier 1,
-// race 3 tier 2. Tier 3 is left to the player — the field never out-equips a
-// child who has spent well.
-export const aiPartTier = d01 => clamp(Math.round(2 * difficulty01(d01)), 0, 2);
+// race 3 tier 2.
+//
+// WAVE 6 — THE FINALE SCALES WITH THE CHILD'S OWN GARAGE.
+// The finale's field stopped at tier 2, so a child who arrived on tier-2 parts
+// met an equally-equipped field on the geometry with the least room to defend
+// and won it 36 times in 40 with ZERO questions answered (D44, GAPS.md). The
+// finale — and ONLY the finale — now runs one tier above the child's own kart,
+// never below its championship tier of 2 and never above tier 3, which is the
+// top of PART_TIERS: the field still cannot out-equip a fully-spent garage
+// (D33), it just stops handing the race to a half-spent one.
+//
+// `playerTier` defaults to 0, so every existing caller — and a race where the
+// child has bought nothing — gets exactly the Wave-5.1 field. Measured on 40
+// seeds, 100% pace, race 3:
+//
+//   player kart      before            after
+//   stock  x0/x8     3.90 / 3.40       bit-identical (the field is still tier 2)
+//   tier-2 x0        1.10, 36/40 wins  2.10, 8/40 wins
+//   tier-2 x8        1.00, 40/40       1.18, 34/40 wins
+//   tier-3 x0/x8     1.00, 40/40       1.00, 40/40 (the field is capped at 3)
+export const aiPartTier = (d01, playerTier = 0) => {
+  const base = clamp(Math.round(2 * difficulty01(d01)), 0, 2);
+  return difficulty01(d01) >= 1 ? Math.max(base, clamp(Math.round(playerTier) + 1, 0, 3)) : base;
+};
+
+// THE CHILD'S OWN KART TIER, as the finale reads it — and why it is the best of
+// the SPEED parts rather than the best, or the mean, of all four.
+// ---------------------------------------------------------------------------
+// This number decides ONE thing: whether the finale's field steps from tier 2 to
+// tier 3 (aiPartTier above). That step is worth a full finishing place, so where
+// the threshold sits is a fairness question, not a tuning one — D33: a child who
+// buys a better part and finishes WORSE notices, and resents it.
+//
+// TWO measured facts set the answer.
+//
+// 1. WHAT A CHILD CAN ACTUALLY OWN. A garage visit builds ONE part (scenes.js:
+//    `parts[slot] = tier`, one slot per visit) and there are exactly TWO visits
+//    before the finale — the results screen after race 1 and after race 2. So at
+//    race 3 at most TWO of the four slots are non-zero, and `parts` is reset by
+//    resetChampionship(). Every uniform-tier kart the gate talks about (all-tier-2,
+//    all-tier-3) is UNREACHABLE in a real championship; the real garage is
+//    lopsided by construction, which is exactly the case an aggregator has to get
+//    right.
+// 2. WHAT THE FOUR SLOTS ARE WORTH ON `cloud`. Autopilot lap time, one kart, no
+//    traffic (.tmp/w6a2-lap.mjs):
+//
+//      slot    stock   tier 1   tier 2   tier 3
+//      engine  48.07   47.25    46.01    45.50
+//      turbo   48.07   47.05    46.82    46.33
+//      tyres   48.07   48.12    48.53    48.84    <- SLOWER
+//      frame   48.07   48.30    47.92    47.98    <- flat
+//
+//    On the finale's geometry only the engine and the turbo make a kart quicker.
+//    Tyres and frame are flat-to-negative there (they pay on `circuit`, where
+//    tyre-3 is worth 1.66s), and that is a kartphysics/autopilot fact this file
+//    cannot change — it is present at every field tier and predates Wave 6.
+//
+// So `max` over all four slots (round 1) made the field step up for a purchase
+// that had given the child nothing. Measured, race 3, 200 seeds (5 disjoint
+// 40-seed sets), mean place with the resulting field:
+//
+//   single part only     stock   tier 1   tier 2   tier 3
+//   max over 4 (round 1)  4.04    4.08     4.91     5.04   <- tyres: buying the
+//   max(engine,turbo)     4.04    4.08     4.20     4.25      part costs a place
+//   (frame, round 1)      4.04    3.98     4.79     4.89
+//   (frame, now)          4.04    3.98     3.96     4.00
+//
+// Over all 120 one-purchase steps a child can actually make (<= 2 non-zero
+// slots, 200 seeds), the worst "bought a part, finished worse" step is:
+//
+//   aggregator            worst step   steps > 0.5 places   walkover (best kart's
+//                                                            wins per 200, x0)
+//   none (Wave 5.1)          0.40             0                   198
+//   max over 4 (round 1)     0.90             8                    94
+//   floor-of-mean            0.40             0                   198  <- see below
+//   max(engine, turbo)       0.42             0                    94
+//
+// i.e. this aggregator keeps round 1's whole D44 fix (the strongest reachable
+// garage still wins under half its races unengaged, down from 99%) and gives back
+// every one of the eight half-place-or-worse punishments, landing on the 0.40
+// floor that the physics itself sets with no field scaling at all.
+//
+// FLOOR-OF-MEAN WAS MEASURED AND REJECTED. It steps at sum >= 8 over four slots,
+// and the largest sum a child can reach in two visits is 6 — so it never fires in
+// a real game, and the finale reverts to Wave 5.1 exactly: a kart with a tier-3
+// engine and a tier-2 wing (two good prompts, entirely reachable) wins the finale
+// 198 times in 200 with ZERO questions answered. It is monotone because it is
+// inert. D44 is the gap it would reopen.
+//
+// The residual: engine tier 1 -> tier 2 reads 3.17 -> 3.31 (+0.14, ~1 SE at 200
+// seeds) because that is the step that crosses the threshold. Moving the
+// threshold to tier 3 makes it worse (2.35 -> 2.92, +0.57) and hands the finale
+// back to a tier-2 engine. A discrete field tier cannot have no boundary; this is
+// the smallest one available. Section 7c gates the property.
+export const playerPartTier = parts => (parts
+  ? clamp(Math.max(0, ...['engine', 'turbo'].map(k => Math.round(parts[k] ?? 0))), 0, 3)
+  : 0);
 
 // ---------------------------------------------------------------------------
 // Rubber band. Two independent terms, summed, then hard-clamped:
@@ -442,6 +555,42 @@ const packHoldMax = () => 0.034;                   // difficulty-independent
 // its term has to react over a much shorter gap than the player's.
 const BAND_TAU = 6.0;
 const PACK_TAU = 2.5;
+// WAVE 6: two PER-RACE scalings of the band, and why they are shaped this way.
+// ---------------------------------------------------------------------------
+// The playtest verdict was that race 3 on a stock kart is the exemplar — the
+// player is inside the pack the whole way — while races 1-2 read as cruising
+// alone. Measured on the gate's own harness (40 seeds, 100% pace, stock kart),
+// the metric that separates them is not the nearest-kart gap (every race is
+// under a second) but how much of the race the player spends IN FRONT of
+// everybody: race 1 46%, race 2 2.0%, race 3 3.1%.
+//
+// So this is a race-1 problem plus a race-2 "the leaders are up the road in a
+// different race" problem, and both are fixed by scaling terms that ALREADY
+// exist. Both scalings are written so that they are EXACTLY 1 at d01 = 1
+// (a multiplication by a term that is exactly zero there), which is what makes
+// the finale bit-identical to Wave 5.1 on a stock kart.
+//
+//  1. HOLD REACH, race 1 only. Race 1's field is deliberately sloppy (most
+//     mistakes, lowest skill) and its catch-up is already pinned at the
+//     BAND_CATCH ceiling, so the only honest way to put opponents in front of a
+//     clean child was to raise TRACK_PACE.oasis (1.03 -> 1.09, see above). That
+//     alone costs D33b's struggling-child ladder — an 85%-pace child slid from
+//     4.0 to 5.0 on race 1, because partial hold-back is a fraction of a base
+//     pace that just went up. Halving the hold term's TIME CONSTANT on race 1
+//     (not its authority, and not the floor) makes the same hold-back arrive at
+//     half the gap, and puts the 85% ladder back to 4.0 / 5.2 / 6.2 exactly.
+//  2. FORWARD SLOT, race 2 only. Race 2's two front-runners sit at +2.06s and
+//     +0.83s, which is a separate race up the road: the player was 2.73s off the
+//     win with no way to see it. Compressing race 2's forward slots to 0.65 puts
+//     them at the finale's own +1.63s / +0.65s spacing. Measured: time behind
+//     the winner 2.73s -> 2.02s, a rival within 1.5s ahead 89.7% -> 93.4% of the
+//     race, and an engaged stock kart's podium rate 16/40 -> 23/40, with the
+//     3rd-4th finish target (3.67, zero wins in 40) untouched.
+const HOLD_REACH_R1 = 0.5;
+const holdReach = d01 => 1 - (1 - HOLD_REACH_R1) * Math.max(0, 1 - 2 * d01);
+const SLOT_FWD_R2 = 0.65;
+const slotFwd = d01 => 1 - (1 - SLOT_FWD_R2) * Math.max(0, 1 - 2 * Math.abs(d01 - 0.5));
+const slotCompress = d01 => (1 - 0.35 * d01);
 // Each opponent aims to run a few seconds AHEAD OF or BEHIND the human rather
 // than exactly alongside — otherwise the player term bunches all seven onto the
 // player's gearbox and the race becomes a rolling roadblock. The spread is
@@ -882,8 +1031,11 @@ export class AIDriver {
     // Opponents that aim BEHIND the player have their slot stretched on the
     // gentle races (see SLOT_STRETCH_EASY) — that stretch is the championship's
     // whole gradient for anyone driving below the field's own pace.
-    const slot = this.slotAhead * (this.slotAhead < 0 ? slotStretch(this.d01) : 1);
-    const rp = Math.tanh((gapSeconds + slot * (1 - 0.35 * this.d01)) / BAND_TAU);
+    const slot = this.slotAhead * (this.slotAhead < 0 ? slotStretch(this.d01) : slotFwd(this.d01));
+    // The hold branch (we are up the road) reaches further down the gap on the
+    // gentle races; the catch branch and the bounds below are untouched.
+    const x = gapSeconds + slot * slotCompress(this.d01);
+    const rp = Math.tanh(x / (BAND_TAU * (x < 0 ? holdReach(this.d01) : 1)));
     const rk = Math.tanh(packGapSeconds / PACK_TAU);
     // Catch-up (rp > 0, we are behind the human) is difficulty-scaled; hold-back
     // (rp < 0, we are up the road and the human is struggling) is not. See the
@@ -923,6 +1075,9 @@ export class AIDriver {
  *   playerSlot      which slot index the player occupies (default 0)
  *   seed            rng seed
  *   parts           garage parts applied to every opponent
+ *   playerParts     the HUMAN's physics parts ({engine,tyres,frame,turbo}).
+ *                   Optional: the finale's opponents run one tier above it (see
+ *                   aiPartTier). Absent or all-zero => exactly the Wave-5.1 field.
  *   collide         resolve kart-vs-kart inside update() (default true)
  *   rubberBand      false to disable entirely (for A/B telemetry)
  */
@@ -939,7 +1094,7 @@ export function createAIField(spline, def, engine, opts = {}) {
   // whole field the player's parts on purpose); otherwise the field runs the
   // championship tier for this difficulty. Exposed on the api as `parts` so the
   // race scene can dress them to match if it wants to.
-  const tier = aiPartTier(difficulty);
+  const tier = aiPartTier(difficulty, playerPartTier(opts.playerParts));
   const aiParts = opts.parts || (tier > 0 ? { engine: tier, tyres: tier, frame: tier, turbo: tier } : null);
 
   const field = ROSTER.filter(r => r.id !== playerId).slice(0, count);

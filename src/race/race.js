@@ -139,13 +139,64 @@ export const FINISH_TOKENS = [5, 4, 4, 3, 3, 3, 3, 3];
 // makes the density an absolute quantity: one row a lap, every track, and the
 // row still reads as the row the artist laid down.
 //
-// ONE row a lap, because the quiz term the economy gate could not see (D29)
-// turned out to be the biggest one in the wallet: with it counted, a winning
-// engaged child banked 35–54 tokens against a 21-token maximum ask. A row is
-// worth ~2 tokens to a player driving through it, so one row a lap is ~6 tokens
-// a race on every track — measured, and now the same measurement on all three
-// rather than 3 on race 1 against 9 on race 2.
-export const TOKEN_CLUSTERS_PER_LAP = 1;
+// Wave 4 set this to ONE row, because the quiz term the economy gate could not
+// see (D29) turned out to be the biggest one in the wallet: with it counted, a
+// winning engaged child banked 35–54 tokens against a 21-token maximum ask. One
+// row a lap held the income, but it bought that with the whole lap: a three-lap
+// race offered the child the SAME row three times and nothing else, so pickup
+// dopamine arrived once a lap, always in the same place.
+//
+// WAVE 6 SPLITS THE INCOME FROM THE COUNT. The row count and the income were
+// only ever the same number because a taken row came back (`respawn = 26`),
+// which made "rows on the lap" and "rows paid per race" multiply. They are now
+// separate levers: the rows a child SEES is this constant, and the rows a child
+// gets PAID for is once each, for the race — see TOKEN_RESPAWN_S below. Three
+// rows seen once each pay what one row seen three times paid, so the wallet is
+// unchanged while the lap has three pickup moments in three different places
+// instead of one moment repeated.
+//
+// THREE and not four: measured on the built game (three tracks × three seeds,
+// winning + fully engaged), a row is worth ~1.5 tokens to a player on the
+// racing line, so the lever is worth ~1.5 tokens a row and four rows put a
+// 20-token race on the board against a 21-token top ask — recreating exactly
+// the failure D39 and D51 flattened the quiz reward to prevent. Three lands
+// pickups at 4–6, which is where Wave 4/5 measured them.
+export const TOKEN_CLUSTERS_PER_LAP = 3;
+
+// How long a taken token stays taken. INFINITE — for the race, a row you have
+// driven through is a row you have collected.
+//
+// This is the other half of raising TOKEN_CLUSTERS_PER_LAP, and it is what keeps
+// the income flat while the count goes up. At the old 26s a row came back inside
+// a lap, so income was rows × laps and the only way to hold the wallet down was
+// to author one row; now income is rows, full stop, and the count is free to be
+// a pacing decision instead of an economic one.
+//
+// It also removes a thing the child could not see: a row that is there on lap 1,
+// gone on lap 2 and back on lap 3 is a rule nobody explained. "You took it, it
+// is yours" is one they already know — and a row MISSED on lap 1 is still there
+// on laps 2 and 3, so trying a different line through the same corner is the
+// thing that pays, which is the lesson the rows are laid down the racing line to
+// teach in the first place.
+export const TOKEN_RESPAWN_S = Infinity;
+
+// How long the leftovers of a row the player has driven through stay on the
+// track before they clear. The ROW, not the token, is the thing a player
+// collects — and this constant is what makes that true.
+//
+// Measured, and this is the whole reason it exists: a row is 3–4 octahedra laid
+// ACROSS the road, and a pass takes only the one or two the kart's line actually
+// crosses. With per-token retirement alone, lap 2 came back to the same row on a
+// slightly different line and took another, and lap 3 another — on `cloud`,
+// three rows paid NINE tokens over three laps and put a 23-token race on the
+// board against a 21-token top ask. Retiring the row instead lands the same
+// three rows at ~4–6, which is where one row a lap measured.
+//
+// 1.2s and not 0 so nothing is ever snatched out from in front of the child: at
+// racing speed that is ~30 m of road, and the row is metres wide — so the
+// leftovers wink out well behind the kart, reading as "that row is collected"
+// rather than as tokens dodging them.
+export const TOKEN_ROW_CLEAR_S = 1.2;
 
 /**
  * Keep `keep` evenly-spaced clusters of the authored spots, whole.
@@ -174,6 +225,72 @@ export function thinTokenSpots(all, keep = TOKEN_CLUSTERS_PER_LAP) {
 const COUNTDOWN_S = 3.4;      // 3 · 2 · 1 · GO
 const TOKEN_RADIUS = 2.6;     // generous — kids should not have to thread a needle
 const COMBO_WINDOW = 2.2;     // seconds to chain a pickup
+
+// ── position toasts: what the child's EYES say, not what the sort says ───────
+// `race:position` used to fire the instant the spline-progress order flipped.
+// Progress is arc length along the lap, so it flips while the two karts are
+// still side by side — and it flips BACK a tenth of a second later, and again,
+// through a whole corner. The child got "עקפת! / נעקפת!" flurries about a rival
+// they can still see beside them, which is the exact shape of feedback that
+// teaches a player to stop believing the HUD.
+//
+// The fix is hysteresis AT THE EMIT SITE — no new system, no restructuring of
+// updatePositions(), and nothing about how the order is computed. A change must
+//   (a) HOLD for TOAST_HOLD_S of race time, and
+//   (b) open a gap of TOAST_MARGIN_M on the rival it happened against,
+// before the child is told about it. Both, because either alone has a hole: a
+// hold alone still announces a pass that is 20 cm ahead and about to be undone
+// in the next corner, and a margin alone still announces the flicker on a track
+// where the two lines diverge for half a second at a chicane.
+//
+// WHICH NUMBER THE CHILD SEES CHANGE WHEN, decided and stated:
+//   • the HUD position NUMBER keeps tracking live (hud.js reads `state.position`
+//     every frame). It is a FACT about the current order, it is on screen
+//     continuously, and a number that lags its own leaderboard is a bug the
+//     child can catch by looking at the karts.
+//   • the TOAST is a CLAIM that an event happened. A claim that is retracted a
+//     tenth of a second later is worse than a late one, so the claim waits.
+// So the number may tick to P3 up to ~0.6s before "עקפת!" appears, and if the
+// pass does not stick the number ticks back and nothing was ever claimed.
+const TOAST_HOLD_S = 0.6;     // ~a corner's worth of "did that stick?"
+const TOAST_MARGIN_M = 3.0;   // just over a kart length — clear daylight
+
+/**
+ * The toast decision, extracted so it can be TESTED. It used to live inside the
+ * raceScene closure with no way in, which is why nothing ever checked it.
+ * Pure: no bus, no THREE, no clock of its own — it is told the time.
+ *
+ * @param {{holdS?:number, marginM?:number, start?:number}} [opts]
+ * @returns {{update(dt:number, live:number, gapM:number):({from:number,to:number}|null),
+ *            reset(p:number):void, shown:number, pendingFor:number}}
+ *   `update` returns the {from,to} payload to announce, or null for "say nothing
+ *   yet". `shown` is the last position the child was actually TOLD about, which
+ *   is what `from` must be measured against — using the live order for `from`
+ *   would let a suppressed flicker turn the next real pass into a no-op.
+ */
+export function makePositionToastGate(opts = {}) {
+  const holdS = opts.holdS ?? TOAST_HOLD_S;
+  const marginM = opts.marginM ?? TOAST_MARGIN_M;
+  let shown = opts.start ?? 1;
+  let pending = null, held = 0;
+  return {
+    get shown() { return shown; },
+    get pendingFor() { return pending == null ? 0 : held; },
+    reset(p) { shown = p; pending = null; held = 0; },
+    update(dt, live, gapM) {
+      // Back where we started: whatever was building was a flicker, not a pass.
+      if (live === shown) { pending = null; held = 0; return null; }
+      // A DIFFERENT change from the one that was building restarts the clock —
+      // P4→P3→P2 inside the hold window announces P2 once, not P3 then P2.
+      if (live !== pending) { pending = live; held = 0; }
+      held += dt;
+      if (held < holdS || !(Math.abs(gapM) >= marginM)) return null;
+      const from = shown;
+      shown = live; pending = null; held = 0;
+      return { from, to: live };
+    },
+  };
+}
 
 /**
  * @param {object} engine
@@ -222,8 +339,24 @@ export function raceScene(engine, opts = {}) {
   const playerMesh = createKart({ racer, parts: toVisualParts(parts), engine, sunDir: rig.sunDir });
   scene.add(playerMesh.group);
 
+  // `playerParts` is what makes the FINALE scale with the child's own garage
+  // (Wave 6 item 1d): ai.js reads it on race 3 only and puts the field a tier
+  // above the player's engine/turbo, so an upgrade raises the stage instead of
+  // trivialising it. Absent, `aiPartTier` behaves exactly as it did in Wave 5.1
+  // — which is why every backdrop, preview and harness race is unaffected by
+  // omitting it, and why race 3 on a STOCK kart is bit-identical.
+  //
+  // THIS LINE HAS BEEN LOST ONCE ALREADY (a stale `.tmp/` restore in a shared
+  // tree — D45). Without it the whole finale-scaling feature is inert in the
+  // built game while every test in `tests/ai.test.mjs` still passes, because
+  // that file constructs its own field. `tools/flowtest.mjs` now asserts the
+  // built game's `field.partTier` for an upgraded player, so the seam cannot go
+  // quiet again. Same `toPhysicsParts(parts)` the player's own body was built
+  // from a few lines above; passing the raw save shape would silently resolve
+  // every slot to tier 0 (the D24 seam).
   const field = createAIField(spline, def, engine, {
     difficulty, playerRacerId: racer.id, seed, slots, playerSlot: 0, count: 7,
+    playerParts: toPhysicsParts(parts),
   });
 
   // AI visuals. Distant opponents use the cheap LOD so eight karts stay in budget.
@@ -350,6 +483,8 @@ export function raceScene(engine, opts = {}) {
     cp: 0,                // next checkpoint index
     cpHits: 0,
   };
+  // Only the TOAST is hysteretic; `S.position` stays live. See TOAST_HOLD_S.
+  const posToast = makePositionToastGate({ start: S.position });
   const CP = track.checkpoints || [];
   const lapTracker = CP.length ? createLapTracker(CP, player.lapT) : null;
   const results = [];     // finish order as karts complete
@@ -364,19 +499,41 @@ export function raceScene(engine, opts = {}) {
   // emits ZERO fixed steps — so the countdown has not begun and raceTime/lapTime
   // are 0 while it is up. It returns null if it defers behind another modal, and
   // is off entirely for backdrops, autopilot and harness-driven races.
-  const intro = introCardEnabled(opts, engine)
-    ? createIntroCard({
-      track: trackId, mount: engine.ui,
-      onSkip() {
-        S.phase = 'countdown';
-        S.clock = 0;
-        simAcc = 0;                                  // never bank time across it
-        // D12: hand the keyboard back without touching the SET of held keys, so
-        // a child already holding accelerate keeps throttle into the countdown.
-        if (input) input.enabled = !S.paused && !S.quizFrozen;
-      },
-    })
-    : null;
+  //
+  // WAVE 6 ITEM 5 — THE CARD MAY ARRIVE ALREADY MOUNTED.
+  // Everything above this line is the expensive part of a race: the track mesh,
+  // twelve baked textures, the sky, the signage occlusion layout and eight
+  // karts. On the FIRST visit to a track in a session none of it is cached, and
+  // it blocks the main thread — 2.5-5.5 s headless, ~1.5-2 s on a real laptop
+  // (GAPS: "Starting a championship still freezes on the FIRST visit"). Built
+  // here, the card could only ever appear AFTER that freeze, so the freeze had
+  // nothing in front of it.
+  //
+  // So scenes.js now raises the card BEFORE calling this function and hands it
+  // in as `opts.introCurtain` — same card, same copy, same modal id, same
+  // moment in the child's experience; it is simply on screen while the world is
+  // built behind it. Two consequences are handled here and nowhere else:
+  //   * the curtain arrives UNARMED (introcard.js), because a synchronous build
+  //     queues input rather than swallowing it and the first queued key would
+  //     dismiss a card that had been readable for zero milliseconds. It is armed
+  //     at the end of this function, when there is a race behind it.
+  //   * `onSkip` is bound late, because the closure it needs (S, simAcc, input)
+  //     does not exist when scenes.js mounts the card.
+  // Without a curtain the old path is unchanged, which is what keeps every
+  // harness, backdrop and autopilot race identical to before.
+  const onIntroSkip = () => {
+    S.phase = 'countdown';
+    S.clock = 0;
+    simAcc = 0;                                  // never bank time across it
+    // D12: hand the keyboard back without touching the SET of held keys, so
+    // a child already holding accelerate keeps throttle into the countdown.
+    if (input) input.enabled = !S.paused && !S.quizFrozen;
+  };
+  let intro = opts.introCurtain || null;
+  if (intro) intro.setOnSkip(onIntroSkip);
+  else if (introCardEnabled(opts, engine)) {
+    intro = createIntroCard({ track: trackId, mount: engine.ui, onSkip: onIntroSkip });
+  }
   if (intro) {
     S.phase = 'intro';
     if (input) { input.enabled = false; input.softReset(); }
@@ -541,7 +698,7 @@ export function raceScene(engine, opts = {}) {
       if (S.comboT === 0) S.combo = 0;
     }
 
-    updatePositions();
+    updatePositions(dt);
     driveFeedback(dt);
   }
 
@@ -715,7 +872,7 @@ export function raceScene(engine, opts = {}) {
     return S.bestLap ? S.bestLap / 1000 : (S.raceTime / Math.max(1, S.lap));
   }
 
-  function updatePositions() {
+  function updatePositions(dt = FIXED) {
     const order = field.order();
     let p = 1;
     for (const row of order) {
@@ -725,10 +882,22 @@ export function raceScene(engine, opts = {}) {
     // `order()` is sorted best-first; find the player's index directly.
     const idx = order.findIndex(r => r.isPlayer || !r.racer);
     const np = (idx >= 0 ? idx : order.length) + 1;
-    if (np !== S.position && !S.finished) {
-      bus.emit('race:position', { from: S.position, to: np });
-      S.position = np;
-    } else if (S.finished) S.position = np;
+    // The NUMBER is live (see TOAST_HOLD_S): it is a fact, and hud.js reads it
+    // off the state every frame.
+    const wasShown = posToast.shown;
+    S.position = np;
+    if (S.finished) { posToast.reset(np); return; }
+    // The gap the change happened ACROSS: the rival the player has just swapped
+    // with is the neighbour on the side the change went. Progress is in laps, so
+    // × the lap length gives metres — the unit the margin is written in.
+    let gapM = Infinity;
+    if (np !== wasShown && idx >= 0) {
+      const meP = order[idx].progress;
+      const rival = order[np < wasShown ? idx + 1 : idx - 1];
+      if (rival) gapM = Math.abs(meP - rival.progress) * spline.length;
+    }
+    const say = posToast.update(dt, np, gapM);
+    if (say) bus.emit('race:position', say);
     void p;
   }
 
@@ -859,6 +1028,12 @@ export function raceScene(engine, opts = {}) {
     };
   }
 
+  // The world behind the curtain exists now, so the card may be dismissed. Any
+  // key or tap the child made during the build was queued while it was unarmed
+  // and has already been swallowed (see the intro-card block above). A card this
+  // scene created itself was armed from birth, so this is a no-op for it.
+  intro?.arm();
+
   // ══════════════════════════════════════════════════════════════════ scene API
   return {
     scene, camera,
@@ -976,10 +1151,23 @@ function buildTokens(spots, engine, rng) {
   const group = new THREE.Group();
   group.add(mesh);
 
-  const items = spots.map((p, i) => ({
-    pos: p.clone ? p.clone() : new THREE.Vector3(p.x, p.y, p.z),
-    phase: rng() * Math.PI * 2, alive: true, respawn: 0, i,
-  }));
+  // Which ROW each token belongs to. Same rule thinTokenSpots uses to find the
+  // rows in the first place — a gap far larger than a road is a row boundary —
+  // because the row is now the unit the economy is counted in and two different
+  // opinions about where a row starts would be a silent seam.
+  let row = 0;
+  const items = spots.map((p, i) => {
+    if (i > 0) {
+      const q = spots[i - 1];
+      if (Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) > 25) row++;
+    }
+    return {
+      pos: p.clone ? p.clone() : new THREE.Vector3(p.x, p.y, p.z),
+      phase: rng() * Math.PI * 2, alive: true, respawn: 0, i, row,
+    };
+  });
+  // Rows that have been driven through and are about to clear. See TOKEN_ROW_CLEAR_S.
+  const rowClearing = new Map();
 
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1);
   const up = new THREE.Vector3(0, 1, 0), pos = new THREE.Vector3();
@@ -1005,6 +1193,20 @@ function buildTokens(spots, engine, rng) {
       for (const it of items) {
         if (!it.alive) { it.respawn -= dt; if (it.respawn <= 0) it.alive = true; }
       }
+      // A row the player has driven through is a row they have collected: what
+      // their line touched is theirs, and the leftovers clear a beat later, once
+      // the kart is well past. Nothing is snatched from in front of the child —
+      // at racing speed TOKEN_ROW_CLEAR_S is ~30 m of road behind them.
+      if (rowClearing.size) {
+        for (const [r, left] of rowClearing) {
+          const t2 = left - dt;
+          if (t2 > 0) { rowClearing.set(r, t2); continue; }
+          rowClearing.delete(r);
+          for (const it of items) {
+            if (it.row === r && it.alive) { it.alive = false; it.respawn = TOKEN_RESPAWN_S; }
+          }
+        }
+      }
       write();
     },
     /** @returns {THREE.Vector3|null} the taken token's position, so the pickup
@@ -1015,9 +1217,18 @@ function buildTokens(spots, engine, rng) {
         if (!it.alive) continue;
         const dx = p.x - it.pos.x, dy = p.y - it.pos.y, dz = p.z - it.pos.z;
         if (dx * dx + dy * dy * 0.4 + dz * dz < r2) {
-          // Respawn slower than a lap, so a later lap pays again but a player cannot
-          // farm the same cluster by circling it.
-          it.alive = false; it.respawn = 26;
+          // Taken is taken, for the race — TOKEN_RESPAWN_S is Infinity. See its
+          // comment: this is what lets the lap carry TOKEN_CLUSTERS_PER_LAP rows
+          // of pickup moments without the wallet growing by the same factor.
+          // (`Infinity - dt` is still Infinity and never reaches 0, so the
+          // countdown in update() needs no special case.)
+          it.alive = false; it.respawn = TOKEN_RESPAWN_S;
+          // …and the ROW is what was collected, not the one octahedron. See
+          // TOKEN_ROW_CLEAR_S: without this the row is still worth three or four
+          // tokens to a player who comes back on the next lap on a slightly
+          // different line — measured, exactly what happened — and the count of
+          // rows and the size of the wallet go back to being the same number.
+          if (!rowClearing.has(it.row)) rowClearing.set(it.row, TOKEN_ROW_CLEAR_S);
           return it.pos;
         }
       }

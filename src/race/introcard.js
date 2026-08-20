@@ -294,8 +294,27 @@ export function introCardEnabled(opts = {}, engine = null) {
  * Mount the card. Returns null if it DEFERS (something else already owns the
  * screen) — the caller then goes straight to the countdown.
  *
- * @param o {track?:number|string, def?:object, mount:HTMLElement, onSkip?:fn}
- * @returns {{el:HTMLElement, open:boolean, skip:Function, dispose:Function}|null}
+ * ── `armed: false`, and why a curtain needs a latch (Wave 6, item 5) ────────
+ * The card is also the mask for the one-off cost of building a track the
+ * session has not seen yet (~1.5-2 s on a real laptop; GAPS' "Starting a
+ * championship still freezes on the FIRST visit to each track"). scenes.js
+ * mounts the card, lets the browser paint it, and only THEN builds the world —
+ * so the freeze happens behind a full curtain instead of behind nothing.
+ *
+ * A synchronous build does not swallow input, it QUEUES it: every keydown and
+ * tap a child makes during those two seconds is dispatched the instant the
+ * build returns, and the first of them would dismiss a card that has been on
+ * screen for zero readable milliseconds. `armed: false` mounts the card inert —
+ * `skip()` refuses until `arm()` is called — so those queued events land on a
+ * card that is not listening and the child simply presses again. This is the
+ * ONLY behaviour difference; copy, timing on screen, the modal id, the
+ * e.repeat guard and the no-`noteTeachingCard()` rule are all untouched.
+ * `dispose()` always works, armed or not — teardown is not a dismissal.
+ *
+ * @param o {track?:number|string, def?:object, mount:HTMLElement, onSkip?:fn,
+ *           armed?:boolean}
+ * @returns {{el:HTMLElement, open:boolean, armed:boolean, arm:Function,
+ *            setOnSkip:Function, skip:Function, dispose:Function}|null}
  */
 export function createIntroCard(o = {}) {
   if (modalOpen()) return null;                 // defer; see the policy note above
@@ -304,6 +323,12 @@ export function createIntroCard(o = {}) {
   injectIntroCSS();
 
   let open = true;
+  let armed = o.armed !== false;
+  // Settable, because the curtain is now mounted by scenes.js BEFORE raceScene
+  // exists (see the `armed: false` note) and the thing that wants to know about
+  // the dismissal is the race. Nothing can call it before it is set: an unarmed
+  // card cannot be skipped, and the race arms it at the end of its own build.
+  let onSkip = o.onSkip;
   const release = pushModal('intro');
 
   // ONE code path for both inputs (keys and pointer), deliberately: two
@@ -311,13 +336,16 @@ export function createIntroCard(o = {}) {
   // e.repeat guard.
   function skip(source = 'unknown') {
     if (!open) return;
+    // Not armed yet: swallow. See the `armed: false` note above — these are the
+    // keys a child pressed while the world was being built behind the card.
+    if (!armed && source !== 'dispose') return;
     open = false;
     removeEventListener('keydown', onKey, true);
     root.remove();
     release();                                   // popModal('intro')
     // NO noteTeachingCard() here — deliberately, and this is the single most
     // load-bearing line in the file. See the CURTAIN note in the header.
-    o.onSkip?.(source);
+    onSkip?.(source);
   }
 
   function onKey(e) {
@@ -360,6 +388,11 @@ export function createIntroCard(o = {}) {
   return {
     el: root,
     get open() { return open; },
+    get armed() { return armed; },
+    /** The world behind the card is ready; the card may now be dismissed. */
+    arm() { armed = true; },
+    /** Late-bound dismissal callback — see `onSkip` above. */
+    setOnSkip(fn) { onSkip = fn; },
     skip,
     dispose() { skip('dispose'); },
   };

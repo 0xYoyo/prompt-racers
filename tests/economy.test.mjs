@@ -30,7 +30,8 @@
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { FINISH_TOKENS, TOKEN_CLUSTERS_PER_LAP, thinTokenSpots } from '../src/race/race.js';
+import { FINISH_TOKENS, TOKEN_CLUSTERS_PER_LAP, TOKEN_RESPAWN_S, TOKEN_ROW_CLEAR_S,
+  thinTokenSpots } from '../src/race/race.js';
 import { REWARD_TOKENS } from '../src/race/quiz.js';
 import { MAX_COST, MIN_COMPLETE_COST, DEFAULT_BUDGET, PART_COST } from '../src/garage/prompts.js';
 import { tokenReward, REBATE_CAP, REBATE_CAP_EXPERT } from '../src/garage/scoring.js';
@@ -75,8 +76,27 @@ console.log('\n  TOKEN ECONOMY — invariants over the shipped constants\n  ' + 
 // 8: the cadence change that removed a box is a pacing decision that could be
 // tuned back tomorrow, and this envelope is the guard, so it keeps the larger of
 // the two real observations.
+//
+// WAVE 6 RE-MEASURED IT AGAIN (.tmp/w6b-econ.mjs, the same harness, winning +
+// fully engaged and ignores-every-box, three tracks × three seeds), because the
+// pickup half of the economy changed shape: the lap now shows THREE rows instead
+// of one and each row pays once for the race instead of once a lap. Measured, a
+// winning engaged race banks 14–19 with 2–5 from pickups (was 13–18 with 4–6) —
+// the same wallet, arriving as three pickup moments in three places rather than
+// one moment repeated three times. The child who ignores every box banks 7–9
+// with 3–6 pickups; they take MORE rows than the engaged child, because the
+// slow-motion cooldown a timed-out box costs them drags them across rows the
+// racing line skips. That 6 is where the ceiling below comes from.
+//
+// The pickup FLOOR moved 3 → 2 and is recorded honestly rather than rounded up:
+// on `oasis` the racing line misses two of the three rows outright on some
+// seeds. Invariant B is re-derived from it below and still holds (2 + 3 = 5
+// against a cheapest complete ask of 4), which is the point of deriving rather
+// than typing. The CEILING is deliberately left at Wave 4/5's 6 even though
+// nothing measured above 5: it is the guard, and a guard that tracks the last
+// measurement down has stopped guarding.
 const MAX_QUESTIONS_PER_RACE = 9;
-const MIN_PICKUPS_PER_RACE = 3;
+const MIN_PICKUPS_PER_RACE = 2;
 const MAX_PICKUPS_PER_RACE = 6;
 // The one outlier, kept as a JOINT observation rather than folded into the
 // maxima above: the longest race measured opened 11 boxes, and that same run
@@ -104,6 +124,41 @@ ok('FINISH_TOKENS imports from race.js (not scraped)',
 ok('TOKEN_CLUSTERS_PER_LAP imports from race.js (not scraped)',
   Number.isInteger(TOKEN_CLUSTERS_PER_LAP) && TOKEN_CLUSTERS_PER_LAP >= 1,
   `${TOKEN_CLUSTERS_PER_LAP} row(s) a lap`);
+
+// ── WAVE 6: THE ROW COUNT AND THE ROW INCOME ARE NOW SEPARATE LEVERS ─────────
+// Until Wave 6 they were the same number. A taken token came back after 26s —
+// less than a lap — so the income was `rows × laps`, and the only lever that
+// could hold a winning engaged race under the 21-token top ask was to author
+// ONE row. That bought the wallet with the whole lap: three laps offered the
+// child the same row three times and nothing else, so pickup dopamine arrived
+// once a lap, always in the same place, and D39's "a row is worth ~2 tokens"
+// was really "one row's worth of tokens, three times".
+//
+// Wave 6 splits them:
+//   • TOKEN_CLUSTERS_PER_LAP is what the child SEES  — 3 rows, spread round the lap;
+//   • TOKEN_RESPAWN_S / TOKEN_ROW_CLEAR_S are what a row PAYS — once, for the race.
+//
+// Both halves need pinning, because either one alone undoes the other:
+//   • put the count back to one row and the lap goes quiet again;
+//   • leave the count up but let rows pay per lap again and the wallet drifts up
+//     behind invariants that still happen to hold. That second one is not
+//     hypothetical: measured mid-change, per-TOKEN retirement (rows come back
+//     only as the individual octahedra the kart's line missed) still paid NINE
+//     pickups on `cloud`, because a row is 3–4 tokens laid ACROSS the road and
+//     lap 2 comes back on a slightly different line. It put a 23-token race on
+//     the board against a 21-token ask. The ROW is the unit that had to retire.
+ok('the lap shows a child three or more pickup rows, not one',
+  TOKEN_CLUSTERS_PER_LAP >= 3, `${TOKEN_CLUSTERS_PER_LAP} rows a lap`);
+ok('…and a row that has been collected never comes back this race',
+  TOKEN_RESPAWN_S === Infinity, `respawn ${TOKEN_RESPAWN_S}s`);
+ok('…and the ROW retires, not just the one token the kart touched',
+  /rowClearing\.set\(it\.row, TOKEN_ROW_CLEAR_S\)/.test(raceSrc)
+  && TOKEN_ROW_CLEAR_S > 0 && TOKEN_ROW_CLEAR_S <= 3,
+  `leftovers clear ${TOKEN_ROW_CLEAR_S}s after the pass`);
+// …and not instantly, because a token that vanishes from IN FRONT of a child is
+// the game taking something back. At racing speed this is ~30m of road behind.
+ok('…a beat later, so nothing is snatched from in front of the child',
+  TOKEN_ROW_CLEAR_S >= 0.8, `${TOKEN_ROW_CLEAR_S}s ≈ ${(TOKEN_ROW_CLEAR_S * 25).toFixed(0)}m at racing speed`);
 // The thinning keeps WHOLE authored rows. A fraction of the spot list (D17's
 // TOKEN_KEEP) cut across them, so the same setting paid 3 pickups on race 1 and
 // 9 on race 2 — the percentage-versus-absolute trap D33 hit with its pace floor.

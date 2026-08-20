@@ -1,6 +1,7 @@
 // Balance + fairness gate for src/kart/ai.js.
 //
-//   node tests/ai.test.mjs          the gate (5 seeds x ~30 races, ~15s)
+//   node tests/ai.test.mjs          the gate (~70s: a 5-seed sweep plus the
+//                                   40-seed cells sections 2b-2c/3b/6/7/7c need)
 //   node tests/ai.test.mjs full     + the pace sweep that finds the lapping edge
 //
 // WHAT THIS FILE PROTECTS — two promises that pull against each other
@@ -20,6 +21,24 @@
 //    feel, and what sections 2-3 pin: clean driving with no engagement is
 //    2nd-3rd on race 1 and 3rd-5th on races 2-3, and a decent garage upgrade
 //    turns that back into a win.
+// 3. THE RACE HAS TO FEEL LIKE A RACE (Wave 6). Finishing position cannot see
+//    whether the child spent the race in a fight, and a playtest found races
+//    1-2 reading as "cruising alone" while hitting their position targets
+//    exactly. Section 2c measures the pack itself — how much of the race the
+//    child leads, how close the nearest rival is, how many passes the child can
+//    actually SEE — with race 3 on a stock kart as the reference profile the
+//    player named as the exemplar, and bounds it two-sided so neither the
+//    cruise nor an over-correction into race-3 pressure can come back. Round 2
+//    re-derived every bound in it from five disjoint 40-seed sets after three of
+//    them turned out to be one seed from red on sets the author never tried, and
+//    corrected two metrics that could not see what they claimed to (see race()).
+// 4. A CHILD MUST NEVER BE PUNISHED FOR BUYING A PART (Wave 6, section 7c). The
+//    finale's field steps a whole tier when the child's own kart is good enough,
+//    which is a full finishing place; where that threshold sits decides whether
+//    a better prompt can produce a WORSE result. Section 7c measures it over the
+//    garages a championship can actually build — two visits, one part each, so
+//    at most two non-zero slots — rather than over the uniform tier-2/tier-3
+//    karts the rest of this file uses to pin the extremes.
 //
 // METHODOLOGY — deliberately the same as the GAPS.md measurement, so the
 // numbers here are comparable with the ones measured in the built game:
@@ -76,6 +95,12 @@ const SEEDS = [3, 11, 19, 41, 57];
 // the race-2 target is written against.
 const QUIZ_BOOST = { strength: 1.3, duration: 2.4, impulse: 6 };
 
+// Pack-feel sampling: seconds of race skipped before any pack metric is taken,
+// and the gap inside which a place change counts as a pass the child can see.
+// Both are justified at the metric block inside race().
+const SETTLE = 15;
+const CLOSE_PASS = 1.0;
+
 /**
  * One headless 3-lap race.
  * @param {number} boosts  correct quiz answers, spread evenly through the race
@@ -97,6 +122,9 @@ function race({ track, difficulty, pace, seed, laps = 3, parts = null, boosts = 
 
   const field = createAIField(spline, def, null, {
     difficulty, playerRacerId: racer.id, slots, playerSlot: 0, seed,
+    // Wave 6: the finale's opponents scale with the child's own garage, so the
+    // field has to see the player's parts. race.js passes exactly this.
+    playerParts: parts,
   });
 
   const toLine = ((def.startT - player.lapT) + 1) % 1;
@@ -113,6 +141,39 @@ function race({ track, difficulty, pace, seed, laps = 3, parts = null, boosts = 
   // (a kart half a lap up the road can be 30m away across a hairpin).
   let worstLonely = 0;
 
+  // ---- PACK-FEEL METRICS (Wave 6) -----------------------------------------
+  // Finishing position says who won; it says nothing about whether the child
+  // spent the race in a fight. Gaps are in SECONDS, converted exactly the way
+  // createAIField.update converts them (gapM / cruise, cruise = the rival's own
+  // topSpeed x 0.82), so a number here means the same thing the band's own
+  // input means, on a slow track and a fast one alike.
+  //
+  // TWO CORRECTIONS, round 2, both because the round-1 versions could not
+  // discriminate the complaint they were built for:
+  //
+  //  * SETTLE. Nothing is sampled for the first 15 seconds. Eight karts leave a
+  //    standing grid in formation, so for that whole window the nearest rival is
+  //    inside 1.5s on EVERY race of EVERY build (measured: the pre-settle
+  //    `near15` reads exactly 1.000 in all 45 cells taken across five builds and
+  //    five seed sets) and the order churns while the field sorts itself out —
+  //    7.0-7.5 sustained place changes on race 1 against 10.2 for the remaining
+  //    ~138s, i.e. 41% of the round-1 count was the grid scramble rather than
+  //    racing. A whole-race number is that start averaged with the race.
+  //  * CLOSE PASSES rather than rank flicker. A place change only counts if, at
+  //    the moment it sticks, the nearest rival is within CLOSE_PASS seconds —
+  //    a pass the child can see out of the window, not an arithmetic swap with
+  //    somebody up the road. HONEST RESULT: on every build and cell measured so
+  //    far the filtered count equals the unfiltered one exactly, because after
+  //    the settle window every sustained swap already happens inside a second.
+  //    The filter is kept because it is the definition the assertion means, and
+  //    because a future build that strings the field out is exactly the case
+  //    where the two numbers would part company — but it did not, by itself,
+  //    separate any two builds.
+  const lapLen = spline.length;
+  let nSamp = 0, near15 = 0, near30 = 0, ahead15 = 0, ahead30 = 0, leadSamp = 0, gapSum = 0;
+  const gapSamples = [];
+  let rank = null, rankPend = null, rankT = 0, closePasses = 0;
+
   while (t < maxTime && finish.some(x => x == null)) {
     player.update(DT, autopilotInput(player, spline, { drift: true }));
     pProg += TrackSpline.deltaT(player.lapT, prevT);
@@ -127,6 +188,43 @@ function race({ track, difficulty, pace, seed, laps = 3, parts = null, boosts = 
     let near = 1e9;
     for (const d of field.drivers) near = Math.min(near, Math.abs(d.progress - pProg));
     if (near > worstLonely) worstLonely = near;
+
+    // Sampled every step while the player is still racing AND the field has
+    // settled (see SETTLE above).
+    if (pProg < finishAt && t >= SETTLE) {
+      let best = Infinity, bestAhead = Infinity, ahead = 0;
+      for (const d of field.drivers) {
+        const cruise = Math.max(12, d.body.p.topSpeed * 0.82);
+        const g = ((d.progress - pProg) * lapLen) / cruise;   // +ve = rival up the road
+        if (Math.abs(g) < best) best = Math.abs(g);
+        if (g > 0) { ahead++; if (g < bestAhead) bestAhead = g; }
+      }
+      nSamp++;
+      gapSum += best;
+      if (best <= 1.5) near15++;
+      if (best <= 3.0) near30++;
+      if (bestAhead <= 1.5) ahead15++;
+      if (bestAhead <= 3.0) ahead30++;
+      if (ahead === 0) leadSamp++;           // nobody in front: the player is leading
+      if ((nSamp % 6) === 0) gapSamples.push(best);
+      // CLOSE PASSES: the player's own position in the running order changes,
+      // HOLDS for >= 0.5s (the same sustained-swap idea as the field's own
+      // _rankPass, at half the dwell), and the nearest rival is inside
+      // CLOSE_PASS seconds when it sticks. A swap between two rivals elsewhere
+      // on the track cannot move it, so every count is a pass made on, or by,
+      // the kart the child can actually see; a multi-place jump counts once per
+      // place.
+      const r = 1 + ahead;
+      if (rank == null) { rank = r; rankPend = r; rankT = 0; }
+      else if (r !== rankPend) { rankPend = r; rankT = 0; }
+      else {
+        rankT += DT;
+        if (rankT >= 0.5 && rankPend !== rank) {
+          if (best <= CLOSE_PASS) closePasses += Math.abs(rankPend - rank);
+          rank = rankPend;
+        }
+      }
+    }
 
     const prog = [pProg, ...field.drivers.map(d => d.progress)];
     for (let i = 0; i < prog.length; i++) {
@@ -143,13 +241,21 @@ function race({ track, difficulty, pace, seed, laps = 3, parts = null, boosts = 
   // relative, the never-lapped promise is an absolute pace.
   const basePace = field.drivers[0].basePace();
   const bandFloor = field.drivers[0].bandFloor();
+  const partTier = field.partTier;
   field.dispose();
+  gapSamples.sort((a, b) => a - b);
   return {
     pos: order.findIndex(o => o[1] === 0) + 1,
     lapsBehind: lapsBehind ?? 0,
     gap: (finish[0] ?? Infinity) - order[0][0],
     bandMin: tel.bandMin, bandMax: tel.bandMax, basePace, bandFloor,
-    lonely: worstLonely, time: t,
+    lonely: worstLonely, time: t, partTier,
+    // pack feel
+    near15: near15 / nSamp, near30: near30 / nSamp,
+    ahead15: ahead15 / nSamp, ahead30: ahead30 / nSamp,
+    leadPct: leadSamp / nSamp, gapMean: gapSum / nSamp,
+    gapMedian: gapSamples.length ? gapSamples[gapSamples.length >> 1] : 0,
+    closePasses,
   };
 }
 
@@ -267,20 +373,165 @@ const S40 = Array.from({ length: 40 }, (_, i) => i + 1);
 const T2 = { engine: 2, tyres: 2, frame: 2, turbo: 2 };
 const T3 = { engine: 3, tyres: 3, frame: 3, turbo: 3 };
 const _cells = new Map();
+const _cellParts = new Map();
 const cell40 = (R, pace, parts = null, tag = '', boosts = 0) => {
+  // `tag` is part of the cache key and NOTHING ELSE about `parts` is, so two
+  // different karts sharing a tag silently return each other's forty races. That
+  // is not hypothetical: section 7c's single-part cells were first written with
+  // tags 't2'/'t3' and quietly served section 3b's uniform tier-2 kart, which
+  // reads a place and a half better. The assertion below makes the collision an
+  // error instead of a wrong number.
   const key = `${R.n}|${pace}|${tag}|q${boosts}`;
+  const sig = JSON.stringify(parts);
+  if (_cellParts.has(key) && _cellParts.get(key) !== sig) {
+    throw new Error(`cell40 tag collision on "${key}": ${_cellParts.get(key)} vs ${sig}`);
+  }
+  _cellParts.set(key, sig);
   if (!_cells.has(key)) {
-    const p = S40.map(seed => race({ track: R.track, difficulty: R.difficulty, pace, seed, parts, boosts }).pos);
+    const runs = S40.map(seed => race({ track: R.track, difficulty: R.difficulty, pace, seed, parts, boosts }));
+    const p = runs.map(r => r.pos);
     const m = p.reduce((a, b) => a + b, 0) / p.length;
     const hist = new Array(8).fill(0);
     for (const x of p) hist[x - 1]++;
+    const avg = k => runs.reduce((a, r) => a + r[k], 0) / runs.length;
     _cells.set(key, {
       p, hist, mean: m, wins: p.filter(x => x === 1).length,
       podium: p.filter(x => x <= 3).length, best: Math.min(...p), worst: Math.max(...p),
+      tier: runs[0].partTier,
+      // pack feel, averaged over the forty races
+      near15: avg('near15'), near30: avg('near30'), ahead15: avg('ahead15'),
+      ahead30: avg('ahead30'), leadPct: avg('leadPct'), gapMean: avg('gapMean'),
+      gapMedian: avg('gapMedian'), closePasses: avg('closePasses'), behind: avg('gap'),
     });
   }
   return _cells.get(key);
 };
+
+// --- 2c. THE PACK-FEEL PROFILE (Wave 6, 40 seeds) ---------------------------
+// The playtest verdict that opened Wave 6: "race 3 on a stock kart is the
+// exemplar — neck and neck the whole way, rivals occasionally ahead, boosts
+// necessary, still winnable; races 1-2 feel like cruising alone" — even though
+// races 1-2 hit their finishing-position targets. Position alone cannot see
+// that, so this section measures the RACE rather than the result.
+//
+// ROUND 2 RE-DERIVED EVERYTHING HERE from the corrected metrics (settle skip +
+// close passes; see race()), on FIVE disjoint 40-seed sets — 1-40, 41-80,
+// 81-120, 201-240, 501-540 — because three of round 1's bounds turned out to be
+// a seed set away from red. Each bound below states the measured population it
+// came from and is labelled CATCHER (red against the build it exists to catch,
+// with the margin stated) or GUARD (green both ways, there so a retune cannot be
+// overshot). A bound whose two populations do not separate on all five sets is
+// NOT called a catcher, however much one wishes it were.
+//
+//   corrected metrics, stock kart, 100% pace, min-max over the five sets
+//                       race 1        race 2        race 3 (exemplar)
+//   mean place          2.38-2.68     3.67-3.85     3.90-4.20
+//   % of race led       33.9-43.3     1.5-2.6       1.3-2.1
+//   rival ahead <=1.5s  36.0-41.0     89.9-93.4     95.5-97.6
+//   nearest <=1.5s      98.1-99.2     99.9-100      99.9-100
+//   mean gap            0.42-0.48     0.24-0.25     0.30-0.32
+//   median gap          0.35-0.40     0.20-0.21     0.27-0.28
+//   close passes/race   10.1-11.0     24.6-27.5     14.6-16.2
+//   behind the winner   1.56-1.90s    2.02-2.11s    2.16-2.34s
+//
+// AND THE HONEST ANSWER ABOUT RACE 2, since round 1 shipped a change for it.
+// On the corrected metrics race 2 is at or INSIDE the exemplar on every axis
+// these instruments have: it leads no more of the race (2.0% vs 1.7%), its
+// nearest rival is closer (0.24s vs 0.31s), it has 75% MORE visible passes
+// (26.4 vs 15.1 per race) and its winner is CLOSER (2.06s vs 2.24s). The single
+// axis on which it is behind is `rival ahead within 1.5s`, 91.1% against 96.8%
+// — the child in 4th has open road in front of them ~6% more of the time. That
+// is what SLOT_FWD_R2 moved, and it moved it the right way: 89.2-91.2 before,
+// 89.9-93.4 after, plus the 2.7s -> 2.06s closing of the distance to the winner
+// that (v) pins. Pushing it further was measured and rejected — SLOT_FWD_R2 at
+// 0.55 / 0.50 / 0.40 reads `ahead<=1.5s` 91.5-92.2 / 90.9-94.8 / 92.7-94.7 and
+// buys those two-to-four points by pulling the winner back to 1.89 / 1.84 /
+// 1.71s, i.e. it trades the guard in (vi) for a difference no child perceives.
+// If race 2 still reads as cruising alone in a playtest, the cause is NOT in
+// these six numbers and no further tuning of the band will find it — that is a
+// GAPS entry, not a licence to keep turning knobs.
+console.log('\n=== 2c. THE PACK-FEEL PROFILE (40 seeds, 100% pace, stock kart) ===');
+{
+  const [R1, R2, R3] = RACES;
+  const P = [cell40(R1, 1.00, null, 'stock'), cell40(R2, 1.00, null, 'stock'), cell40(R3, 1.00, null, 'stock')];
+  console.log(pad('race', 8) + ['mean pl', '%led', 'ah<=1.5s', 'ah<=3s', 'near<=1.5', 'gap mean', 'gap med', 'passes', 'behind'].map(h => padL(h, 10)).join(''));
+  for (let i = 0; i < 3; i++) {
+    const c = P[i];
+    console.log(pad('race ' + (i + 1), 8) + padL(f(c.mean), 10) + padL(f(100 * c.leadPct, 1), 10) +
+      padL(f(100 * c.ahead15, 1), 10) + padL(f(100 * c.ahead30, 1), 10) + padL(f(100 * c.near15, 1), 10) +
+      padL(f(c.gapMean), 10) + padL(f(c.gapMedian), 10) + padL(f(c.closePasses, 1), 10) + padL(f(c.behind) + 's', 10));
+  }
+  const [p1, p2, p3] = P;
+
+  // (i) GUARD, and the reference the other two are measured against. The finale
+  // is frozen bit-for-bit on a stock kart this wave, so this can only go red if
+  // someone changes race 3 — which is exactly what it is for. Measured
+  // 1.3-2.1 / 95.5-97.6 / 99.9-100 / 0.30-0.32; margins 2.9pt / 2.5pt / 0.9pt /
+  // 0.06s.
+  assert(p3.leadPct <= 0.05 && p3.ahead15 >= 0.93 && p3.near15 >= 0.99 && p3.gapMean <= 0.38,
+    `race 3 is still the exemplar: leads ${f(100 * p3.leadPct, 1)}% of the race (<= 5), a rival ahead ` +
+    `within 1.5s ${f(100 * p3.ahead15, 1)}% (>= 93), nearest within 1.5s ${f(100 * p3.near15, 1)}% (>= 99), ` +
+    `mean gap ${f(p3.gapMean)}s (<= 0.38)`);
+
+  // (ii) CATCHER, and the strongest one in this section. Race 1's visible
+  // overtaking. Measured 10.1-11.0 close passes per race on the five sets;
+  // 7.7-8.7 on the pre-Wave-6 build and 4.6-5.2 with TRACK_PACE.oasis reverted
+  // to 1.03 — so it separates BOTH of the builds it needs to, on all sets, with
+  // 0.65 of margin below and 0.72 above. (Round 1 asserted the raw whole-race
+  // rank-change count >= 16.5; 41% of that quantity was the standing start.)
+  assert(p1.closePasses >= 9.4,
+    `race 1 is a race the child is passing in (${f(p1.closePasses, 1)} close passes per race >= 9.4, ` +
+    `pre-Wave-6 7.7-8.7)`);
+  // (iii) GUARD, NOT a catcher, and round 1's comment was wrong to call it one.
+  // Race 1's median gap to the nearest rival reads 0.35-0.40 here and 0.45-0.54
+  // on the pre-Wave-6 build, which LOOKS like separation until the seed sets
+  // outside the ones round 1 tried: set 201-240 reads 0.45 pre-fix against a
+  // 0.41 bound, i.e. 0.04 of margin, and its `near<=1.5s` half (97.8 pre-fix
+  // against a 97.5 bound) does not separate at all and has been dropped. What
+  // survives is a two-sided sanity bound on the pack's density.
+  assert(p1.gapMedian >= 0.28 && p1.gapMedian <= 0.50,
+    `race 1's pack has not been re-spaced (median gap to the nearest rival ` +
+    `${f(p1.gapMedian)}s, in 0.28..0.50)`);
+  // (iv) GUARD. The other side of (ii): race 1 must NOT become race 3. A gentler
+  // version of the exemplar, not the exemplar. Measured 33.9-43.3% led and
+  // 36.0-41.0% chasing; race 3 reads 1.7% and 96.8%, so this trips long before
+  // race 1 gets there.
+  assert(p1.leadPct >= 0.25 && p1.ahead15 <= 0.62,
+    `race 1 is still the gentle one: the child leads ${f(100 * p1.leadPct, 1)}% of it (>= 25, race 3 ` +
+    `${f(100 * p3.leadPct, 1)}%) and is chasing only ${f(100 * p1.ahead15, 1)}% (<= 62, race 3 ${f(100 * p3.ahead15, 1)}%)`);
+  // (v) CATCHER. Race 2's fault was distance to the front, not pack density:
+  // its two front-runners sat 2.7s up the road in a race of their own. Measured
+  // 2.02-2.11s here against 2.66-2.83s with SLOT_FWD_R2 removed; margins 0.24
+  // and 0.31.
+  assert(p2.behind <= 2.35,
+    `race 2's leaders are in play (${f(p2.behind)}s behind the winner <= 2.35, was 2.66-2.83)`);
+  // (vi) GUARD. …and not so close that the 3rd-4th target starts to wobble.
+  // This is the bound the rejected SLOT_FWD_R2 values were eating into (1.89 /
+  // 1.84 / 1.71s at 0.55 / 0.50 / 0.40).
+  assert(p2.behind >= 1.50 && p2.near15 >= 0.98,
+    `race 2 is still a race to win, not a formality (${f(p2.behind)}s behind the winner >= 1.50, ` +
+    `nearest rival within 1.5s ${f(100 * p2.near15, 1)}% of the race >= 98)`);
+  // (vii) CATCHER for TRACK_PACE.oasis, which had nothing pinning it. This
+  // wave's headline constant went 1.03 -> 1.09 and a straight revert passed
+  // 3b(i), 3b(ii), 6(i), 6(iv) and every band bound in the file. Measured race-1
+  // stock mean place: 2.38-2.68 here, 1.80-1.93 with the constant reverted.
+  // Margins 0.23 below and 0.22 above. ((ii) also catches it, four times over.)
+  assert(p1.mean >= 2.15,
+    `race 1's field is still quick enough to be a race (mean place ${f(p1.mean)} >= 2.15, ` +
+    `1.80-1.93 at TRACK_PACE.oasis 1.03)`);
+  // (viii) CATCHER for HOLD_REACH_R1, which had nothing pinning it either — the
+  // mutant that removes it passed every 2c assertion on seeds 1-40 and was caught
+  // only by 6(i), by 0.12 places. This is the number the constant was introduced
+  // FOR: raising TRACK_PACE.oasis cost D33b's struggling-child ladder, and halving
+  // race 1's hold-back time constant is what put it back. Measured 4.00 on all
+  // five seed sets (the hold-back floor pins it hard); 4.97-5.00 with
+  // HOLD_REACH_R1 removed. Margins 0.40 below, 0.57 above.
+  const p185 = cell40(R1, 0.85, null, 'stock');
+  console.log(`  race 1 at 85% pace (the struggling child, what HOLD_REACH_R1 protects): mean ${f(p185.mean)}`);
+  assert(p185.mean <= 4.40,
+    `race 1 still holds its ladder for a struggling child (85%-pace mean place ${f(p185.mean)} <= 4.40, ` +
+    `5.00 without HOLD_REACH_R1)`);
+}
 
 // --- 2b. ...but a garage upgrade wins it -------------------------------------
 // The other half of "winnable, just earned". If a rebalance ever makes the field
@@ -291,9 +542,11 @@ console.log('\n=== 2b. A DECENT GARAGE UPGRADE WINS IT BACK ===');
   const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
   console.log(`  opponents' own championship tier: race 1 ${aiPartTier(1)}, race 2 ${aiPartTier(2)}, race 3 ${aiPartTier(3)}`);
   for (const R of RACES) {
-    // Races 1 and 3 are 40-of-40 wins on every seed set measured, so five seeds
-    // answer them. Race 2 is a fight and gets the 40-seed cell.
-    const fight = R.n === 2;
+    // Race 1 is 40-of-40 wins on every seed set measured, so five seeds answer
+    // it. Races 2 AND 3 are fights and get the 40-seed cell — race 3 became one
+    // in Wave 6, when the finale's field started scaling with the child's own
+    // garage (1.10 mean / 36 wins in 40 -> 2.10 / 8).
+    const fight = R.n !== 1;
     const c = fight ? cell40(R, 1.00, T2, 't2') : (() => {
       const p = SEEDS.map(seed => race({ track: R.track, difficulty: R.difficulty, pace: 1.00, seed, parts: T2 }).pos);
       return { p, mean: mean(p), wins: p.filter(x => x === 1).length };
@@ -303,19 +556,21 @@ console.log('\n=== 2b. A DECENT GARAGE UPGRADE WINS IT BACK ===');
     console.log(`  race ${R.n}: mean ${f(c.mean)} over ${c.p.length} seeds, ${c.wins} wins ` +
       `(stock ${f(stock)} -> +${f(stock - c.mean)} places)`);
     if (fight) {
-      // Pooled 2.22 over 160 seeds, worst set 2.35, best 2.08; wins 2-9 per 40.
-      // The bound is 2.60, not the 2.00 this used to carry: 2.00 is BELOW the
-      // true mean, so the old assertion was passing on seed luck and would have
-      // gone red for the next person to touch these constants.
+      // Race 2 pooled 2.22 over 160 seeds, worst set 2.35, best 2.08; wins 2-9
+      // per 40. The bound is 2.60, not the 2.00 this used to carry: 2.00 is
+      // BELOW the true mean, so the old assertion was passing on seed luck.
+      // Race 3 after the Wave-6 finale scaling reads 2.10 with 8/40 wins, so the
+      // same pair of bounds fits both and says the same thing about both.
       assert(c.wins >= 1 && c.mean <= 2.60,
-        `race 2: a tier-2 kart is fighting for the win ` +
+        `race ${R.n}: a tier-2 kart is fighting for the win ` +
         `(${c.wins}/${c.p.length} seeds won, mean place ${f(c.mean)} <= 2.60)`);
-      // ...and not a walkover either: if a future change hands race 2 to anyone
-      // holding a receipt, this side goes red. Measured floor 2.08 over 40.
+      // ...and not a walkover either: if a future change hands the race to
+      // anyone holding a receipt, this side goes red. Measured floor 2.08 (race
+      // 2) and 2.10 (race 3) over 40.
       assert(c.mean >= 1.60,
-        `race 2: a tier-2 kart still has to race for it (mean place ${f(c.mean)} >= 1.60)`);
+        `race ${R.n}: a tier-2 kart still has to race for it (mean place ${f(c.mean)} >= 1.60)`);
       assert(c.mean <= stock - 1.00,
-        `race 2: the upgrade is worth ${f(stock - c.mean)} places over stock (>= 1.00)`);
+        `race ${R.n}: the upgrade is worth ${f(stock - c.mean)} places over stock (>= 1.00)`);
     } else {
       assert(c.wins >= 1 && c.mean <= 2.0,
         `race ${R.n}: a tier-2 kart is fighting for the win ` +
@@ -422,9 +677,16 @@ console.log('\n=== 3b. RACE 2 IS THE MIDDLE RUNG (40 seeds, both axes) ===');
   // (i) CATCHER. The reported failure, direct: race 2 must be a clear step DOWN
   // the order from race 1 for the same clean, unengaged, stock driver.
   // Pre-fix 0.78-0.93 across the four seed sets; after 1.48-1.73.
-  assert(c2.mean - c1.mean >= 1.20,
+  // WAVE 6 re-derived the bound from 1.20 to 0.70. Race 1 was deliberately
+  // hardened this wave (2.25 -> 2.67 on seeds 1-40, 2.20 -> 2.38 and 2.25 -> 2.67
+  // on the two disjoint sets) so that a clean child stops leading half of it, and
+  // race 2 is unchanged at 3.67-3.85, so the same ladder now measures 1.00 / 1.32
+  // / 1.18 places instead of 1.48-1.73. The assertion still says exactly what it
+  // said — race 2 is strictly a step DOWN the order from race 1 — and it is still
+  // red against the pre-Wave-5 bug it was written for (0.78-0.93).
+  assert(c2.mean - c1.mean >= 0.70,
     `race 2 is strictly harder than race 1 for a stock clean driver ` +
-    `(${f(c1.mean)} -> ${f(c2.mean)}, gap ${f(c2.mean - c1.mean)} >= 1.20 places)`);
+    `(${f(c1.mean)} -> ${f(c2.mean)}, gap ${f(c2.mean - c1.mean)} >= 0.70 places)`);
   // (ii) CATCHER. And it lands where the brief wants it: 3rd-4th, never a podium
   // handed out for driving alone. Pre-fix 2.80-3.17, with outright WINS on two
   // of the four sets; after 3.73-3.85 and no win in 160 seeds.
@@ -439,13 +701,17 @@ console.log('\n=== 3b. RACE 2 IS THE MIDDLE RUNG (40 seeds, both axes) ===');
     `(race 2 ${f(c2.mean)} <= race 3 ${f(c3.mean)} + 0.35)`);
   // (iv) CATCHER, and the specific playtest complaint: a well-upgraded kart
   // driven cleanly, with zero quiz engagement, must not simply collect race 2.
-  // Pre-fix a tier-3 kart won 26-31 of every 40 seeds (65-78%) at mean 1.23-1.35;
-  // after, 8-17 of 40 (20-43%) at 1.57-1.90. Both halves of the bound bite on
-  // all four seed sets; the mean bound is 1.45 rather than 1.50 because the
-  // pre-fix cell reaches 1.35 on one of them.
-  assert(c2t3.mean >= 1.45 && c2t3.wins <= 24,
+  // RE-DERIVED in round 2: the shipped cell reads mean 1.45 on seed set 501-540,
+  // which is EXACTLY where the old 1.45 bound sat — an assertion sitting on its
+  // bound is not passing, it is about to fail (D43). Re-measured on five
+  // disjoint 40-seed sets, shipped 1.45-1.57 at 18-22 wins per 40, and the
+  // pre-Wave-5 build (TRACK_PACE.circuit 0.96) 1.07-1.18 at 33-37 wins — both
+  // populations further apart than the old comment claimed (it said 1.23-1.35 /
+  // 26-31). Margins: 0.15 / 0.12 on the mean, 5 / 6 on the wins.
+  assert(c2t3.mean >= 1.30 && c2t3.wins <= 27,
     `race 2 is not a formality for a well-upgraded clean driver ` +
-    `(tier-3 mean ${f(c2t3.mean)} >= 1.45, ${c2t3.wins}/${S40.length} wins <= 24 (60%))`);
+    `(tier-3 mean ${f(c2t3.mean)} >= 1.30, ${c2t3.wins}/${S40.length} wins <= 27; ` +
+    `1.07-1.18 and 33-37 wins at TRACK_PACE.circuit 0.96)`);
   // (v) GUARD, green against the pre-fix bug — it fails the OTHER way, on an
   // over-hardened field (it trips at circuit 1.04 and on the reverted-pace
   // mutant). A fully-spent garage must still close race 2, or the championship
@@ -463,38 +729,45 @@ console.log('\n=== 3b. RACE 2 IS THE MIDDLE RUNG (40 seeds, both axes) ===');
     `at 85% race 2 still sits between the other two ` +
     `(${f(e85[0])} -> ${f(e85[1])} -> ${f(e85[2])})`);
 
-  // (vii) PINS A KNOWN-WRONG SHAPE. READ THIS BEFORE "FIXING" IT.
+  // (vii) THE UPGRADED-KART LADDER — FLIPPED, as the pin it replaced instructed.
   // ------------------------------------------------------------------------
-  // On the axis an engaged child is actually on — a kart with garage parts in
-  // it — the championship is INVERTED, and this assertion pins that rather than
-  // claiming it is right. Measured on S40 (four disjoint 40-seed sets agree):
+  // Until Wave 6 this block pinned a KNOWN-WRONG shape: on the axis an engaged
+  // child is actually on — a kart with garage parts in it — the championship was
+  // INVERTED, race 2 harder than the finale, and the pin said in as many words
+  // that a green tick meant the curve was still as wrong as when it was measured,
+  // with instructions to flip it into a real ladder once race 3 was fixed.
   //
-  //     kart                  race 1        race 2         race 3
-  //     tier-2 all slots      1.00 (100%)   2.22 (12%)     1.09 (92%)
-  //     tier-3 all slots      1.00 (100%)   1.68 (35%)     1.00 (100%)
-  //     eng3/tyre2/frame1     1.00 (100%)   2.23 (11%)     1.79 (37%)
+  //   race 3, tier-2 kart, 40 seeds     mean   wins
+  //   Wave 5.1 (the pinned wrongness)   1.09   36/40      <- easier than race 2
+  //   Wave 6 (aiPartTier sees the child's garage)  2.10    8/40
   //
-  // So the child who spends in the garage — the entire lesson of the game —
-  // meets the wall in the middle and coasts through the finale. This is
-  // PRE-EXISTING: at circuit 0.96 it was already 1.82 (race 2) against 1.09
-  // (race 3), a 0.73-place inversion; Wave 5's race-2 fix widened it to 1.13.
-  // It was left open deliberately, because closing it means making race 3
-  // harder and Wave 5's brief froze races 1 and 3 as approved. GAPS.md carries
-  // the measured lever (the finale's opponents on tier-3 parts).
-  //
-  // A GREEN TICK HERE DOES NOT MEAN THE CURVE IS CORRECT. It means the curve is
-  // still as wrong as it was when this was measured. Whoever fixes race 3 will
-  // see this go red: that is the intended signal — re-derive the numbers above,
-  // then flip this into a real ladder assertion (race 3 tier-2 >= race 2 tier-2).
-  const inversion = c2t2.mean - c3t2.mean;
-  console.log(`  KNOWN-WRONG upgraded ladder: race 2 tier-2 ${f(c2t2.mean)} vs race 3 tier-2 ` +
-    `${f(c3t2.mean)} (inverted by ${f(inversion)} places)`);
-  assert(inversion >= 0.60 && inversion <= 1.60,
-    `the upgraded-kart inversion is UNCHANGED at ${f(inversion)} places ` +
-    `(race 2 ${f(c2t2.mean)} vs race 3 ${f(c3t2.mean)}; pinned 0.60..1.60 — see the note above)`);
-  assert(c3t2.wins >= 28,
-    `race 3 is still a walkover for an upgraded kart (${c3t2.wins}/${S40.length} wins >= 28) ` +
-    `— pinned, not endorsed`);
+  // The finale's field now runs one tier above the child's own kart (still never
+  // above tier 3, still exactly tier 2 for a child who has bought nothing — race
+  // 3 on a STOCK kart is bit-identical to Wave 5.1 on all 240 measured races).
+  // So the ladder is real and is asserted as one.
+  const ladderGap = c3t2.mean - c2t2.mean;
+  console.log(`  upgraded ladder: race 2 tier-2 ${f(c2t2.mean)} (${c2t2.wins} wins) vs race 3 tier-2 ` +
+    `${f(c3t2.mean)} (${c3t2.wins} wins), AI tier ${c2t2.tier} -> ${c3t2.tier}`);
+  // CATCHER, and the direct replacement for the pin. Pre-Wave-6 this reads
+  // -1.07 (race 2 2.17 against race 3 1.10); after, +0.00 to +0.10. The bound is
+  // -0.25 rather than 0 because both cells carry a +-0.15 seed-set spread and a
+  // ladder assertion sitting exactly on zero is a coin flip, not a gate.
+  assert(ladderGap >= -0.25,
+    `the upgraded-kart championship is no longer inverted: race 3 tier-2 ${f(c3t2.mean)} is not ` +
+    `easier than race 2 tier-2 ${f(c2t2.mean)} (gap ${f(ladderGap)} >= -0.25; it was -1.07)`);
+  // CATCHER. The GAPS.md complaint stated directly: an upgrade with no questions
+  // answered must stop collecting the finale. 36/40 before, 8/40 after.
+  // Measured 8 / 13 / 8 wins on the three disjoint 40-seed sets, against 36 for
+  // the pre-Wave-6 field, so the bound is set at 18 (still under half) rather
+  // than hard against the worst set.
+  assert(c3t2.wins <= 18 && c3t2.mean >= 1.60,
+    `race 3 is no longer a walkover for an upgraded kart (${c3t2.wins}/${S40.length} wins <= 18, ` +
+    `mean ${f(c3t2.mean)} >= 1.60; was 36/40 at 1.10)`);
+  // GUARD, the other side: the finale must still be WINNABLE by the child who
+  // spent well, or the lever has been overshot. Measured 8/40 unengaged and
+  // 34/40 for the same kart with a full set of correct answers (section 7).
+  assert(c3t2.mean <= 2.80 && c3t2.wins >= 3,
+    `…and it is still won by a good kart (mean ${f(c3t2.mean)} <= 2.80, ${c3t2.wins}/${S40.length} wins >= 3)`);
 }
 
 // --- 4. the band stays inside its hard bound --------------------------------
@@ -602,9 +875,16 @@ console.log('\n=== 6. THE QUIZ-ENGAGEMENT AXIS (40 seeds, x0 vs x8 correct answe
   // turns a fought-for 2nd into a win. Goes red if the boost is nerfed, if the
   // cadence collapses, or if quiz.js stops calling applyBoost at all (at x0 this
   // cell reads 2.25 with 5/40 wins, so both halves fail).
-  assert(q8[0].mean <= 1.75 && q8[0].wins >= 10,
-    `race 1: answering the questions turns 2nd into a win fight ` +
-    `(x8 mean ${f(q8[0].mean)} <= 1.75, ${q8[0].wins}/${S40.length} wins >= 10, from ${f(q0[0].mean)} at x0)`);
+  // WAVE 6 re-derived: race 1's field is faster now (TRACK_PACE.oasis 1.03 ->
+  // 1.09) so a clean unengaged child reads 2.38-2.68 rather than 2.20-2.25, and
+  // the engaged one 1.48-1.68 with 14-24 wins per 40 rather than 1.35-1.45 with
+  // 22-26. ROUND 2: the 12-win bound was two seeds clear on set 201-240 (14
+  // wins), so it is 10 now; against the null case this catches — a build where
+  // the quiz stops boosting, i.e. the x0 cell, which reads 0-7 wins on the same
+  // five sets — that still leaves 3 wins of margin above and 4 below.
+  assert(q8[0].mean <= 1.90 && q8[0].wins >= 10,
+    `race 1: answering the questions turns 3rd into a win fight ` +
+    `(x8 mean ${f(q8[0].mean)} <= 1.90, ${q8[0].wins}/${S40.length} wins >= 10, from ${f(q0[0].mean)} at x0)`);
   // (ii) GUARD, the other side of the same number: engagement must not TRIVIALISE
   // race 1. Trips at boost 1.45x/2.4s (1.07) and 1.45x/4.0s (1.00).
   assert(q8[0].mean >= 1.15,
@@ -618,15 +898,22 @@ console.log('\n=== 6. THE QUIZ-ENGAGEMENT AXIS (40 seeds, x0 vs x8 correct answe
   // (iv) CATCHER. Race 2 stays the middle rung under FULL engagement too, not
   // just for the unengaged driver section 3b measures. Pre-fix (circuit 0.96)
   // this gap collapses with race 2's mean.
-  assert(q8[1].mean - q8[0].mean >= 1.50,
+  // Bound 1.50 -> 1.20 for the same reason as 3b (i): Wave 6 lifted race 1.
+  // Measured after, on the three disjoint 40-seed sets: 1.62 / 1.82 / 2.15.
+  assert(q8[1].mean - q8[0].mean >= 1.20,
     `race 2 is still strictly harder than race 1 for an engaged child ` +
-    `(${f(q8[0].mean)} -> ${f(q8[1].mean)}, gap ${f(q8[1].mean - q8[0].mean)} >= 1.50)`);
+    `(${f(q8[0].mean)} -> ${f(q8[1].mean)}, gap ${f(q8[1].mean - q8[0].mean)} >= 1.20)`);
   // (v) GUARD, and the direct answer to "is engagement over-rewarded?". A single
   // correct answer may not be worth more than a seventh of a finishing place on
   // any race; measured 0.100 / 0.031 / 0.063. Trips on every boost buff measured
   // (1.45x/4.0s reads 0.156 on race 1 and 0.163 on race 3).
-  assert(Math.max(...perAnswer) <= 0.14,
-    `one correct answer is a nudge, not a shortcut (worst ${f(Math.max(...perAnswer), 3)} places/answer <= 0.14)`);
+  // Bound re-derived in Wave 6 against the mutant rather than against the
+  // shipped number: a tighter race-1 field makes each answer worth more, and the
+  // three disjoint 40-seed sets now read 0.125 / 0.087 / 0.144 on race 1 (was
+  // 0.100 / 0.106 / 0.112). The 1.45x/4.0s boost buff this guard exists to catch
+  // reads 0.209 / 0.206 against the SAME field, so 0.17 sits ~18% clear of both.
+  assert(Math.max(...perAnswer) <= 0.17,
+    `one correct answer is a nudge, not a shortcut (worst ${f(Math.max(...perAnswer), 3)} places/answer <= 0.17)`);
 }
 
 // --- 7. RACE 3, MEASURED EXPLICITLY (Wave 5.1) ------------------------------
@@ -636,25 +923,24 @@ console.log('\n=== 6. THE QUIZ-ENGAGEMENT AXIS (40 seeds, x0 vs x8 correct answe
 // `cloud` — the one track where Wave 1 measured 1.04 laps down (LAPPED) and
 // Wave 2 claimed a fix that was never re-measured end to end.
 //
-// MEASURED, 40 seeds unless stated:
+// MEASURED, 40 seeds unless stated (Wave 5.1 -> Wave 6):
 //   100% stock  x0   mean 3.90  best 2nd  0 wins  15/40 podiums  +2.2s to winner
 //   100% stock  x8   mean 3.40  best 1st  1 win   26/40 podiums
-//   100% tier-2 x0   mean 1.10  36/40 wins        <- OFF TARGET, see below
-//   100% tier-2 x8   mean 1.00  40/40 wins
+//   100% tier-2 x0   mean 1.10, 36/40 wins  ->  2.10, 8/40
+//   100% tier-2 x8   mean 1.00, 40/40 wins  ->  1.18, 34/40
 //    85% stock  x0   mean 6.17            0.10 laps behind
 //    70% stock  x0   8th on 40/40 seeds   0.21 laps behind, 0 lapped, nearest
 //                    opponent never further than 0.08 laps up the road
 //
-// VERDICT: half on target, half off, and the off half is FLAGGED not fixed
-// (Wave 5.1's brief froze race 3). The clean-driver half is right — 3.90 stock,
-// no win in 40 seeds, and engagement moves it to 3.40 with one win. The upgrade
-// half is not: a tier-2 kart wins the finale 36 times in 40 with ZERO questions
-// answered, so "a decent upgrade AND engagement" is really "a decent upgrade".
-// This is the same inversion pinned in 3b (vii) — race 3 is easier than race 2
-// for an upgraded kart — and it is one fault, not two: the finale's opponents
-// stop at tier-2 parts (`aiPartTier` caps at 2), so a child arriving on tier-2
-// meets an equally-equipped field on the geometry with the least room to defend.
-// GAPS.md carries the lever (the finale's opponents on tier-3).
+// VERDICT (Wave 6): on target on both halves at last. The clean-driver half was
+// always right — 3.90 stock, no win in 40 seeds, engagement moves it to 3.40
+// with one win, and every one of those numbers is BIT-IDENTICAL to Wave 5.1
+// because the retune is conditional on the child's own parts. The upgrade half
+// used to read "a tier-2 kart wins the finale 36 times in 40 with ZERO questions
+// answered", i.e. "a decent upgrade AND engagement" was really "a decent
+// upgrade"; `aiPartTier` now takes the child's garage tier and puts the finale's
+// field one tier above it, so the same kart reads 2.10 / 8 wins unengaged and
+// 1.18 / 34 wins engaged. Section (iia) below asserts both ends.
 console.log('\n=== 7. RACE 3 MEASURED AGAINST ITS TARGET ===');
 {
   const R3 = RACES[2];
@@ -672,6 +958,44 @@ console.log('\n=== 7. RACE 3 MEASURED AGAINST ITS TARGET ===');
   // mid-pack and on the podium sometimes, rather than being strung out.
   assert(c0.mean <= 4.60 && c0.podium >= 5,
     `race 3 is a finale, not a wall (mean ${f(c0.mean)} <= 4.60, ${c0.podium}/${S40.length} podiums >= 5)`);
+
+  // (iia) WAVE 6 — THE OTHER HALF OF THE TARGET, WHICH USED TO BE THE OPEN GAP.
+  // "Winning the finale realistically requires a decent upgrade PLUS engagement"
+  // was, until this wave, just "requires a decent upgrade": a tier-2 kart with
+  // ZERO questions answered won 36 of 40 seeds. `aiPartTier` now sees the child's
+  // own garage and puts the finale's field one tier above it, so:
+  //
+  //   race 3, 40 seeds        x0 (clean only)        x8 (fully engaged)
+  //   stock                   3.90, 0 wins           3.40, 1 win     (unchanged)
+  //   tier-2                  2.10, 8 wins           1.18, 34 wins
+  //
+  // i.e. the upgrade buys a real fight and the questions convert it into the win.
+  const t2a = cell40(R3, 1.00, T2, 't2');
+  const t2q = cell40(R3, 1.00, T2, 't2', 8);
+  console.log(`  tier-2 kart: x0 mean ${f(t2a.mean)} wins ${t2a.wins}/${S40.length} (AI tier ${t2a.tier})  ` +
+    `-> x8 mean ${f(t2q.mean)} wins ${t2q.wins}/${S40.length}  (engagement worth ${f(t2a.mean - t2q.mean)} places)`);
+  // CATCHER: an upgrade alone no longer collects the finale.
+  assert(t2a.wins <= 18,
+    `race 3 is not won by the garage alone (tier-2 x0 ${t2a.wins}/${S40.length} wins <= 18, was 36/40)`);
+  // CATCHER: …and an upgrade PLUS engagement does win it, comfortably more often
+  // than not. Goes red if the finale scaling is overshot into "an upgrade is
+  // worthless", and red if quiz.js stops calling applyBoost.
+  // RE-DERIVED in round 2. Round 1 set 22 wins / 1.60 from three seed sets that
+  // read 34 / 27 / 29 wins; sets 201-240 and 501-540 read 28 and 23 wins at mean
+  // 1.38 and 1.55 — one seed and 0.05 places from red. Measured population over
+  // the five sets: 23-34 wins, mean 1.18-1.55. The null case this exists to
+  // catch — a build where the boost does nothing, i.e. the x0 cell beside it —
+  // reads 6-13 wins at 2.05-2.10, so the bounds below clear the shipped code by
+  // 7 wins / 0.30 places and the null case by 3 wins / 0.20 places.
+  assert(t2q.wins >= 16 && t2q.mean <= 1.85,
+    `…but an upgraded, engaged child wins it (tier-2 x8 ${t2q.wins}/${S40.length} wins >= 16, ` +
+    `mean ${f(t2q.mean)} <= 1.85)`);
+  // CATCHER: engagement has to be the thing that made the difference. Measured
+  // 0.55-0.92 places over the five sets (round 1's 0.45 bound left 0.10 on the
+  // worst of them); 0.00 if the boost stops landing.
+  assert(t2a.mean - t2q.mean >= 0.35,
+    `engagement is worth ${f(t2a.mean - t2q.mean)} places on an upgraded kart in the finale (>= 0.35; ` +
+    `it was worth 0.10 when the field stopped at tier 2)`);
 
   // (iii) THE STANDING CONSTRAINT FROM GAPS.md, on the track it was broken on.
   // Section 1 checks all three races on the five gate seeds; this checks `cloud`
@@ -693,6 +1017,109 @@ console.log('\n=== 7. RACE 3 MEASURED AGAINST ITS TARGET ===');
   assert(lonely < 0.15,
     `race 3: a 70%-pace child always has a kart in sight (worst ${f(lonely)} laps to the nearest, budget 0.15)`);
 }
+
+// --- 7c. THE FINALE IS FAIR TO A LOPSIDED GARAGE (Wave 6, round 2) ----------
+// The finale's field steps from tier 2 to tier 3 when the child's own kart is
+// good enough (aiPartTier x playerPartTier). That step is worth a full place, so
+// WHERE the threshold sits decides whether a child who buys a part can finish
+// WORSE for it — the exact shape of unfairness D33 says children notice.
+//
+// WHAT A CHILD CAN ACTUALLY OWN, which is what this section is measured over: a
+// garage visit builds ONE part (scenes.js writes `parts[slot] = tier`, one slot)
+// and there are exactly TWO visits before the finale — the results screen after
+// race 1 and after race 2 — with `parts` cleared by resetChampionship(). So the
+// real race-3 garage has AT MOST TWO non-zero slots. The uniform tier-2 and
+// tier-3 karts sections 2b/3b/7 talk about are not reachable in a championship;
+// they are there to pin the extremes, and they are the ONE shape where round 1's
+// `max` aggregator happened to be harmless.
+//
+// ROUND 1 SHIPPED `max` OVER ALL FOUR SLOTS AND IT WAS NOT HARMLESS. On `cloud`
+// only the engine and the turbo make a kart quicker (autopilot lap time: engine
+// 48.07 -> 45.50, turbo 48.07 -> 46.33, tyres 48.07 -> 48.84, frame 48.07 ->
+// 47.98) — so a tier-2 tyre bought the child nothing and summoned a tier-3
+// field. Measured on the five 40-seed sets, mean place on race 3, x0:
+//
+//   single part only     stock      tyres 2    tyres 3    frame 3    engine 2
+//   round 1 (max of 4)   3.90-4.20  4.80-5.00  4.92-5.10  4.88-4.90  3.17-3.42
+//   now (max eng,turbo)  3.90-4.20  4.10-4.33  4.13-4.38  3.88-4.15  3.17-3.42
+//
+// i.e. buying a tier-3 tyre cost a child a full place; it now costs nothing the
+// physics was not already costing them. (Tyres are mildly negative on `cloud` at
+// every field tier — that is a kartphysics/autopilot fact, present on Wave 5.1
+// too, and the tolerance below is sized to it rather than pretending otherwise.)
+//
+// THE CRITIC'S PROPOSAL, floor-of-mean over the four slots, was measured and
+// rejected: it steps at a slot total of 8 and two garage visits cannot exceed 6,
+// so it never fires in a real game — the strongest reachable garage (a tier-3
+// engine and a tier-3 turbo, two good prompts) goes back to winning the finale
+// 39-40 times in 40 with zero questions answered, which is D44 reopened. Both
+// halves are asserted below.
+console.log('\n=== 7c. THE FINALE IS FAIR TO A LOPSIDED GARAGE (40 seeds) ===');
+{
+  const R3 = RACES[2];
+  const one = (k, v) => ({ engine: 0, tyres: 0, frame: 0, turbo: 0, [k]: v });
+  const stock = cell40(R3, 1.00, null, 'stock');
+  const singles = [
+    ['engine 2', cell40(R3, 1.00, one('engine', 2), 'one-e2')],
+    ['turbo 2', cell40(R3, 1.00, one('turbo', 2), 'one-w2')],
+    ['tyres 2', cell40(R3, 1.00, one('tyres', 2), 'one-t2')],
+    ['tyres 3', cell40(R3, 1.00, one('tyres', 3), 'one-t3')],
+    ['frame 3', cell40(R3, 1.00, one('frame', 3), 'one-f3')],
+  ];
+  console.log(`  stock: mean ${f(stock.mean)} (AI tier ${stock.tier})`);
+  for (const [n, c] of singles) {
+    console.log(`  ${pad(n, 9)}: mean ${f(c.mean)} (AI tier ${c.tier})  ` +
+      `${c.mean > stock.mean ? '+' : ''}${f(c.mean - stock.mean)} vs stock`);
+  }
+  const worst = Math.max(...singles.map(([, c]) => c.mean - stock.mean));
+  const worstName = singles.find(([, c]) => c.mean - stock.mean === worst)[0];
+
+  // CATCHER. MONOTONICITY, stated as the property rather than as cells: no
+  // single part a child can buy may cost them more than the physics already
+  // costs them. Measured worst single-part penalty over the five 40-seed sets:
+  // 0.05-0.40 places here (all of it the tyre/frame flatness, which is present
+  // with no field scaling at all), 0.90-1.15 with round 1's `max`-of-four
+  // aggregator. Margins 0.25 below and 0.25 above.
+  assert(worst <= 0.65,
+    `no single garage part makes the finale worse for the child who bought it ` +
+    `(worst: ${worstName}, ${worst > 0 ? '+' : ''}${f(worst)} places vs stock <= 0.65; ` +
+    `+0.90..+1.15 with a max-over-all-four aggregator)`);
+
+  // CATCHER, the other half. The strongest garage two visits can build — a
+  // tier-3 engine and a tier-3 turbo — must still have to race for the finale.
+  // Measured 17-21 wins per 40 at mean 1.52-1.70; 39-40 wins at 1.00-1.02 both
+  // with the finale scaling removed (Wave 5.1) and with a floor-of-mean
+  // aggregator, which cannot reach its own threshold in two visits. Margins 7
+  // wins / 0.17 places below, 11 wins / 0.33 above.
+  const best = cell40(R3, 1.00, { engine: 3, tyres: 0, frame: 0, turbo: 3 }, 'two-e3w3');
+  console.log(`  best two-visit garage (engine 3 + turbo 3), x0: mean ${f(best.mean)}, ` +
+    `${best.wins}/${S40.length} wins (AI tier ${best.tier})`);
+  assert(best.wins <= 28 && best.mean >= 1.35,
+    `the best garage two visits can build still has to race the finale ` +
+    `(${best.wins}/${S40.length} wins <= 28, mean ${f(best.mean)} >= 1.35; 39-40 wins at 1.00 ` +
+    `with no finale scaling, and with a floor-of-mean aggregator that never fires)`);
+}
+
+// --- MEASURED DEAD END: engagement cannot win race 2 ------------------------
+// Recorded here so nobody spends another wave searching the same space. The
+// question is "can an ENGAGED child win race 2 on a stock kart?", and the answer
+// is no, by roughly a factor of three in every lever available:
+//
+//   * the quiz axis itself (section 6): x8 correct answers is worth 0.22-0.37 of
+//     a place on race 2 across the five seed sets, against 0.99 on race 1, and
+//     leaves the mean at 3.30-3.67 with ZERO wins in 200 seeds.
+//   * the quiz BOOST constant, the lever round 1 named as "never measured": at
+//     1.80x / 5.0s / impulse 12 — a ~3x buff, far past anything shippable, and
+//     one that trivialises race 1 long before it touches race 2 — with twelve
+//     answers race 2 reads mean 2.75 and 0 wins in 40. That buys 0.9 of the 2.7
+//     places needed.
+//   * the band's own race-2 terms: SLOT_FWD_R2 swept to 0 reads 3.45 / 0 wins;
+//     a race-2-only bandCatchMax of 0.60 / 0.40 reads 3.63 / 3.60, 0 wins, and
+//     helps a TIER-3 kart rather than the stock engaged one.
+//
+// Race 2 is the race the GARAGE wins — that is the design, section 3b pins it,
+// and it is why the token economy pays out where it does. Do not re-open this
+// by tuning quiz.js.
 
 // --- optional: where the lapping edge actually is ---------------------------
 if (process.argv.includes('full')) {

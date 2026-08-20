@@ -135,6 +135,36 @@ const COLD_BUDGET = +(a['cold-budget'] || 20000);
 // A caching fix that leaks is not a fix. An identical second lap over every
 // screen must not grow the JS heap by anything like a scene's worth.
 const HEAP_GROWTH_MB = +(a['heap-growth'] || 40);
+// THE PLAYER-PATH BUDGET (Wave 6 item 5).
+//
+// The cold numbers above are the HARNESS path: `__DEBUG.goto` sets
+// `engine._headless`, `introCardEnabled` returns false for it, and a race
+// therefore builds with nothing in front of it. That path is allowed to keep the
+// cost — it is the one that makes the cost measurable.
+//
+// A CHILD never takes that path. Every real race opens on the pre-race card, and
+// since Wave 6 scenes.js raises that card BEFORE building the world, so the
+// one-off first-visit build happens behind a full curtain. What this budget
+// bounds is therefore not the build at all: it is the only part of the
+// transition a child can still perceive as a freeze — the stretch between asking
+// for a race and having something on screen.
+//
+// 400 ms, and it is a ceiling rather than a target: measured on this rasteriser
+// the card mounts 2-5 ms into the transition with 0 ms of main-thread block in
+// front of it, while the build behind it still costs 3.9-5.7 s. Two orders of
+// magnitude of margin is not slack, it is the shape of the fix — the pre-card
+// window contains one `createIntroCard` and two animation frames and nothing
+// else, so anything that pushes it past 400 ms is work that has moved to the
+// wrong side of the curtain, which is the entire regression this section exists
+// to catch.
+const CURTAIN_BUDGET = +(a['curtain-budget'] || 400);
+// ...and the other half of the same assertion. A mask that masks nothing passes
+// trivially, so the section also requires that there WAS a freeze behind the
+// card — otherwise a build that had simply become cheap (or a race that failed
+// to build at all) would read as a successful masking. If this one ever fails
+// because a first visit genuinely got fast, that is the good outcome: retire the
+// check deliberately, do not lower it.
+const CURTAIN_MASKED_MIN = +(a['curtain-masked-min'] || 500);
 const QUALITY = a.quality || 'high';
 const SEED = +(a.seed || 12345);
 
@@ -168,6 +198,7 @@ const browser = await puppeteer.launch({
 
 const errs = [];
 let cold = [], warm = [], caches = null, bakes = null;
+const curtain = [];
 
 try {
   const page = await browser.newPage();
@@ -265,6 +296,59 @@ try {
     },
   };
   caches = { heapCold, heapWarm, heapTier };
+
+  // ── THE PLAYER PATH: a first visit to each track, with the card up ────────
+  // On a SECOND PAGE, deliberately. The caches this file's other laps measure
+  // are module state, so a fresh page is the only way to get three genuinely
+  // cold track builds without perturbing the cold/warm/tier laps above.
+  const p2 = await browser.newPage();
+  await p2.setViewport({ width: 1366, height: 768 });
+  p2.on('pageerror', e => errs.push('PAGEERROR (curtain): ' + e.message));
+  await p2.goto('file://' + dist, { waitUntil: 'load', timeout: 90000 });
+  await p2.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 90000 });
+  await p2.evaluate(() => {
+    window.__HB = { last: performance.now(), max: 0 };
+    setInterval(() => {
+      const t = performance.now(); const g = t - window.__HB.last;
+      window.__HB.last = t; if (g > window.__HB.max) window.__HB.max = g;
+    }, 4);
+  });
+  for (const track of [0, 1, 2]) {
+    await new Promise(r => setTimeout(r, 120));
+    curtain.push(await p2.evaluate(async (tk, seed) => {
+      // A MutationObserver rather than a poll: the build blocks the main thread,
+      // so nothing that has to be scheduled can observe the moment the card is
+      // inserted. The observer callback runs in the yield scenes.js takes for
+      // its two animation frames, which is exactly the window being measured.
+      window.__CARD = { at: null, blockBefore: 0 };
+      const obs = new MutationObserver(() => {
+        if (window.__CARD.at == null && document.querySelector('.ic-root')) {
+          window.__CARD.at = performance.now();
+          window.__CARD.blockBefore = window.__HB.max;
+        }
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+      window.__HB.max = 0; window.__HB.last = performance.now();
+      const t0 = performance.now();
+      // `introCard: true` is the explicit override introCardEnabled() honours in
+      // both directions — this is the real card on the real player path, not a
+      // harness imitation of one.
+      await window.__DEBUG.goto('race', { track: tk, introCard: true, seed, lang: 'he' });
+      const total = performance.now() - t0;
+      obs.disconnect();
+      const sc = window.__DEBUG.engine.active;
+      return {
+        track: tk, total, blockTotal: window.__HB.max,
+        cardAt: window.__CARD.at == null ? null : window.__CARD.at - t0,
+        blockBeforeCard: window.__CARD.blockBefore,
+        cardUp: !!document.querySelector('.ic-root'),
+        armed: sc?.intro?.armed ?? null,
+        phase: sc?.state?.phase ?? null,
+      };
+    }, track, SEED));
+    await p2.evaluate(() => window.__DEBUG.goto('menu', {}));
+  }
+  await p2.close();
 } catch (e) {
   console.error('TRANSITIONTEST FAILED TO RUN:', e.message);
   process.exitCode = 2;
@@ -337,13 +421,48 @@ if (bakes) {
     }
   }
 }
+// ── THE PLAYER PATH ────────────────────────────────────────────────────────
+// Everything above measures the harness path, where a race builds with nothing
+// in front of it. This measures the path a child actually takes, and it is the
+// one the Wave-6 brief set a target for: no perceived freeze on a first visit.
+if (curtain.length) {
+  console.log('  ' + '─'.repeat(76));
+  console.log(`  player path, FIRST visit with the intro card up (budget ${CURTAIN_BUDGET} ms to the curtain)`);
+  console.log('  track        to curtain   block before   masked behind it   card   phase');
+  for (const c of curtain) {
+    const ok = c.cardUp && c.cardAt != null && c.cardAt <= CURTAIN_BUDGET && c.blockBeforeCard <= CURTAIN_BUDGET;
+    console.log(`  ${String(c.track).padEnd(12)} ${f0(c.cardAt).padStart(7)} ms ${f0(c.blockBeforeCard).padStart(11)} ms `
+      + `${f0(c.blockTotal).padStart(15)} ms   ${c.cardUp ? 'up ' : 'NONE'}   ${c.phase}   ${ok ? '' : 'FAIL'}`);
+    // THE STATE MUST HAVE BEEN REACHED. GAPS records that an assertion over a
+    // sample set that was never populated is not an assertion — a run where the
+    // card never mounted would otherwise sail through the timing checks below
+    // with `cardAt === null`.
+    if (!c.cardUp || c.cardAt == null) {
+      failures.push(`track ${c.track}: the intro card never mounted on the player path — nothing was masked, and the timings below mean nothing`);
+      continue;
+    }
+    if (c.phase !== 'intro') failures.push(`track ${c.track}: the race is in phase "${c.phase}" with the card up — the world is not frozen behind the curtain`);
+    if (c.cardAt > CURTAIN_BUDGET) failures.push(`track ${c.track}: ${f0(c.cardAt)} ms of black screen before the curtain rose (> ${CURTAIN_BUDGET} ms) — work has moved in front of the card`);
+    if (c.blockBeforeCard > CURTAIN_BUDGET) failures.push(`track ${c.track}: ${f0(c.blockBeforeCard)} ms of main-thread block before the curtain rose (> ${CURTAIN_BUDGET} ms)`);
+    // The card must be armed by the time the race exists, or a child is looking
+    // at a curtain they cannot raise.
+    if (c.armed !== true) failures.push(`track ${c.track}: the intro card is still unarmed after the build — the child cannot dismiss it (armed=${c.armed})`);
+  }
+  // ...and the mask must have masked something. See CURTAIN_MASKED_MIN.
+  const masked = Math.max(...curtain.map(c => c.blockTotal));
+  console.log(`  worst first-visit build, entirely behind the card: ${f0(masked)} ms`);
+  if (masked < CURTAIN_MASKED_MIN) {
+    failures.push(`the worst first-visit build was only ${f0(masked)} ms (< ${CURTAIN_MASKED_MIN} ms) — there was no freeze to mask, so this section proved nothing`);
+  }
+}
+
 if (errs.length) {
   console.error('\n  page errors / mismatches:');
   for (const e of errs.slice(0, 10)) console.error('   ' + e);
 }
 if (a.json) {
   mkdirSync(dirname(resolve(root, a.json)), { recursive: true });
-  writeFileSync(resolve(root, a.json), JSON.stringify({ BUDGET, COLD_BUDGET, QUALITY, cold, warm, bakes, caches, errs }, null, 2));
+  writeFileSync(resolve(root, a.json), JSON.stringify({ BUDGET, COLD_BUDGET, CURTAIN_BUDGET, QUALITY, cold, warm, curtain, bakes, caches, errs }, null, 2));
 }
 
 if (!warm.length) {

@@ -11,6 +11,7 @@ import { attachPauseControl } from './ui/pause.js';
 import { save } from './core/save.js';
 import { engine } from './core/engine.js';
 import { raceScene } from './race/race.js';
+import { createIntroCard, introCardEnabled } from './race/introcard.js';
 import { garageScene, freePlayScene, setKartPreviewMounter } from './garage/garage.js';
 import { sentenceText } from './garage/prompts.js';
 import {
@@ -249,6 +250,47 @@ setBackdrop(() => {
 // so starting it early costs nothing and starting it late loses badges.
 startBadgeTracker();
 
+// ── WAVE 6 ITEM 5: the intro card is the mask for the first-visit build ─────
+// A track a session has not seen yet costs one big synchronous block to build —
+// twelve baked textures, the sky, the signage occlusion layout, eight karts.
+// Measured on the built game before this change (tools/transitiontest.mjs, cold
+// lap, headless SwiftShader): racer select -> race 3913 ms, championship start
+// on a new theme 5460 ms, the third track 2485 ms; roughly 1.5-2 s of it on a
+// real mid-range laptop. GAPS logged it as the last of the four freezes the
+// player reported, and explicitly REJECTED the fix that was proposed for it —
+// prebaking a track on idle frames, which is a new system rather than a cache.
+//
+// The cheap fix is that the game already has a full curtain for exactly this
+// moment and was raising it a second too late. The pre-race card owns the whole
+// screen, freezes the world (phase 'intro', time scale 0) and is shown before
+// every race anyway. Built inside raceScene() it could only appear AFTER the
+// build; raised here it appears BEFORE it, and the child spends the freeze
+// reading the same card they were going to read.
+//
+// Two details make it honest rather than a trick:
+//   * the double rAF. Mounting the element is not showing it — without a real
+//     paint between the mount and the build, the browser coalesces both into one
+//     frame and the child sees the freeze with nothing on top of it. Two frames
+//     is one to lay it out and one to present it.
+//   * `armed: false`. The build blocks the main thread, and a blocked thread
+//     QUEUES input rather than dropping it, so every key a child pressed during
+//     those two seconds is delivered the instant the build returns. An armed
+//     card would be dismissed by the first of them, unread. race.js arms it once
+//     there is a race behind it (introcard.js).
+//
+// Nothing about the card the child sees changes: same copy, same modal id, same
+// place in the sequence. And nothing about the harness paths changes either —
+// `introCardEnabled` is false for backdrops, autopilot and `engine._headless`,
+// so gates and screenshots keep paying the cost in the open, where it is
+// measurable.
+async function raiseIntroCurtain(eng, o, trackIndex) {
+  if (!introCardEnabled(o, eng)) return null;
+  const card = createIntroCard({ track: trackIndex, mount: eng.ui, armed: false });
+  if (!card) return null;                       // deferred behind another modal
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return card;
+}
+
 export const SCENES = {
   menu: (eng, o) => titleScene(eng, o),
 
@@ -266,14 +308,22 @@ export const SCENES = {
     racerId: o.racerId ?? (o.fresh ? undefined : save.read('racerId')),
   }),
 
-  race: (eng, o = {}) => {
+  race: async (eng, o = {}) => {
     // Clamp: a caller that asks for race 4 of a 3-race championship (the old
     // "continue" button did exactly that once the ledger was full) used to index
     // past TRACKS and boot a scene with no track — a black screen with no way out.
     const trackIndex = Math.max(0, Math.min(TRACKS.length - 1, o.track ?? nextRaceIndex()));
     if (o.racerId) save.set({ racerId: o.racerId });
-    const s = raceScene(eng, {
+    // WAVE 6 ITEM 5 — raise the curtain BEFORE the world is built behind it.
+    // See raiseIntroCurtain() below and the block in race.js. This is the reason
+    // the factory is async: the curtain has to be given a frame to paint before
+    // `raceScene()` takes the main thread for a second and a half.
+    const curtain = await raiseIntroCurtain(eng, o, trackIndex);
+    let s;
+    try {
+      s = raceScene(eng, {
       ...o,
+      introCurtain: curtain,
       track: trackIndex,
       racerId: o.racerId || save.read('racerId') || ROSTER[0].id,
       // Difficulty escalates across the championship: gentle → challenging.
@@ -291,7 +341,12 @@ export const SCENES = {
         recordRace(result);
         engine.goto('results', { ...result, isChampionship: true });
       },
-    });
+      });
+    } catch (e) {
+      // A curtain with no race behind it is a screen a child cannot leave.
+      curtain?.dispose();
+      throw e;
+    }
 
     // Escape → pause. The freeze needs all three of engine.paused, a wrapped
     // scene.update (because the capture harness calls update directly and never
