@@ -1028,11 +1028,24 @@ export function raceScene(engine, opts = {}) {
     };
   }
 
-  // The world behind the curtain exists now, so the card may be dismissed. Any
-  // key or tap the child made during the build was queued while it was unarmed
-  // and has already been swallowed (see the intro-card block above). A card this
-  // scene created itself was armed from birth, so this is a no-op for it.
-  intro?.arm();
+  // The world behind the curtain exists now, so the card may be dismissed — but
+  // NOT on this task. The build above blocked the main thread, and a blocked
+  // thread queues input rather than dropping it; that queue is drained before
+  // the next rendering opportunity. Arming here, synchronously, would arm the
+  // card a moment BEFORE the child's queued keypress arrives, and the latch
+  // would swallow nothing at all (measured — see introcard.js's `arm()` note).
+  // Two animation frames is strictly after every queued event. A card this scene
+  // created itself was armed from birth, so this costs it nothing.
+  // The timer is a backstop, not a second mechanism: a page that is producing no
+  // animation frames at all (a background tab, a rasteriser under heavy load)
+  // would otherwise leave the card permanently unarmed, which is the one failure
+  // worse than the freeze. It cannot arm early — queued input is delivered the
+  // moment the build ends, long before any 300 ms timer. `arm()` is idempotent.
+  if (intro && !intro.armed) {
+    const armOnce = () => intro.arm();
+    requestAnimationFrame(() => requestAnimationFrame(armOnce));
+    setTimeout(armOnce, 300);
+  }
 
   // ══════════════════════════════════════════════════════════════════ scene API
   return {

@@ -1930,22 +1930,67 @@ without them:
 * **`armed: false`.** A synchronous build does not swallow input, it QUEUES it — every key and
   tap a child makes during those two seconds is dispatched the instant the build returns. An
   armed card would be dismissed by the first of them, having been readable for zero
-  milliseconds. The curtain is mounted inert and `race.js` arms it once there is a race behind
-  it. `dispose()` still works either way, because teardown is not a dismissal.
+  milliseconds. The curtain is mounted inert and `race.js` arms it two animation frames after
+  the build. `dispose()` still works either way, because teardown is not a dismissal.
+* **An opaque scrim while unarmed.** The normal scrim is deliberately translucent, but what is
+  behind a curtain is the screen the child just left — racer select's kart tiles, with the new
+  race's HUD chips already painted over them — which reads as "the last screen has not gone
+  away". It drops back to the usual scrim at `arm()`, so nothing about the card a child reads
+  in a warm entry changes.
 
 Nothing about the harness paths changed, deliberately: `introCardEnabled` is false for
 backdrops, autopilot and `engine._headless`, so gates and screenshots keep paying the
 first-visit cost **in the open, where it stays measurable**. The `race` scene factory became
 `async` for the yield; `engine.goto` already awaited it.
 
-**The gate had to be told what to measure, because the old number stopped meaning anything.**
-The transition gate's cold budget bounds the whole build, and the build did not get faster —
-it moved behind a curtain. So the new section measures the only stretch a child can still
-perceive as a freeze: the window between asking for a race and having something on screen,
-budgeted at 400 ms against a measured 2–6 ms. And it asserts the other half too — that the
-masked build was at least 500 ms — because **a mask that masks nothing passes trivially**, and
-a race that failed to build at all would otherwise read as a successful masking. It also
-asserts the card actually mounted and the scene is in phase `intro`, for the same reason.
+**Both of those details were shipped in a form that did not work, and a critic caught both by
+building mutants rather than by reading the code.** The write-up above is what the second
+version does; the first version's is worth keeping because the two failures are different
+species of the same mistake — believing a mechanism because it is described at length.
+
+* **The latch was inert.** `arm()` was called synchronously at the end of the blocking build —
+  that is, in the very task that queued the input — so the browser armed the card a moment
+  before delivering the child's keypress. Measured: a Space dispatched 250 ms into a 2.5 s
+  build arrived at 2558 ms with `armed === true` and took the card down (`phase: "countdown"`);
+  pointer taps behaved identically. Every assertion about it read `armed` **after** the build,
+  where it is true whether the latch works or is decorative. It is now armed two animation
+  frames later — strictly after every queued event — with a 300 ms timer as a backstop for a
+  page producing no frames at all, since a card that never arms is the one outcome worse than
+  the freeze. The gate now presses a real key mid-build and asserts the card **survives**, and
+  then that a key after arming still dismisses it.
+* **The paint metric measured DOM insertion, not pixels.** A `MutationObserver` fires the
+  moment the element is appended, which is 2–4 ms regardless of whether the browser ever gets
+  a rendering opportunity. A mutant that mounts the card and replaces the double `rAF` with
+  `await Promise.resolve()` — showing a child a frozen title screen for the whole build —
+  **passed the section clean at "2 ms to curtain"**. The number is now the time from insertion
+  to the first animation-frame callback with the card in the DOM, which is the frame the
+  browser is about to render; the same mutant now fails at 1464 ms and 1492 ms. A companion
+  assertion that was worse than useless is gone: `blockBeforeCard` read the heartbeat's
+  high-water mark from inside a microtask that runs at insertion, so it was **structurally
+  always 0** and reported 0 ms even against a mutant with 2460 ms of block in front of the card.
+
+So the section now measures the only stretch a child can perceive as a freeze — asking for a
+race and having something on screen — at 0–4 ms against a 400 ms budget, and asserts the other
+half too: that the masked build was at least 500 ms, because **a mask that masks nothing passes
+trivially** and a race that failed to build at all would otherwise read as a success. It also
+asserts the card mounted and the scene is in phase `intro`, for the same reason.
+
+One measurement honesty note that came out of the same pass: the gate's own first transition on
+a freshly loaded page pays one-time WebGL program links that belong to the rasteriser rather
+than the game (track 0 read 642 ms to first paint against a 200 ms build behind the curtain), so
+the section takes one priming transition first — the same argument this file already makes for
+its 20-second cold budget. And **track 0 is never really cold**: the title screen's backdrop is
+a live race on it, so booting the page has already baked its theme. Tracks 1 and 2 are the
+genuine first visits, and they are the ones carrying 1.4–1.5 s of build behind the curtain.
+
+**A third thing the critic found, which is a real bug rather than a gate one.** A child
+double-tapping "לזינוק!" starts a second `goto` while the first is still building, and
+`engine.goto` only clears the modal registry when it has an active scene to leave — the first
+call has already forgotten its scene. So the second `createIntroCard` saw the FIRST curtain's
+own `'intro'` id, deferred, returned null, and the second race built **with no curtain at all**:
+a bare two-second freeze plus a silently skipped welcome. Measured `icRoots: 0,
+phase: "countdown"`. `scenes.js` now retires its own previous curtain before raising a new one;
+the same scenario now ends `icRoots: 1, phase: "intro"`. Kids double-tap buttons.
 
 ## D63 — A feature can be fully tested and completely inert, and this one was for an afternoon
 The finale scaling of D58 lives in `ai.js`, is exercised by fourteen assertions in

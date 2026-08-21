@@ -166,6 +166,15 @@ const INTRO_CSS = `
   padding:clamp(16px,4vh,40px);font-family:var(--font);
   background:radial-gradient(120% 90% at 50% 42%,rgba(10,8,22,.52),rgba(4,4,12,.88));
   backdrop-filter:blur(3px);cursor:pointer}
+/* While the card is a CURTAIN (mounted unarmed, with the world still being
+   built behind it) the thing underneath is the PREVIOUS screen — racer select's
+   kart tiles, with the new race's HUD chips already painted over them. The
+   normal scrim is deliberately translucent, which there reads as "the last
+   screen has not left yet". Opaque until arm(), then it drops back to the scrim
+   the child has seen before every other race. Copy, layout and timing are
+   untouched; only what is visible THROUGH it changes, and only during a window
+   that does not exist on any warm entry. */
+.ic-scrim.ic-curtain{background:#0a0816;backdrop-filter:none}
 .ic-card{position:relative;inline-size:min(680px,94%);
   padding:clamp(20px,3.4vh,34px) clamp(22px,3.4vw,40px) clamp(18px,2.8vh,28px);
   display:flex;flex-direction:column;align-items:center;text-align:center;gap:clamp(8px,1.4vh,14px);
@@ -306,10 +315,23 @@ export function introCardEnabled(opts = {}, engine = null) {
  * build returns, and the first of them would dismiss a card that has been on
  * screen for zero readable milliseconds. `armed: false` mounts the card inert —
  * `skip()` refuses until `arm()` is called — so those queued events land on a
- * card that is not listening and the child simply presses again. This is the
- * ONLY behaviour difference; copy, timing on screen, the modal id, the
- * e.repeat guard and the no-`noteTeachingCard()` rule are all untouched.
+ * card that is not listening and the child simply presses again. It also mounts
+ * the scrim OPAQUE, because what is behind it during that window is the screen
+ * the child just left. Copy, timing on screen, the modal id, the e.repeat guard
+ * and the no-`noteTeachingCard()` rule are all untouched.
  * `dispose()` always works, armed or not — teardown is not a dismissal.
+ *
+ * WHEN `arm()` IS CALLED IS THE WHOLE MECHANISM, and the first version of this
+ * got it wrong in a way that made the latch completely inert. Arming at the end
+ * of the blocking build runs in the SAME task that queued the input, and the
+ * browser drains that queue before the next rendering opportunity — so the key
+ * arrives a moment later to an already-armed card. Measured by a critic: a Space
+ * dispatched 250 ms into a 2.5 s build was delivered at 2558 ms with
+ * `armed === true`, and the card was gone (`phase: "countdown"`). Pointer taps
+ * behaved identically. The caller must therefore arm after **two animation
+ * frames**, which is strictly later than every queued event.
+ * `tools/transitiontest.mjs` presses a real key mid-build and asserts the card
+ * survives, so this cannot silently revert to a decorative flag.
  *
  * @param o {track?:number|string, def?:object, mount:HTMLElement, onSkip?:fn,
  *           armed?:boolean}
@@ -380,7 +402,8 @@ export function createIntroCard(o = {}) {
       h('p.ic-fact', null, c.fact)),
     h('div.ic-foot', null, h('span.ic-hint', null, c.hint), btn));
 
-  const scrim = h('div.ic-scrim.on.fade-in', { onclick: () => skip('pointer') }, card);
+  const scrim = h(`div.ic-scrim.on.fade-in${armed ? '' : '.ic-curtain'}`,
+    { onclick: () => skip('pointer') }, card);
   const root = h('div.ic-root', null, scrim);
   o.mount?.appendChild(root);
   btn.focus?.({ preventScroll: true });
@@ -389,8 +412,20 @@ export function createIntroCard(o = {}) {
     el: root,
     get open() { return open; },
     get armed() { return armed; },
-    /** The world behind the card is ready; the card may now be dismissed. */
-    arm() { armed = true; },
+    /**
+     * The world behind the card is ready: drop the opaque curtain back to the
+     * normal scrim and allow dismissal.
+     *
+     * MUST NOT be called synchronously at the end of the blocking build — see
+     * the `armed: false` note above. A blocked main thread QUEUES input, and the
+     * queue is drained before the next rendering opportunity, so arming inside
+     * that same task arms the card before the child's keypress is delivered and
+     * the latch swallows nothing at all. Measured: a Space pressed 250 ms into a
+     * 2.5 s build arrived at 2558 ms with `armed === true` and took the card
+     * down. The caller arms after two animation frames, which is strictly after
+     * every queued event.
+     */
+    arm() { armed = true; scrim.classList.remove('ic-curtain'); },
     /** Late-bound dismissal callback — see `onSkip` above. */
     setOnSkip(fn) { onSkip = fn; },
     skip,

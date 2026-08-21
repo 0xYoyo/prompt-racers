@@ -283,10 +283,28 @@ startBadgeTracker();
 // `introCardEnabled` is false for backdrops, autopilot and `engine._headless`,
 // so gates and screenshots keep paying the cost in the open, where it is
 // measurable.
+let liveCurtain = null;
 async function raiseIntroCurtain(eng, o, trackIndex) {
   if (!introCardEnabled(o, eng)) return null;
+  // Retire our OWN previous curtain first. A child double-tapping "לזינוק!"
+  // starts a second `goto` while the first is still building, and `engine.goto`
+  // only clears the modal registry when it has an active scene to leave — the
+  // first call already forgot its scene before awaiting. So without this the
+  // second `createIntroCard` sees the FIRST curtain's own 'intro' id, defers,
+  // returns null, and the second race builds with no curtain at all: a bare
+  // two-second freeze plus a silently skipped welcome. Measured; kids double-tap
+  // buttons. The scene that owns the retired card is the one `goto`'s ticket
+  // check is about to throw away.
+  liveCurtain?.dispose();
+  liveCurtain = null;
   const card = createIntroCard({ track: trackIndex, mount: eng.ui, armed: false });
   if (!card) return null;                       // deferred behind another modal
+  liveCurtain = card;
+  // Mounting is not showing. Without a real paint between the mount and the
+  // build, the browser coalesces both into one frame and the child sees the
+  // freeze with nothing on top of it — a mutant that skips this line passes
+  // every DOM-level assertion while showing a frozen title screen. Two frames:
+  // one to lay it out, one to present it.
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   return card;
 }

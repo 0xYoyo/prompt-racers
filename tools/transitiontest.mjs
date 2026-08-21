@@ -199,6 +199,7 @@ const browser = await puppeteer.launch({
 const errs = [];
 let cold = [], warm = [], caches = null, bakes = null;
 const curtain = [];
+let latch = null;
 
 try {
   const page = await browser.newPage();
@@ -313,6 +314,21 @@ try {
       window.__HB.last = t; if (g > window.__HB.max) window.__HB.max = g;
     }, 4);
   });
+  // One priming transition first, and it is not a cheat — it is the same
+  // argument this file already makes for COLD_BUDGET. A freshly loaded page owes
+  // one-time costs that belong to the rasteriser rather than to the game (WebGL
+  // program links dominate under SwiftShader), and the very first transition on
+  // it pays all of them. Without this, track 0 measured 642 ms to its first
+  // frame while the build behind the curtain was only 200 ms — i.e. the number
+  // was almost entirely page warm-up, and gating it would gate the rasteriser.
+  //
+  // Note also that track 0 is never really cold here: the title screen's
+  // backdrop is a live race on it, so booting the page has already baked its
+  // theme. Tracks 1 and 2 are the genuinely cold entries, and they are the ones
+  // carrying a real build behind the curtain (see the masked column).
+  await p2.evaluate(() => window.__DEBUG.goto('select', {}));
+  await new Promise(r => setTimeout(r, 300));
+
   for (const track of [0, 1, 2]) {
     await new Promise(r => setTimeout(r, 120));
     curtain.push(await p2.evaluate(async (tk, seed) => {
@@ -320,11 +336,27 @@ try {
       // so nothing that has to be scheduled can observe the moment the card is
       // inserted. The observer callback runs in the yield scenes.js takes for
       // its two animation frames, which is exactly the window being measured.
-      window.__CARD = { at: null, blockBefore: 0 };
+      // `at` is DOM INSERTION and `painted` is the second animation frame after
+      // it. The difference is the whole item: a mutant that mounts the card and
+      // never yields to the compositor inserts it in 2 ms and shows the child a
+      // frozen title screen for the entire build, and an insertion-only metric
+      // calls that a success. If the build takes the thread before those two
+      // frames run, they cannot run until it finishes — so `painted - at` is
+      // the length of the freeze the child saw with nothing on top of it.
+      window.__CARD = { at: null, painted: null };
       const obs = new MutationObserver(() => {
         if (window.__CARD.at == null && document.querySelector('.ic-root')) {
           window.__CARD.at = performance.now();
-          window.__CARD.blockBefore = window.__HB.max;
+          // ONE frame, and the count is the point. An animation-frame callback
+          // for frame N runs immediately before frame N is rendered, so this
+          // firing means the browser reached a rendering opportunity with the
+          // card in the DOM — i.e. it painted it. scenes.js yields for two
+          // frames before building, so with correct code this callback lands in
+          // the first of them, well before the thread is taken. With a mutant
+          // that mounts the card and does not yield, the build runs inside this
+          // same task and the callback cannot fire until it is over — which is
+          // exactly the difference this number reports.
+          requestAnimationFrame(() => { window.__CARD.painted = performance.now(); });
         }
       });
       obs.observe(document.body, { childList: true, subtree: true });
@@ -335,12 +367,17 @@ try {
       // harness imitation of one.
       await window.__DEBUG.goto('race', { track: tk, introCard: true, seed, lang: 'he' });
       const total = performance.now() - t0;
+      // The card is armed two animation frames after the build (see race.js);
+      // under a software rasteriser two frames can outlast `__DEBUG.goto`'s own
+      // 60 ms settle, so give it a beat before reading the flag.
+      await new Promise(r => setTimeout(r, 350));
       obs.disconnect();
       const sc = window.__DEBUG.engine.active;
       return {
         track: tk, total, blockTotal: window.__HB.max,
         cardAt: window.__CARD.at == null ? null : window.__CARD.at - t0,
-        blockBeforeCard: window.__CARD.blockBefore,
+        paintedAfterMount: window.__CARD.painted == null || window.__CARD.at == null
+          ? null : window.__CARD.painted - window.__CARD.at,
         cardUp: !!document.querySelector('.ic-root'),
         armed: sc?.intro?.armed ?? null,
         phase: sc?.state?.phase ?? null,
@@ -349,6 +386,45 @@ try {
     await p2.evaluate(() => window.__DEBUG.goto('menu', {}));
   }
   await p2.close();
+
+  // ── THE LATCH: a key pressed DURING the build must not take the card ──────
+  // A blocked main thread queues input rather than dropping it, so every key a
+  // child presses while the world is being built is delivered the instant the
+  // build returns. The first version of this arming shipped as a decorative
+  // flag — it armed the card synchronously at the end of the build, i.e. before
+  // the queued key arrived — and a critic measured a Space pressed 250 ms into a
+  // 2.5 s build destroying the card at 2558 ms with `armed === true`. Nothing
+  // caught it, because every assertion read `armed` AFTER the build, where it is
+  // true either way. So this presses a real key mid-build and asserts the CARD
+  // SURVIVES, and then asserts a key after arming still works — because a
+  // curtain a child cannot raise is worse than the freeze it replaced.
+  const p3 = await browser.newPage();
+  await p3.setViewport({ width: 1366, height: 768 });
+  p3.on('pageerror', e => errs.push('PAGEERROR (latch): ' + e.message));
+  await p3.goto('file://' + dist, { waitUntil: 'load', timeout: 90000 });
+  await p3.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 90000 });
+  // Track 1 on a fresh page: a genuinely cold build, so there is a real block to
+  // press into. Not awaited — the point is to be typing while it runs.
+  const building = p3.evaluate(async (seed) => {
+    const t0 = performance.now();
+    await window.__DEBUG.goto('race', { track: 1, introCard: true, seed, lang: 'he' });
+    return performance.now() - t0;
+  }, SEED);
+  await new Promise(r => setTimeout(r, 300));
+  await p3.keyboard.press('Space');            // queued behind the blocking build
+  const buildMs = await building;
+  await new Promise(r => setTimeout(r, 250));  // past the two arming frames
+  latch = await p3.evaluate(() => ({
+    survived: !!document.querySelector('.ic-root'),
+    phase: window.__DEBUG.engine.active?.state?.phase ?? null,
+    armed: window.__DEBUG.engine.active?.intro?.armed ?? null,
+  }));
+  latch.buildMs = buildMs;
+  // …and now that it is armed, a key must still dismiss it.
+  await p3.keyboard.press('Space');
+  await new Promise(r => setTimeout(r, 200));
+  latch.dismissable = await p3.evaluate(() => !document.querySelector('.ic-root'));
+  await p3.close();
 } catch (e) {
   console.error('TRANSITIONTEST FAILED TO RUN:', e.message);
   process.exitCode = 2;
@@ -428,10 +504,11 @@ if (bakes) {
 if (curtain.length) {
   console.log('  ' + '─'.repeat(76));
   console.log(`  player path, FIRST visit with the intro card up (budget ${CURTAIN_BUDGET} ms to the curtain)`);
-  console.log('  track        to curtain   block before   masked behind it   card   phase');
+  console.log('  track        to curtain   to first px    masked behind it   card   phase');
   for (const c of curtain) {
-    const ok = c.cardUp && c.cardAt != null && c.cardAt <= CURTAIN_BUDGET && c.blockBeforeCard <= CURTAIN_BUDGET;
-    console.log(`  ${String(c.track).padEnd(12)} ${f0(c.cardAt).padStart(7)} ms ${f0(c.blockBeforeCard).padStart(11)} ms `
+    const ok = c.cardUp && c.cardAt != null && c.cardAt <= CURTAIN_BUDGET
+      && c.paintedAfterMount != null && c.paintedAfterMount <= CURTAIN_BUDGET;
+    console.log(`  ${String(c.track).padEnd(12)} ${f0(c.cardAt).padStart(7)} ms ${f0(c.paintedAfterMount).padStart(11)} ms `
       + `${f0(c.blockTotal).padStart(15)} ms   ${c.cardUp ? 'up ' : 'NONE'}   ${c.phase}   ${ok ? '' : 'FAIL'}`);
     // THE STATE MUST HAVE BEEN REACHED. GAPS records that an assertion over a
     // sample set that was never populated is not an assertion — a run where the
@@ -443,16 +520,44 @@ if (curtain.length) {
     }
     if (c.phase !== 'intro') failures.push(`track ${c.track}: the race is in phase "${c.phase}" with the card up — the world is not frozen behind the curtain`);
     if (c.cardAt > CURTAIN_BUDGET) failures.push(`track ${c.track}: ${f0(c.cardAt)} ms of black screen before the curtain rose (> ${CURTAIN_BUDGET} ms) — work has moved in front of the card`);
-    if (c.blockBeforeCard > CURTAIN_BUDGET) failures.push(`track ${c.track}: ${f0(c.blockBeforeCard)} ms of main-thread block before the curtain rose (> ${CURTAIN_BUDGET} ms)`);
+    // THE ASSERTION THAT ACTUALLY MATTERS. Insertion is cheap and always fast;
+    // what the child sees is the second presented frame after it. If the build
+    // took the thread before the compositor got a turn, this is the length of
+    // the unmasked freeze.
+    if (c.paintedAfterMount == null) {
+      failures.push(`track ${c.track}: the curtain was inserted but no frame was ever rendered with it — the child saw the previous screen for the whole build`);
+    } else if (c.paintedAfterMount > CURTAIN_BUDGET) {
+      failures.push(`track ${c.track}: ${f0(c.paintedAfterMount)} ms between mounting the curtain and the first frame rendered with it (> ${CURTAIN_BUDGET} ms) — the build is taking the thread before the child sees the card`);
+    }
     // The card must be armed by the time the race exists, or a child is looking
     // at a curtain they cannot raise.
     if (c.armed !== true) failures.push(`track ${c.track}: the intro card is still unarmed after the build — the child cannot dismiss it (armed=${c.armed})`);
   }
   // ...and the mask must have masked something. See CURTAIN_MASKED_MIN.
+  // `max`, not `min`, and deliberately: track 0's theme is already warm here
+  // because the title screen's backdrop is a real race on it, so track 0
+  // legitimately has almost nothing left to mask (measured at ~200 ms, which is
+  // good news rather than a failure). What this checks is that AT LEAST ONE
+  // track still had a real build behind the curtain — otherwise a race that
+  // failed to build at all would read as a successful masking.
+  if (latch) {
+    console.log(`  latch: Space pressed 300 ms into a ${f0(latch.buildMs)} ms build -> `
+      + `card ${latch.survived ? 'SURVIVED' : 'was destroyed'}, phase ${latch.phase}, armed ${latch.armed}`
+      + `; a key after arming ${latch.dismissable ? 'dismisses it' : 'DOES NOT dismiss it'}`);
+    if (latch.buildMs < CURTAIN_MASKED_MIN) {
+      failures.push(`the latch probe only had ${f0(latch.buildMs)} ms of build to press into — it did not test anything`);
+    }
+    if (!latch.survived || latch.phase !== 'intro') {
+      failures.push('a key pressed while the world was being built destroyed the intro card — the unarmed latch is inert, and a child who taps during the freeze loses the card unread');
+    }
+    if (!latch.dismissable) {
+      failures.push('the intro card could not be dismissed after arming — a curtain a child cannot raise is worse than the freeze it replaced');
+    }
+  }
   const masked = Math.max(...curtain.map(c => c.blockTotal));
-  console.log(`  worst first-visit build, entirely behind the card: ${f0(masked)} ms`);
+  console.log(`  longest build masked by the curtain (of the three): ${f0(masked)} ms`);
   if (masked < CURTAIN_MASKED_MIN) {
-    failures.push(`the worst first-visit build was only ${f0(masked)} ms (< ${CURTAIN_MASKED_MIN} ms) — there was no freeze to mask, so this section proved nothing`);
+    failures.push(`no track had a build longer than ${f0(masked)} ms behind the curtain (< ${CURTAIN_MASKED_MIN} ms) — there was nothing to mask, so this section proved nothing`);
   }
 }
 
@@ -462,7 +567,7 @@ if (errs.length) {
 }
 if (a.json) {
   mkdirSync(dirname(resolve(root, a.json)), { recursive: true });
-  writeFileSync(resolve(root, a.json), JSON.stringify({ BUDGET, COLD_BUDGET, CURTAIN_BUDGET, QUALITY, cold, warm, curtain, bakes, caches, errs }, null, 2));
+  writeFileSync(resolve(root, a.json), JSON.stringify({ BUDGET, COLD_BUDGET, CURTAIN_BUDGET, QUALITY, cold, warm, curtain, latch, bakes, caches, errs }, null, 2));
 }
 
 if (!warm.length) {

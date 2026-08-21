@@ -596,3 +596,11 @@ enables is exercised by a test that constructs its own subject (D63). It is now 
 snapshot whole files you are not editing**, and if a gate must run against pre-change code,
 build a mutant into `.tmp/` and point the gate's `--html`/`--dist` flag at it rather than
 mutating the shared tree at all.
+
+### A scene factory that throws leaves the game with no scene at all
+`engine.goto` has no try/catch around `await factory(...)`, so an exception escaping a scene
+factory leaves `active = null`, `activeName = null` and an empty `ui` — a black screen a child
+cannot leave. Found while stress-testing Wave 6's curtain with a deliberately throwing build:
+the curtain itself is correctly disposed and the modal registry stays clean (so the audio does
+not stay ducked), but the game is over. Pre-existing, not reachable by any code path today, and
+not fixed in the final wave. The fix is a try/catch in `goto` that routes to the menu.
