@@ -1860,7 +1860,18 @@ export function racerSelectScene(engine, opts = {}) {
       });
     }
 
-    function select(i, animate = true) {
+    // `notify` is the sound/telemetry channel, and it is deliberately narrow:
+    // ONE selection action must produce exactly one `menu:racer`. A mouse press
+    // on a card focuses it first (onfocus → select) and then clicks it (onclick
+    // → select), so an unconditional emit here fired the ui.select sound twice a
+    // few ms apart — the Wave 6 "double click" regression. Emitting only when the
+    // index actually MOVES collapses that pair back into one, leaves a re-click
+    // on the already-picked card silent (nothing changed), and keeps the
+    // build-time select (notify=false) from playing a sound on scene entry.
+    // Deliberately not a time-based de-bounce: that would hide a future
+    // double-emit instead of preventing one. Gate: tools/selecttest.mjs §2b.
+    function select(i, animate = true, notify = true) {
+      const prev = index;
       index = ((i % RACERS.length) + RACERS.length) % RACERS.length;
       cards.forEach((c, j) => {
         const on = j === index;
@@ -1876,7 +1887,7 @@ export function racerSelectScene(engine, opts = {}) {
       const r = racerAt(index);
       if (pickedName) pickedName.textContent = racerName(r);
       if (pickedChip) pickedChip.style.background = hex(r.color);
-      bus.emit('menu:racer', r);
+      if (notify && index !== prev) bus.emit('menu:racer', r);
     }
 
     function makeCard(r, i) {
@@ -1955,7 +1966,7 @@ export function racerSelectScene(engine, opts = {}) {
           keyHint(['Enter'], 'menu.select.confirm'),
           keyHint(['Esc'], 'menu.key.back')));
 
-      select(index, false);
+      select(index, false, false);   // paint the initial pick without sounding it
       layoutKarts();
     };
 

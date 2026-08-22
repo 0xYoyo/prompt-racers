@@ -413,6 +413,133 @@ const ran = await page.evaluate(()=>{ const a=window.__DEBUG.engine.active, t0=a
   window.__DEBUG.advance(1); return a.state.raceTime-t0; });
 ok('the race is running again afterwards', ran > 0.5, `+${ran.toFixed(2)}s`);
 
+// ── 8b. …and so does SPACE, the key every other card takes ───────────────
+// Every other in-game modal goes on with Space; the token explainer used to
+// take only Escape, so the one key a child has already been taught ("space goes
+// on", printed on the question-box card's own button) did nothing here — and
+// worse, fell through to input.js. With the D20 guard: Space is also the DRIFT
+// key, so a HELD Space — the child was drifting when the token was collected —
+// must not snatch the card away with a key they never released.
+console.log('\n  8b. Space dismisses the token explainer (and a held Space does not)');
+// Drives a fresh race until the explainer owns the screen. Same shape as the
+// loop above; the quiz panels on the way have to be cleared or the kart never
+// reaches a token.
+async function driveToTokenExplainer() {
+  await boot(false, { autopilot:true });
+  for (let s=0;s<140;s+=2) {
+    await page.evaluate(()=>window.__DEBUG.advance(2));
+    if (await vis('.grgtok-scrim')) return true;
+    if (await vis('.qzint-scrim')) { await tap('Escape'); await wait(120); }
+    else if (await vis('.quiz-root.show')) {
+      await tap('Digit1'); await wait(60); await evalp(()=>window.__DEBUG.advance(1)); await tap('Space'); await wait(60);
+    }
+  }
+  return false;
+}
+// A repeating keydown is what an OS sends while a key is HELD; puppeteer's
+// keyboard never sets `repeat`, so it is dispatched directly. Capture phase on
+// window is where the popup listens, so this reaches exactly the real handler.
+const repeatSpace = () => evalp(()=>{ dispatchEvent(new KeyboardEvent('keydown',
+  { code:'Space', key:' ', repeat:true, bubbles:true, cancelable:true })); });
+// The registry is not exported to the page, but the audio duck IS driven by it
+// (D31/D34: onModalChange → setModalDuck), so a leaked 'token' id shows up here
+// as a game that stays muted with nothing on screen to explain why.
+const modalDucked = () => evalp(()=>!!(window.__AUDIO__ && window.__AUDIO__._modalDucked));
+{
+  ok('the token explainer is up', await driveToTokenExplainer());
+  ok('…and its button names the key it takes', await evalp(()=>{
+    const b=document.querySelector('.grgtok-scrim .btn');
+    return !!b && /רווח|space/i.test(b.textContent); }),
+     await evalp(()=>document.querySelector('.grgtok-scrim .btn')?.textContent||'—'));
+  const duckedUp = await modalDucked();
+  ok('…and the modal registry knows it owns the screen', duckedUp, 'audio modal-ducked');
+  // (a) held Space is ignored — the card survives a key the child never released
+  await repeatSpace(); await repeatSpace(); await wait(150);
+  ok('a HELD (repeating) Space does NOT dismiss it', await vis('.grgtok-scrim'));
+  {
+    const a = await simSnap();
+    await evalp(()=>window.__DEBUG.advance(2));
+    const d = simDelta(a, await simSnap());
+    ok('…and the world is still frozen behind it', d.race===0 && d.move===0,
+       `race +${d.race.toFixed(3)}s, moved ${d.move.toFixed(3)}m`);
+  }
+  // (b) a real press goes on, exactly like Escape and exactly like the button
+  await tap('Space'); await wait(200);
+  ok('a real Space press closes the token explainer', !(await vis('.grgtok-scrim')));
+  ok('…and does not fall through to the pause menu', !(await vis('.mn-dialog.pause')));
+  ok('…and the \'token\' modal id is released, not leaked',
+     duckedUp && (await modalDucked())===false);
+  const ranS = await page.evaluate(()=>{ const a=window.__DEBUG.engine.active, t0=a.state.raceTime;
+    window.__DEBUG.advance(1); return a.state.raceTime-t0; });
+  ok('…and the race is running again, input handed back', ranS > 0.5
+     && await evalp(()=>window.__DEBUG.engine.active.input.enabled===true), `+${ranS.toFixed(2)}s`);
+}
+
+// ── 8c. …and so does BOREG'S CARD, the third one-time teaching card ──────
+// D65 gave the game's one-time teaching cards ONE key contract: the button, plus
+// Space / Enter / Escape, on a capture-phase listener that stops the event
+// (Escape must close the card, never fall through and open something behind it),
+// with `e.repeat` swallowed because Space is also the DRIFT key (D20).
+//
+// The token explainer and the question-box explainer were brought onto it; the
+// garage's "meet Boreg" card was missed and still took Escape/Enter only, with a
+// button ("מתחילים!") that named no key at all. Three cards, three contracts, is
+// exactly how "space goes on" stops being something a child can rely on.
+//
+// Reached through the real door: a save with nothing in it, then the garage —
+// `shouldShowBoregIntro()` is what puts the card up, not a test flag.
+console.log('\n  8c. Space dismisses Boreg\'s card (and a held Space does not)');
+async function bootMeetCard() {
+  await page.goto('file://' + dist, { waitUntil: 'load' });
+  await page.evaluate(()=>{ localStorage.setItem('promptracers.v1', JSON.stringify({})); });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  await page.evaluate(()=>window.__DEBUG.goto('freeplay', {}));
+  await wait(300);
+  return vis('.grg-meet-scrim');
+}
+// The one-time flag itself. A card that is dismissed has BURNED it — so a held
+// Space that leaks through does not merely close the card early, it spends the
+// only time this child is ever introduced to Boreg. Read from the save, which is
+// the thing that outlives the scene.
+const metBoreg = () => evalp(()=>{
+  try { return !!JSON.parse(localStorage.getItem('promptracers.v1')||'{}').garageMetBoreg; }
+  catch { return false; } });
+{
+  ok('Boreg\'s card is up on a fresh save', await bootMeetCard());
+  ok('…and its button names the key it takes', await evalp(()=>{
+    const b=document.querySelector('.grg-meet-scrim .btn');
+    return !!b && /רווח|space/i.test(b.textContent); }),
+     await evalp(()=>document.querySelector('.grg-meet-scrim .btn')?.textContent||'—'));
+  const duckedUp = await modalDucked();
+  ok('…and the modal registry knows it owns the screen', duckedUp, 'audio modal-ducked');
+  // (a) held Space is ignored — the card survives a key the child never released
+  await repeatSpace(); await repeatSpace(); await wait(150);
+  ok('a HELD (repeating) Space does NOT dismiss it', await vis('.grg-meet-scrim'));
+  // …and the world behind it is still HELD. There is no race clock behind this
+  // card — the garage animates nothing on advance() — so the two things that do
+  // move when a card leaks away are asserted instead: the registry still owns the
+  // screen (the audio duck, D31/D34), and the one-time flag is still unspent, so
+  // the child can still be introduced to Boreg. Both flip the instant a repeating
+  // Space is allowed to close the card.
+  {
+    const held = await modalDucked(), burned = await metBoreg();
+    await evalp(()=>window.__DEBUG.advance(2));
+    ok('…and the world behind it is still frozen/held', held && !burned && !(await metBoreg()),
+       `ducked ${held}, flag burned ${burned}`);
+  }
+  // (b) a real press goes on, exactly like Escape and exactly like the button
+  await tap('Space'); await wait(200);
+  ok('a real Space press closes Boreg\'s card', !(await vis('.grg-meet-scrim')));
+  ok('…and does not fall through to the pause menu', !(await vis('.mn-dialog.pause')));
+  ok('…and the \'meet\' modal id is released, not leaked',
+     duckedUp && (await modalDucked())===false);
+  // The key path used to skip popModal('meet') entirely (only the BUTTON popped
+  // it), so the check above is the one that pins the leak — and the flag below
+  // pins that the real press did the same bookkeeping the button does.
+  ok('…and the card is marked seen, once, by the real press', await metBoreg());
+}
+
 // ── 9. mouse and touch are the KEYBOARD's code path, not a second one ────
 // The quiz is answered with 1/2/3 and continued with Space, and Wave 4 added
 // click/tap for both. The risk is not that the pointer does nothing — it is that

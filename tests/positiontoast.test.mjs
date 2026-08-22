@@ -24,6 +24,14 @@
 //   3. `from` is the position the child was last TOLD about — using the live
 //      order for `from` would let a suppressed flicker turn the next real pass
 //      into a `from === to` no-op, i.e. a silent overtake.
+//
+// Wave 6.1 added two more, once `progress` had been made honest (see
+// tools/spatialtest.mjs) and the toast could finally be held to the tarmac:
+//   7. reset() (which the flag calls) really drops the half-served hold, so
+//      nothing arrives over the results screen and no hold is inherited;
+//   8. every toast names the place that is live at that frame and starts from
+//      the place the child was last told — the emit-site twin of flowtest's
+//      "every toast names the place the child ACTUALLY holds".
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { makePositionToastGate } from '../src/race/race.js';
@@ -148,6 +156,76 @@ function flurryFrames() {
   ok('5: being passed is announced under the same hold and margin',
     !!said && said.from === 3 && said.to === 4 && Math.abs(at * FIXED - HOLD_S) <= 0.2,
     said ? `${said.from}→${said.to} at ${(at * FIXED).toFixed(2)}s` : 'never announced');
+}
+
+/* ── 7. reset() REALLY DOES CLEAR WHAT WAS BUILDING ──────────────────────────
+   updatePositions() calls `posToast.reset(np)` the moment the player finishes,
+   and then returns: a place change that was still holding when the flag fell
+   must not be announced over the results screen, and the next race's gate must
+   not inherit half a hold. `reset` had no gate of its own — it was only ever
+   exercised as the constructor's twin, and the one thing it has to DO (drop the
+   half-served hold) was invisible: a gate whose reset only assigns `shown`
+   passes every other assertion in this file.
+
+   So the claim is about LATENCY: after a reset, a change starts its hold from
+   zero. Same change, same wide-open gap, straight after a reset that settled
+   the order somewhere else — silent for the first 0.5 s, announced by 0.65 s. */
+{
+  const g = makePositionToastGate({ start: 4 });
+  for (let f = 0; f < 35; f++) g.update(FIXED, 3, 20);        // 0.58 s of a 0.6 s hold
+  ok('7: the change really was one frame from being announced',
+    g.pendingFor >= HOLD_S - 2 * FIXED && g.pendingFor < HOLD_S,
+    `${g.pendingFor.toFixed(2)}s held of the ${HOLD_S}s hold`);
+  g.reset(4);                              // the order settles back at P4
+  let early = 0, at = -1;
+  for (let f = 0; f < 30; f++) if (g.update(FIXED, 3, 20)) early++;   // 0.5 s
+  ok('7: …so the same change is NOT announced on the next frame after a reset',
+    early === 0, `${early} toast(s) in the 0.5s after reset(4)`);
+  for (let f = 30; f < 60 && at < 0; f++) if (g.update(FIXED, 3, 20)) at = f;
+  ok('7: …but it is announced once it has served the hold from zero',
+    at >= 0 && Math.abs(at * FIXED - HOLD_S) <= 0.05,
+    at >= 0 ? `at ${(at * FIXED).toFixed(2)}s after the reset` : 'never announced');
+}
+
+/* ── 8. EVERY TOAST NAMES THE PLACE THE CHILD IS ACTUALLY IN ─────────────────
+   The unit twin of the built-game cross-check added to tools/flowtest.mjs in
+   Wave 6.1 ("every toast names the place the child ACTUALLY holds", measured
+   against the karts' own centreline projections rather than against the sort).
+   This is the same claim at the emit site: whatever the gate says, it says
+   about the position that is live AT THAT FRAME — never a stale one it was
+   still chewing on — and each toast's `from` is the last thing the child heard,
+   so the sequence the child hears is a connected walk with no gaps and no
+   invented steps. Driven over a long scripted dice: 40 s of a rival trading
+   places with the player, deterministic (no Math.random — see CLAUDE.md), with
+   the gap opening and closing so both the flurry and the clean-pass paths are
+   exercised in one sequence. */
+{
+  const g = makePositionToastGate({ start: 4 });
+  const said = [];
+  let live = 4, worstStale = 0, chainBad = 0, told = 4;
+  for (let f = 0; f < 2400; f++) {
+    // A deterministic dice: the pair trade places on a 2 s cycle — each state
+    // holds a second, comfortably past the 0.6 s hold — while the gap breathes
+    // between 0 and 8 m on a slower, out-of-phase cycle, so some swaps are
+    // announced and some are still overlapping when the hold runs out.
+    live = f % 120 < 60 ? 4 : 3;
+    const gapM = Math.abs(Math.sin(f * 0.017)) * 8;
+    const say = g.update(FIXED, live, gapM);
+    if (!say) continue;
+    said.push({ f, ...say, live, gapM });
+    if (say.to !== live) worstStale++;
+    if (say.from !== told) chainBad++;
+    told = say.to;
+  }
+  ok('8: the dice really did produce toasts to check',
+    said.length >= 4, `${said.length} toast(s) over 40s of trading places`);
+  ok('8: every toast names the position live at that frame',
+    said.length >= 4 && worstStale === 0, `${worstStale} named a stale place`);
+  ok('8: …and each one starts from what the child was last told',
+    said.length >= 4 && chainBad === 0, said.map(s => `${s.from}→${s.to}`).join(' '));
+  ok('8: …and none was said without the shipped daylight',
+    said.length >= 4 && said.every(s => s.gapM >= MARGIN_M),
+    `closest ${said.length ? Math.min(...said.map(s => s.gapM)).toFixed(2) : '—'} m, margin ${MARGIN_M} m`);
 }
 
 /* ── 6. THE SHIPPED CONSTANTS, AND THAT THE EMIT SITE ACTUALLY USES THEM ─────

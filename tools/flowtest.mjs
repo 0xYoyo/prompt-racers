@@ -1703,20 +1703,83 @@ try {
     // introCard: true because a fresh save is the one case where a child DOES
     // see it; the harness default turns it off for autopilot races.
     await page.evaluate(o => window.__DEBUG.goto('race', o),
-      { track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: true });
+      { track: 0, difficulty: 2, seed: 3, autopilot: true, introCard: true });
 
     const run = await page.evaluate(async (holdS) => {
       const D = window.__DEBUG, sc = D.engine.active, q = sc.quiz, STEP = 1 / 60;
       // The three one-time teaching cards, by the selector each one ships with.
       const CARDS = [['intro', '.ic-scrim'], ['first-token', '.grgtok-scrim'], ['first-quiz-box', '.qzint-scrim']];
       const order = [], clicks = new Map();
+
+      /* ── THE TARMAC'S OWN ANSWER, computed here and never read off progress ──
+         Wave 6.1's whole lesson is that the number the game sorts on can lie
+         about where the karts physically are, so a gate that cross-checks the
+         toasts against `progress` (or against `state.position`, which is
+         `field.order()` by another name) would be grading the instrument with
+         itself. This walks each kart's own `body.lapT` — the raw centreline
+         projection — and counts laps by watching the fraction wrap, which is
+         tools/spatialtest.mjs's ArcTruth in miniature and shares no code and no
+         accumulator with the game.
+
+         The origin is put HALF A LAP from the grid rather than at the start
+         line: the eight grid slots straddle t=0 (the pole sitter is just past
+         it, row 4 is 22 m behind it), so an origin at the line hands a phantom
+         lap to five of the eight karts on their first crossing. Nothing is
+         within 300 m of the far side when the flag drops. Only ORDER is read
+         off these numbers, so the choice of origin cannot flatter anyone. */
+      const bodies = [sc.player, ...sc.aiKarts.map(k => k.body)];
+      const LAPLEN = sc.player.spline.length;
+      const ORIGIN = (sc.player.lapT + 0.5) % 1;
+      const frac = b => { const u = (b.lapT - ORIGIN) % 1; return u < 0 ? u + 1 : u; };
+      const lapsDone = bodies.map(() => 0);
+      let prevU = bodies.map(frac);
+      const arcAll = () => bodies.map((b, i) => {
+        const u = frac(b);
+        if (u - prevU[i] < -0.5) lapsDone[i]++; else if (u - prevU[i] > 0.5) lapsDone[i]--;
+        prevU[i] = u;
+        return lapsDone[i] + u;
+      });
+      // The player's place on the tarmac this instant, and the arc gap to the
+      // kart immediately ahead of and behind them — the daylight a child's eyes
+      // would have to see before believing "you have been passed".
+      // (NO_RIVAL rather than Infinity: this crosses the page boundary as JSON,
+      // where Infinity becomes null and the report line below throws on it.)
+      const NO_RIVAL = 1e9;
+      const physOf = tv => {
+        const idx = tv.map((v, i) => i).sort((a, b) => tv[b] - tv[a]);
+        const me = idx.indexOf(0);
+        return {
+          rank: me + 1,
+          aheadM: me > 0 ? (tv[idx[me - 1]] - tv[0]) * LAPLEN : NO_RIVAL,
+          behindM: me < idx.length - 1 ? (tv[0] - tv[idx[me + 1]]) * LAPLEN : NO_RIVAL,
+        };
+      };
+
       // Toast bookkeeping: what the child was TOLD, against what the order did.
       const toasts = [];
       const offPos = D.bus.on('race:position', p => toasts.push({ ...p, at: sc.state.raceTime }));
       let flips = 0, lastPos = sc.state.position;
+      let physFlips = 0, lastPhys = null, startPhys = null, finishPhys = null;
       for (let i = 0; i < 60 * 1800 && !window.__LAST_RESULT__; i++) {
         D.engine.time += STEP; sc.update(STEP);
         if (sc.state.position !== lastPos) { flips++; lastPos = sc.state.position; }
+        const ph = physOf(arcAll());
+        if (startPhys == null) startPhys = ph.rank;
+        if (lastPhys != null && ph.rank !== lastPhys) physFlips++;
+        lastPhys = ph.rank;
+        // Any toast raised by THIS step gets the tarmac's answer for this step:
+        // the emit happens inside sc.update(), so the bodies have not moved
+        // since. Anything later would compare a claim against a different
+        // instant, which is the phase skew this wave existed to remove.
+        for (const t of toasts) if (t.physRank === undefined) {
+          t.physRank = ph.rank;
+          // The daylight across the swap: a gained place is measured back to the
+          // kart just passed, a lost one forward to the kart that just went by.
+          t.physGapM = t.to < t.from ? ph.behindM : ph.aheadM;
+        }
+        // The flag: the physical order at the instant finishPlayer() froze the
+        // standings, so the results screen can be held to it below.
+        if (sc.state.finished && finishPhys == null) finishPhys = ph.rank;
         let handled = false;
         for (const [name, sel] of CARDS) {
           const el = document.querySelector(sel);
@@ -1736,12 +1799,17 @@ try {
           const b = document.querySelectorAll('.quiz-root.show .quiz-opt');
           if (b[q.correctSlot]) b[q.correctSlot].click();
         } else if (q && q.phase === 'feedback') q.dismiss('key');
-        // Two laps is enough for both measurements — all three cards land in the
-        // first one, and two laps of racing is 30+ order flips. Driving the
-        // third only costs the gate a minute.
-        if (order.length === 3 && sc.state.lap > 2) break;
       }
       offPos();
+      // Chain each toast to the physical place the child was last TOLD about, so
+      // the direction claim below has something to compare against.
+      let told = startPhys;
+      for (const t of toasts) { t.physPrev = told; told = t.physRank; }
+      // The whole race was driven, so let the flag's own 2.2 s timer land before
+      // anything else is measured — otherwise race:complete arrives in the
+      // middle of the backdrop check (or of the next section) and moves the
+      // scene out from under it.
+      await new Promise(r => setTimeout(r, 2600));
       // The backdrop guarantee, checked where it is cheapest to check: a scoped
       // bus that emits nothing must still emit nothing now that the emit site
       // has a gate in front of it.
@@ -1760,7 +1828,8 @@ try {
       for (let i = 1; i < toasts.length; i++) minGap = Math.min(minGap, toasts[i].at - toasts[i - 1].at);
       return {
         order: order.map(o => o.name), firstTokenAt: order.find(o => o.name === 'first-token')?.at ?? null,
-        toasts: toasts.length, flips, minGap, holdS, backdropRan: bd, backdropToasts,
+        toasts: toasts.length, toastRows: toasts, flips, physFlips, startPhys, finishPhys,
+        minGap, holdS, backdropRan: bd, backdropToasts,
         result: window.__LAST_RESULT__ || null,
       };
     }, 0.6);
@@ -1774,19 +1843,92 @@ try {
       seq === 'intro → first-token → first-quiz-box', seq || '(none)');
 
     // …and the toasts, from the same race.
+    //
+    // THE CELL. difficulty 2 rather than the gentlest setting, because Wave 6.1
+    // took the bias out of `progress` and most of what this section used to
+    // count WAS the bias. Measured on the old cell (track 0 / d1 / seed 3):
+    // 36 order changes and a P2 finish before the fix, 2 changes and a P1
+    // finish after it — the missing 34 were the phase skew chattering a
+    // near-tie back and forth, and on race-1 pace this autopilot simply drives
+    // away from the field, so there is nothing left to measure. Lowering the
+    // bar to fit that would gate nothing: a race with no passes in it cannot
+    // show that passes are reported honestly. d2 / seed 3 keeps the same
+    // fresh save, the same track and the same three teaching cards (the card
+    // order is a property of the TRACK, not of the AI), and produces genuine
+    // side-by-side dicing: measured 40 raw order changes across the three laps,
+    // of which the child is told 4.
     step('O: the live order really does flip often enough to measure',
-      run.flips >= 4 && run.toasts >= 1, `${run.flips} order flips, ${run.toasts} toasts`);
+      run.flips >= 20 && run.toasts >= 3, `${run.flips} order flips, ${run.physFlips} on the tarmac, ${run.toasts} toasts`);
     // STRICTLY fewer, not `<=`. Round 2: the `<=` form could not fail — the
     // naive "emit on every change" emitter this replaced produces exactly one
     // toast per flip (measured: 40 toasts vs 40 flips) and sailed through it. A
     // gate that cannot go red is a claim of coverage, not coverage. The point of
     // the hysteresis is that the child is told about FEWER changes than the sort
-    // makes, so that is what is asserted.
+    // makes, so that is what is asserted — and by a real margin, not by one.
     step('O: the child is told about strictly fewer changes than the sort makes',
-      run.toasts < run.flips,
+      run.toasts < run.flips / 2,
       `${run.toasts} toasts vs ${run.flips} flips — ${run.flips - run.toasts} suppressed`);
+    // `run.toasts >= 3` is the state-reached half: a race that said nothing at
+    // all satisfies "no two toasts inside the hold" vacuously, and GAPS records
+    // what vacuous passes cost this project.
     step('O: …and no two toasts land inside the hold',
-      !(run.minGap < run.holdS), run.toasts < 2 ? `only ${run.toasts} toast` : `closest pair ${run.minGap.toFixed(2)}s apart, hold ${run.holdS}s`);
+      run.toasts >= 3 && !(run.minGap < run.holdS),
+      run.toasts < 2 ? `only ${run.toasts} toast` : `closest pair ${run.minGap.toFixed(2)}s apart, hold ${run.holdS}s`);
+
+    /* ── THE TOASTS AGAINST THE TARMAC (Wave 6.1) ───────────────────────────
+       Everything above counts toasts against `state.position`, which is
+       `field.order()` by another name — the very instrument that was lying
+       until this wave. These three hold the toasts against the karts' own
+       centreline projections, walked independently in the page (see the ORIGIN
+       note there). tools/spatialtest.mjs owns the contract that makes that the
+       right reference: while a kart is on the road its progress IS its
+       projection, so "the child was told they are third" is a checkable claim
+       about the tarmac and not about a number. */
+    const wrongPlace = run.toastRows.filter(t => t.physRank !== t.to);
+    step('O: every toast names the place the child ACTUALLY holds',
+      run.toastRows.length >= 3 && wrongPlace.length === 0,
+      wrongPlace.length
+        ? `${wrongPlace.length}/${run.toastRows.length} lied: ` +
+          wrongPlace.slice(0, 3).map(t => `told P${t.to} at ${t.at.toFixed(1)}s, tarmac says P${t.physRank}`).join('; ')
+        : `${run.toastRows.length} toasts, all matched the tarmac`);
+    // ▲ or ▼ is decided by `to < from`, so the arrow is a claim about which way
+    // the child moved SINCE THEY WERE LAST TOLD. A suppressed flicker in between
+    // must not turn a real pass into an arrow pointing the wrong way.
+    const wrongWay = run.toastRows.filter(t => Math.sign(t.to - t.from) !== Math.sign(t.physRank - t.physPrev));
+    step('O: …and the arrow points the way the tarmac moved',
+      run.toastRows.length >= 3 && wrongWay.length === 0,
+      wrongWay.length
+        ? wrongWay.slice(0, 3).map(t => `told ${t.from}→${t.to}, tarmac ${t.physPrev}→${t.physRank}`).join('; ')
+        : run.toastRows.map(t => `${t.from}→${t.to}`).join(' '));
+    // And there was real daylight when it was said — measured on the bodies, not
+    // on the accumulator the margin is actually computed from. A pass announced
+    // while the two karts are still overlapping is the Wave-6 complaint that
+    // TOAST_MARGIN_M exists to answer. The bar is 2.5 m: half a metre under the
+    // shipped 3.0 m margin, which is forty times the 0.06 m the independent
+    // projection can differ from the accumulator on the road (spatialtest's
+    // TIE_M), so the slack is noise and nothing else. Measured green at 3.08 m.
+    // It is COUPLED to TOAST_MARGIN_M by hand — race.js does not export it, and
+    // tests/positiontoast.test.mjs pins the constant itself — so a deliberate
+    // change to the margin has to change this number too.
+    const tooClose = run.toastRows.filter(t => !(t.physGapM >= 2.5));
+    step('O: …and there was real daylight on the tarmac when it was said',
+      run.toastRows.length >= 3 && tooClose.length === 0,
+      tooClose.length
+        ? tooClose.slice(0, 3).map(t => `${t.from}→${t.to} at ${t.at.toFixed(1)}s: ${(t.physGapM ?? 0).toFixed(2)} m`).join('; ')
+        : `closest ${Math.min(...run.toastRows.map(t => t.physGapM ?? 0)).toFixed(2)} m, bar 2.5 m`);
+
+    /* ── AND THE NUMBER THE CHILD IS LEFT WITH ──────────────────────────────
+       finishPlayer() settles the standings from `field.order()` at the flag and
+       the results screen prints the player's row. If that sort is off by one
+       the child is told they came fourth after watching themselves cross third,
+       and no gate above would notice: they all stop at the toasts. */
+    step('O: the race actually ran to the flag',
+      !!run.result && run.finishPhys != null,
+      run.result ? `finished P${run.result.place} in ${(run.result.timeMs / 1000).toFixed(1)}s` : 'never finished');
+    step('O: the placement the results screen reports IS the finishing order',
+      !!run.result && run.result.place === run.finishPhys,
+      run.result ? `results say P${run.result.place}, tarmac says P${run.finishPhys}` : 'no result');
+
     step('O: a backdrop race still emits no position toast at all',
       run.backdropRan && run.backdropToasts === 0,
       run.backdropRan ? `${run.backdropToasts} emitted behind the menu` : 'no backdrop race was run');

@@ -13,6 +13,12 @@
 //   hud         → DOM overlay, driven by a state snapshot + bus events
 //   audio       → entirely bus-driven; this file emits, it never imports audio
 //
+// The player's race progress is NOT this file's own accumulator: it is a
+// `ProgressTracker` from kart/ai.js, the same class the seven opponents use, so
+// the child and the field are measured by one instrument from one origin (the
+// start/finish line) and "equal progress" means "physically abreast". D64, and
+// pinned by tools/spatialtest.mjs.
+//
 // State machine:  intro → countdown → racing → finished → (results)
 //
 // `intro` was aspirational until Wave 4 and is now real: it is the pre-race
@@ -32,7 +38,7 @@ import { applyTheme } from '../gfx/sky.js';
 import { KartBody, autopilotInput } from '../kart/kartphysics.js';
 import { ChaseCamera } from '../kart/camera.js';
 import { createKart, createKartLOD } from '../kart/kartmodel.js';
-import { createAIField } from '../kart/ai.js';
+import { createAIField, ProgressTracker } from '../kart/ai.js';
 import { ROSTER, nameKey } from '../kart/roster.js';
 import { createHUD } from './hud.js';
 import { createQuizSystem } from './quiz.js';
@@ -478,11 +484,28 @@ export function raceScene(engine, opts = {}) {
     lastCountdownBeat: -1,
     paused: false,
     quizFrozen: false,    // a quiz panel owns the world (question/feedback/3·2·1)
-    progress: 0,          // laps + fraction, monotonic
-    prevT: player.lapT,
+    // laps + fraction past the START/FINISH LINE, monotonic. Seeded with the
+    // signed arc offset of the player's grid slot from `def.startT` (a small
+    // NEGATIVE number — gridSlots parks the field 4..22 m behind the line), so
+    // this shares an origin with every AI driver's own accumulator. Seeding at
+    // 0 gave whichever kart started furthest back a permanent free-metres
+    // credit in every progress comparison. See D64. Consumers only ever take
+    // DIFFERENCES against field.order() progress (finishPlayer's projected
+    // times, nearestRival's gap), so the shift is common-mode there; laps come
+    // from the checkpoint lapTracker, never from floor(progress).
+    // Mirrored from `progressTracker` every step — see the note there.
+    progress: TrackSpline.deltaT(player.lapT, def.startT ?? 0),
     cp: 0,                // next checkpoint index
     cpHits: 0,
   };
+  // The player's half of the ONE progress accumulator every kart uses. It seeds
+  // itself from where the kart is standing (so 0 == on the line) and bounds each
+  // step to what the kart could physically have travelled, which is what stops a
+  // `closestT` projection snap — a kart running wide across a hairpin — from
+  // paying out free metres that never come back. The AI side is the same class,
+  // driven from createAIField. See ProgressTracker in kart/ai.js, D64, and the
+  // pinning gate tools/spatialtest.mjs.
+  const progressTracker = new ProgressTracker(spline, player, def.startT ?? 0);
   // Only the TOAST is hysteretic; `S.position` stays live. See TOAST_HOLD_S.
   const posToast = makePositionToastGate({ start: S.position });
   const CP = track.checkpoints || [];
@@ -633,10 +656,16 @@ export function raceScene(engine, opts = {}) {
     field.update(dt, player);
 
     // ---- progress, laps, checkpoints -----------------------------------
-    const d = TrackSpline.deltaT(player.lapT, S.prevT);
-    // Guard against the teleport that a respawn produces.
-    if (Math.abs(d) < 0.3) S.progress += d;
-    S.prevT = player.lapT;
+    // Committed HERE, after field.update, so the player's progress and every
+    // opponent's describe the same instant (the field commits its drivers at the
+    // end of its own update). The old guard here dropped a step only when it
+    // exceeded 0.3 LAPS (~350 m) — a respawn teleport, but nothing else. Every
+    // real projection snap measured (up to +13.67 m of arc for 0.29 m travelled)
+    // sailed straight through it. ProgressTracker bounds the step to the kart's
+    // own physical displacement instead, and still absorbs the teleport.
+    const dM = progressTracker.step(dt, player);
+    S.progress = progressTracker.value;
+    const d = dM / spline.length;
 
     if (racing && lapTracker) {
       // Checkpoints must be taken in order — this is what stops a player from

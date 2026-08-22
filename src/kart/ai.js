@@ -18,9 +18,25 @@
 //                                / brake against that profile, a drift state
 //                                machine, awareness of the other karts, a
 //                                personality, and deliberate small mistakes.
-//   4. createAIField           — the 7 opponents + the bounded rubber band.
+//   4. ProgressTracker         — the ONE way any kart's race progress is
+//                                accumulated, player included (race.js drives
+//                                the player's instance). Progress is measured
+//                                from the START/FINISH LINE and converges on
+//                                the centreline projection; see D64 and the
+//                                block above the class.
+//   5. createAIField           — the 7 opponents + the bounded rubber band.
 //
 // Determinism: every random number comes from core/rng.js. Never Math.random.
+//
+// READING THE MEASURED NUMBERS IN THIS FILE. Every difficulty figure published
+// before D64 was read off a crooked instrument: progress accumulators started
+// at 0 while the grid parks karts up to 22 m behind the line, the accumulators
+// were compared across a phase skew, and `lapT` could snap forward. Comment
+// blocks below therefore label their tables **pre-D64** (historical, kept
+// because they explain why a constant has its value) or **honest** (re-measured
+// after the fix — D67/D69, and the tables in tests/ai.test.mjs §2c and §8). A
+// pre-D64 number may NOT be compared against an honest one; that comparison is
+// itself the mistake D64 exists to name (see the "D67 CORRECTION" entry).
 import * as THREE from 'three';
 import { getTrack, gridSlots, TrackSpline } from '../track/trackdef.js';
 import { KartBody, DRIFT_TIERS, DRIFT_GRIP } from './kartphysics.js';
@@ -320,28 +336,55 @@ export function difficulty01(d) {
 //     there but off-track time). It also makes the garage legible: the way to
 //     beat an upgraded field is to turn up with an upgrade of your own.
 //
+// PRE-D64 (crooked ruler — historical, do not compare with an honest number).
 // Measured result, autopilot player, 5 seeds, place out of 8:
 //   stock player  race 1: 1st-3rd (mean 2.2)   race 2: 3rd-4th   race 3: 3rd-5th
 //   tier-1 player            1st-2nd (1.2)              2nd-3rd          1st-3rd
 //   tier-2 player            1st                        1st-2nd          1st
+// The honest stock ladder over five disjoint 40-seed sets (D67, and the table
+// in tests/ai.test.mjs §2c) is 2.43-2.55 / 3.73-3.90 / 4.10-4.38. The SHAPE the
+// two levers were chosen for survives; the figures above do not.
 //
 // WAVE 6: oasis 1.03 -> 1.09, measured, and what it cost.
 // -------------------------------------------------------
-// The playtest verdict: race 1 reads as cruising alone. Measured over 40 seeds
-// at 100% pace on a stock kart, a clean player LED race 1 for 46% of its length
-// (race 2: 2.0%, race 3: 3.1%) and won 5 seeds outright. Race 1's opponents are
+// The playtest verdict: race 1 reads as cruising alone. Race 1's opponents are
 // the sloppiest in the game by design, and their catch-up is already pinned at
 // the BAND_CATCH ceiling (bandCatchMax is 1.00x at d01 = 0), so no band setting
-// can put them in front of a clean child — only their own speed can. Measured,
-// stock kart, 40 seeds:
+// can put them in front of a clean child — only their own speed can.
 //
-//   oasis pace   place  wins  %of race led  mean nearest gap  lead changes
-//   1.03 (before) 2.25   5/40     46.0%          0.53s            14.9
-//   1.09 (now)    2.67   0/40     34.9%          0.43s            17.4
+// HONEST NUMBERS (D64/D67 + the "D67 CORRECTION" entry). Both builds were
+// re-measured on the fixed instrument, five disjoint 40-seed sets, stock kart,
+// 100% pace — because comparing the shipped build against a pre-D64 recording
+// of the old one is exactly the error D64 names, and D67 made it once already:
 //
-// and an engaged child (x8) still wins it 18 times in 40 (1.68 mean, from
-// 1.45 / 22). Values above ~1.12 take that below 10/40 and break the promise
-// race 1 exists to make — that answering the questions is what wins it.
+//   race 1, stock, 100%     1.09 (ships)   1.03 (pre-Wave-6)   1.06 (halfway)
+//   close passes / race     5.70-6.80      1.68-2.10           4.65-4.98
+//   % of race led           45.6-55.9      64.6-73.0           44.4-65.9
+//   median gap              0.46-0.50      0.72-0.84           0.54-0.65
+//   nearest rival <=1.5 s   95.0-96.3      86.1-90.9           91.7-96.8
+//   mean place              2.43-2.55      1.53-1.73           2.10-2.25
+//
+// So the raise is real and LARGER than the crooked ruler ever credited it with:
+// three times the visible passes, 18 points less of the race led, half the
+// distance to the nearest rival. Race 1 on honest data is not lonely — a rival
+// is within 1.5 s for 95% of it and a visible pass lands roughly every 24 s —
+// it is simply a race the child leads about half of, which is what the gentle
+// opening race is for. Bounds live in tests/ai.test.mjs §2c.
+//
+// PRE-D64 (crooked ruler — the reading this constant was actually chosen on,
+// kept because it is the argument that moved it, NOT comparable with the table
+// above): 1.03 read 2.25 / 5 wins in 40 / 46.0% led / 0.53 s / 14.9 lead
+// changes, 1.09 read 2.67 / 0 wins / 34.9% / 0.43 s / 17.4; an engaged child
+// (x8) read 18 wins in 40 at 1.68 mean, from 1.45 / 22.
+//
+// The engaged child on the SHIPPED build, honest (tests/ai.test.mjs §6 prints
+// it every run, seeds 1-40): x0 2.55 with 4 wins -> x8 1.55 with 22 wins, i.e.
+// 1.00 place, 0.125 of a place per correct answer. The promise race 1 exists to
+// make — that answering the questions is what wins it — is intact, and by more
+// than the crooked ruler said. The CEILING argument that stopped this constant
+// at 1.09 is pre-D64 and has not been re-measured: values above ~1.12 were
+// recorded taking the engaged child below a quarter of the seeds. Treat that
+// threshold as UNVERIFIED, and re-measure before moving the constant again.
 // Keyed by track id, so races 2 and 3 are bit-identical (verified per seed).
 //
 // WAVE 5: circuit 0.96 -> 0.98, and why that number was the one that moved.
@@ -354,19 +397,31 @@ export function difficulty01(d) {
 // (autopilot player, 3 laps, race 2 = circuit d2, place out of 8; the 100%
 // figures are pooled over 160 seeds — four DISJOINT 40-seed sets, because every
 // upgraded cell here is a fight and a five- or twenty-one-seed reading of one
-// swings by 20 percentage points):
+// swings by 20 percentage points).
+//
+// PRE-D64 (crooked ruler — the reading that chose the constant; not comparable
+// with an honest figure, though both columns were measured the same way so the
+// DIRECTION they establish stands):
 //
 //   circuit pace   stock 100%       tier-2 100%      tier-3 100%     85% stock*
 //   0.96 (before)  3.06  best 1st   1.82  26% wins   1.29  71% wins   5.05
 //   0.98 (now)     3.79  best 2nd   2.22  12% wins   1.68  35% wins   5.27
 //   (* 85% column is 41 seeds; that axis is flat by design — see D33b)
 //
+// HONEST, the shipped 0.98 only (D67/D68, five disjoint 40-seed sets): race 2
+// stock 3.73-3.90 (0 wins in 200), uniform tier-2 2.12 (2.08-2.25), uniform
+// tier-3 1.47 with 107 wins in 200, and the 85%-pace ladder 4.00 / 5.00 / 6.00.
+// Nothing here was re-tuned on those numbers — they are what the same shipped
+// constant measures on a straight ruler.
+//
 // i.e. race 2 stopped being a race a clean driver could podium in with no
 // engagement at all, and stopped being a formality for a well-upgraded one.
 // Race 1 (oasis) and race 3 (cloud) are bit-for-bit unmoved: this constant is
 // keyed by track id and the championship maps race N -> track N.
-// Alternatives measured and rejected (5 seeds, so read as directions rather
-// than as figures), both because they broke the RANK order rather than the gap:
+// Alternatives measured and rejected (5 seeds and PRE-D64, so read as
+// directions rather than as figures — and the first of them was re-measured
+// properly in D68, which reached the same verdict for better reasons), both
+// because they broke the RANK order rather than the gap:
 // `aiPartTier` race 2 -> tier 2 put race 2 (4.00) above race 3 (3.80) at 100%
 // and left a fully-spent garage unable to win it; a quartic `slotStretch`
 // falloff (race-2 stretch 1.20 -> 1.05) moved the 85% child twice as far as the
@@ -374,14 +429,120 @@ export function difficulty01(d) {
 // about untouched (1.20, 4/5 wins). Values above 0.99 tie or pass race 3 at
 // 100% and are the punishing side of the target.
 //
-// NOT fixed here, and pinned rather than claimed: on the upgraded axis the
-// championship is inverted (race 2 tier-2 2.22 against race 3 tier-2 1.09).
-// That is pre-existing — 1.82 vs 1.09 before this change — and closing it means
-// making race 3 harder, which Wave 5's brief froze. tests/ai.test.mjs (3b vii)
-// pins the number; GAPS.md carries the measured lever.
+// NOT fixed here, and pinned rather than claimed: the upgraded axis does not
+// escalate. Wave 5 wrote this as "the championship is INVERTED (race 2 tier-2
+// 2.22 against race 3 tier-2 1.09)" — both pre-D64 figures, and the claim did
+// not survive the honest re-measure. D58's finale scaling removed the inversion
+// and what is left is FLAT: race 2 tier-2 2.12 against race 3 tier-2 2.22, a
+// gap of +0.09 places over 200 seeds with a per-set spread of -0.15..+0.48
+// (D67/D68). Flat, not inverted, is the real defect, and closing it still means
+// moving race 3 or the tracks' own pace — race 2's field is the wrong lever and
+// D68 measured why. tests/ai.test.mjs (3b vii) pins the FLATNESS (gap >= -0.55,
+// re-derived because the old -0.25 bound sat inside its own noise); no bound
+// asserting a real step can be green today. GAPS.md carries the lever.
 const AI_PACE = 1.00;
 const TRACK_PACE = { oasis: 1.09, circuit: 0.98, cloud: 1.00 };
 const paceForDifficulty = () => AI_PACE;
+
+// ---------------------------------------------------------------------------
+// PER-KART FIELD CORRECTION (Wave 6.1) — kart choice must not buy places.
+// ---------------------------------------------------------------------------
+// Every number above is calibrated against ONE kart: ROSTER[0], nitzotz
+// (3/4/4/3). The roster's stat spread is deliberately wide, so the OTHER seven
+// karts lap the same track at a different clean flat-out pace — and against a
+// field that never noticed, that difference was bought straight out of the
+// finishing order.
+//
+// HONEST, 40 seeds, stock parts, no answers, mean finishing place and wins on
+// race 1, BEFORE this correction (D69, and the table in tests/ai.test.mjs §8 —
+// four karts, which is what was re-measured on the fixed instrument):
+//
+//     kart            race 1      race 2      race 3
+//     nitzotz (ref)   2.55  4w    3.88  0w    4.22  0w
+//     kaftor          1.20 32w    3.20  1w    2.60  2w
+//     plada           1.40 26w    4.47  0w    3.92  0w
+//     nurit           3.00  1w    3.75  0w    3.95  0w
+//     spread          1.83        1.48        2.10
+//
+// Kart choice was worth up to TWO finishing places — more than the whole garage,
+// and invisible to the child, who is told the karts trade speed for handling and
+// not that one of them turns the championship off. It was a difficulty slider
+// wearing a costume. AFTER this correction the spreads read 1.78 / 1.02 / 1.63
+// (D69): race 2 took most of it, race 1 barely moved, and the <=0.75 target is
+// MISSED for two measured reasons no pace number can reach — field composition
+// (choosing a kart also removes it from the seven opponents: 1.13/0.93/1.35 on
+// its own) and pace saturation on oasis. GAPS.md carries the item; do not tune
+// this table against it.
+//
+// PRE-D64 (crooked ruler — the eight-kart sweep this correction was first built
+// from, kept because it is where the table's shape came from; NOT comparable
+// with the honest figures above, which read the same cells differently, e.g.
+// kaftor's race 1 as 1.20 / 32 wins rather than 1.10 / 36):
+//
+//     nitzotz 2.50 3.83 4.10      zamzum  2.50 4.88 3.65
+//     zuzi    3.08 3.30 4.53      tipa    2.65 3.53 3.20
+//     plada   1.35 4.40 4.13      kaftor  1.10 3.10 2.55   <- 36/40 wins on race 1
+//     nurit   3.03 3.73 4.05      raash   1.88 4.25 2.98
+//
+// KART_PACE[id][track] = lap(nitzotz, track) / lap(id, track), clamped to +-5%,
+// measured by `tools/kartpace.mjs` (20 flying laps per cell after 2 discarded,
+// clean autopilot, stock parts, no traffic; nothing on that path is random, so
+// every figure is bit-reproducible and the noise floor on a ratio is +-0.15%).
+//
+// THE SIGN. A kart FASTER than the reference has a SHORTER lap, so ratio > 1,
+// and the field must be sped UP by that factor to meet it. The correction moves
+// the field in the SAME direction as the chosen kart. Inverting it would double
+// the bug rather than cancel it, so the sign is asserted directly in
+// tests/ai.test.mjs section 8 rather than trusted to this paragraph.
+//
+//     fieldPace = AI_PACE * TRACK_PACE[track] * kartPace(racerId, track)
+//
+// PER-TRACK IS STRUCTURAL, NOT COSMETIC. zamzum's ratio spans 1.004 on `oasis`
+// to 0.900 on `circuit` — 10.4 points, 70x the noise floor and twice the whole
+// clamp. The cause is the geometry: `circuit` is the handling-limited track, so
+// the low-handling karts (zamzum h=1, plada h=2, raash h=2) collapse there and
+// are fine on the two flowing tracks. Collapsing this table to one number per
+// kart would get zamzum's circuit correction ~6 points wrong AND flip its sign
+// on oasis; section 8 has an assertion whose only job is to make that edit red.
+//
+// THE CLAMP is on the STORED CONSTANT and is symmetric, +-5%: a correction is
+// allowed to move the field by as much as the honest kart difference and no
+// more, so a pathological cell cannot hand the field a race. Three circuit
+// cells clamp (plada 0.937, zamzum 0.900, raash 0.940) and those three karts
+// therefore remain genuinely harder on race 2 by design — the residual is
+// stated in DECISIONS.md rather than tuned away. The clamp is NOT applied to
+// the product with TRACK_PACE: TRACK_PACE.oasis is already 1.09 and clamping
+// the product would destroy it.
+const KART_PACE = {
+  nitzotz:  { oasis: 1.000, circuit: 1.000, cloud: 1.000 },
+  zuzi:     { oasis: 0.981, circuit: 1.021, cloud: 0.983 },
+  plada:    { oasis: 1.018, circuit: 0.950, cloud: 1.004 },   // clamped from circuit 0.937
+  nurit:    { oasis: 1.009, circuit: 1.027, cloud: 1.004 },
+  zamzum:   { oasis: 1.004, circuit: 0.950, cloud: 0.978 },   // clamped from circuit 0.900
+  tipa:     { oasis: 1.000, circuit: 0.977, cloud: 1.003 },
+  kaftor:   { oasis: 1.029, circuit: 1.003, cloud: 1.022 },
+  raash:    { oasis: 1.014, circuit: 0.950, cloud: 0.997 },   // clamped from circuit 0.940
+};
+/** The reference kart every pace number in this file is calibrated against. */
+export const PACE_REF_ID = 'nitzotz';
+/** How far the per-kart correction may move the field, either way. */
+export const KART_PACE_CLAMP = 0.05;
+export { KART_PACE };
+
+/**
+ * The field's pace correction for the kart the child chose. Unknown racer,
+ * unknown track, or a missing cell -> 1, i.e. no correction at all: a new kart
+ * added to the roster without a measurement gets the reference field rather
+ * than a guess.
+ *
+ * NOT to be confused with AIDriver#racerPace(), which is the small fixed ±4%
+ * personality offset of ONE OPPONENT. `kartPace` is keyed by the kart the HUMAN
+ * picked and moves the WHOLE field; it is read once, in createAIField.
+ */
+export function kartPace(racerId, trackId) {
+  const v = KART_PACE[racerId]?.[trackId];
+  return Number.isFinite(v) ? v : 1;
+}
 
 // Championship tier of the opponents' own karts: race 1 stock, race 2 tier 1,
 // race 3 tier 2.
@@ -396,14 +557,74 @@ const paceForDifficulty = () => AI_PACE;
 // (D33), it just stops handing the race to a half-spent one.
 //
 // `playerTier` defaults to 0, so every existing caller — and a race where the
-// child has bought nothing — gets exactly the Wave-5.1 field. Measured on 40
-// seeds, 100% pace, race 3:
+// child has bought nothing — gets exactly the Wave-5.1 field.
+//
+// PRE-D64 (crooked ruler — the reading that justified the change; both columns
+// were measured the same way, so the STEP it establishes stands even though the
+// figures do not). 40 seeds, 100% pace, race 3:
 //
 //   player kart      before            after
 //   stock  x0/x8     3.90 / 3.40       bit-identical (the field is still tier 2)
 //   tier-2 x0        1.10, 36/40 wins  2.10, 8/40 wins
 //   tier-2 x8        1.00, 40/40       1.18, 34/40 wins
 //   tier-3 x0/x8     1.00, 40/40       1.00, 40/40 (the field is capped at 3)
+//
+// HONEST (D67): this scaling is one of the claims that SURVIVED the re-measure
+// essentially bit-for-bit — the shipped tier-2 x0 cell reads 2.15 with 7 wins in
+// 40 against the 2.10 / 8 recorded above. What did move is the stock reference
+// beside it: race 3 stock is 4.10-4.38 over five 40-seed sets, not 3.90, so
+// every "race 3 is the exemplar" statement written against 3.90 was written
+// against a number that was too kind.
+//
+// WAVE 6.1 — RACE 2'S FIELD WAS MEASURED AGAINST SCALING WITH THE CHILD, AND
+// DELIBERATELY LEFT FLAT. Race 2 runs tier 1 whatever the child is driving, and
+// the obvious symmetry — have it MATCH the child the way the finale runs one
+// tier above them, `max(1, min(playerPartTier, 2))` — was built, measured on the
+// honest instrument (D64) and REJECTED. It is not a tuning miss; it is the wrong
+// sign, and the numbers are here so nobody has to re-derive them.
+//
+// Measured, 100% pace, no quiz answers, five DISJOINT 40-seed sets (200 seeds),
+// mean finishing place out of 8:
+//
+//   cell                         flat tier 1 (ships)   match-the-child   delta
+//   race 2, stock                3.88/3.75/3.75/3.85/3.80   BIT-IDENTICAL  0
+//   race 2, uniform tier-2       2.12  (2.08..2.25)    3.11 (3.03..3.20)  +0.99
+//   race 2, uniform tier-3       1.47, 107/200 wins    2.14, 32/200 wins  +0.67
+//   race 3, uniform tier-2       2.22  (unchanged — the finale is untouched)
+//
+// WHY IT IS THE WRONG SIGN. The complaint it was built for is that the upgraded
+// championship is FLAT: race 3 minus race 2 for a tier-2 kart is +0.09 places
+// (per set +0.08/-0.15/-0.05/+0.13/+0.48), so the ladder does not escalate on the
+// axis the garage sits on. Matching the child can only make race 2 HARDER, and
+// race 3 is already capped at PART_TIERS' top tier — so the same gap goes to
+// -0.90 (per set -0.88/-1.08/-0.90/-0.73/-0.90): a flat rung becomes an inverted
+// one. Over all 66 garages a two-visit championship can actually build, the mean
+// race3-race2 gap goes +0.15 -> -0.22, and the number of garages for which race 3
+// is the harder race falls from 37/66 to 23/66.
+//
+// AND IT COSTS THE THING RACE 2 IS FOR. Race 2 is the race the GARAGE wins
+// (tests/ai.test.mjs section 2b, and the token economy pays out for it): a tier-2
+// kart is worth 1.80 places over stock there today, and 0.85 with the field
+// matched — the upgrade stops being worth buying. The best garage two visits can
+// reach reads 1.93 today and 2.90 matched, and a fully-spent garage's race-2 win
+// rate falls from 43% to 10%.
+//
+// AND IT BREAKS D33. The field steps a whole tier the moment the child's engine
+// or turbo reaches 2, but on `circuit` TYRES are the fastest part (stock 54.37s
+// -> tyres-3 52.67s, engine-3 53.32s, turbo-3 53.34s, frame flat) and
+// `playerPartTier` deliberately cannot see them (D58). So a child with tyres
+// bought first who then buys an engine crosses the threshold for a part that
+// barely pays: over the 240 one-purchase steps a championship can make, the worst
+// "bought a part, finished WORSE" step goes +0.23 -> +0.85 places, with 3 steps
+// over half a place where there are none today. Counting tyres in a RACE-2-ONLY
+// signal (max of engine/turbo/tyres, the three parts that pay on circuit) fixes
+// that half of it — worst step +0.42, no step over half a place — but makes race 2
+// harder still (mean over the 66 reachable garages 3.22 -> 3.71) and the ladder
+// worse (-0.35). Both variants are measured in full in the Wave 6.1 report.
+//
+// If this is ever revisited: the lever that makes the ladder REAL is race 3 or
+// the tracks' own pace, not race 2's field, and tests/ai.test.mjs section 3c
+// pins the contract below so a change to it cannot land silently.
 export const aiPartTier = (d01, playerTier = 0) => {
   const base = clamp(Math.round(2 * difficulty01(d01)), 0, 2);
   return difficulty01(d01) >= 1 ? Math.max(base, clamp(Math.round(playerTier) + 1, 0, 3)) : base;
@@ -442,8 +663,16 @@ export const aiPartTier = (d01, playerTier = 0) => {
 //    cannot change — it is present at every field tier and predates Wave 6.
 //
 // So `max` over all four slots (round 1) made the field step up for a purchase
-// that had given the child nothing. Measured, race 3, 200 seeds (5 disjoint
-// 40-seed sets), mean place with the resulting field:
+// that had given the child nothing.
+//
+// EVERY FINISHING-PLACE FIGURE IN THE REST OF THIS BLOCK IS PRE-D64 (crooked
+// ruler); the lap-time table above is not (it is physics, and D64 did not touch
+// it). They compare four AGGREGATORS against each other, all on the same seeds,
+// so the ranking they establish — and the choice of `max(engine, turbo)` — is
+// unaffected; the absolute places are not honest numbers and must not be set
+// beside a post-D64 figure. The honest race-3 stock reference, for scale, is
+// 4.10-4.38 rather than the 4.04 below (D67). Measured, race 3, 200 seeds
+// (5 disjoint 40-seed sets), mean place with the resulting field:
 //
 //   single part only     stock   tier 1   tier 2   tier 3
 //   max over 4 (round 1)  4.04    4.08     4.91     5.04   <- tyres: buying the
@@ -527,8 +756,10 @@ export const playerPartTier = parts => (parts
 //   Wave 1 (-17%)        0.677    0.739    0.801     <- race 3 lapped a child
 //   Wave 4 (absolute)    0.620    0.620    0.620
 //
-// Measured, 3-lap races, autopilot player with topSpeed+accel scaled to `pace`,
-// 5 seeds, laps behind the winner when the winner finishes (>= 1.00 = lapped):
+// PRE-D64 (crooked ruler; both columns measured the same way, so the before/
+// after the floor establishes stands). 3-lap races, autopilot player with
+// topSpeed+accel scaled to `pace`, 5 seeds, laps behind the winner when the
+// winner finishes (>= 1.00 = lapped):
 //
 //                race 1 (oasis)  race 2 (circuit)  race 3 (cloud)
 //   70% pace     0.24 -> 0.17     0.25 -> 0.15      0.61 -> 0.20   (before/after)
@@ -537,6 +768,10 @@ export const playerPartTier = parts => (parts
 // and the worst distance to the NEAREST opponent at 70% pace fell from 0.41 laps
 // to 0.08 — a struggling child is now inside the pack, not alone on an empty
 // track, which is what the floor is for.
+//
+// HONEST (D67): the guarantee is one of the claims that survived the re-measure
+// unchanged — a 70%-pace child is worst 0.11 / 0.14 / 0.21 laps down and was
+// lapped 0 times in 600 races.
 //
 // Do not "fix" a future never-lapped gap by widening BAND_CATCH — an unbounded
 // catch-up is the thing kids notice and resent, and it is capped so an opponent
@@ -562,7 +797,10 @@ const PACK_TAU = 2.5;
 // alone. Measured on the gate's own harness (40 seeds, 100% pace, stock kart),
 // the metric that separates them is not the nearest-kart gap (every race is
 // under a second) but how much of the race the player spends IN FRONT of
-// everybody: race 1 46%, race 2 2.0%, race 3 3.1%.
+// everybody: pre-D64 that read race 1 46%, race 2 2.0%, race 3 3.1%; honest,
+// over five 40-seed sets, it reads 45.6-55.9 / 2.2-3.6 / 1.6-4.9 (D67 and
+// tests/ai.test.mjs §2c). The diagnosis is the same on either ruler — race 1 is
+// the outlier by an order of magnitude — which is why these two scalings stay.
 //
 // So this is a race-1 problem plus a race-2 "the leaders are up the road in a
 // different race" problem, and both are fixed by scaling terms that ALREADY
@@ -578,14 +816,22 @@ const PACK_TAU = 2.5;
 //     4.0 to 5.0 on race 1, because partial hold-back is a fraction of a base
 //     pace that just went up. Halving the hold term's TIME CONSTANT on race 1
 //     (not its authority, and not the floor) makes the same hold-back arrive at
-//     half the gap, and puts the 85% ladder back to 4.0 / 5.2 / 6.2 exactly.
-//  2. FORWARD SLOT, race 2 only. Race 2's two front-runners sit at +2.06s and
+//     half the gap, and puts the 85% ladder back where it was (recorded pre-D64
+//     as 4.0 / 5.2 / 6.2; the honest re-measure reads 4.00 / 5.00 / 6.00 and
+//     D67 lists the struggling-child ladder among the claims that survived).
+//  2. FORWARD SLOT, race 2 only. Race 2's two front-runners sat at +2.06s and
 //     +0.83s, which is a separate race up the road: the player was 2.73s off the
 //     win with no way to see it. Compressing race 2's forward slots to 0.65 puts
-//     them at the finale's own +1.63s / +0.65s spacing. Measured: time behind
-//     the winner 2.73s -> 2.02s, a rival within 1.5s ahead 89.7% -> 93.4% of the
-//     race, and an engaged stock kart's podium rate 16/40 -> 23/40, with the
-//     3rd-4th finish target (3.67, zero wins in 40) untouched.
+//     them at the finale's own +1.63s / +0.65s spacing. Measured PRE-D64 (both
+//     sides on the same ruler): time behind the winner 2.73s -> 2.02s, a rival
+//     within 1.5s ahead 89.7% -> 93.4% of the race, an engaged stock kart's
+//     podium rate 16/40 -> 23/40, and the 3rd-4th finish target untouched at
+//     3.67 with zero wins in 40. HONEST, shipped build only (D67): race 2 stock
+//     finishes 3.73-3.90 with 0 wins in 200 — still dead centre of its 3rd-4th
+//     ask, the most stable claim in the file — sits 1.98-2.12s behind the winner
+//     and has a rival within 1.5s ahead for 92.6-94.3% of the race. The
+//     distance-to-the-front axis is what this scaling still earns its place on;
+//     race 2 no longer trails the exemplar on `ahead<=1.5s` at all.
 const HOLD_REACH_R1 = 0.5;
 const holdReach = d01 => 1 - (1 - HOLD_REACH_R1) * Math.max(0, 1 - 2 * d01);
 const SLOT_FWD_R2 = 0.65;
@@ -614,9 +860,16 @@ const SLOT_AHEAD = [2.5, 1, -0.5, -2, -3.5, -5, -6.5];
 // alone at every difficulty — they are what keeps a clean 100% driver fighting
 // for the win rather than handed it.
 //
+//   PRE-D64 (crooked ruler, and only 11 seeds — a direction, not a figure;
+//   both columns measured the same way, and the 85% row is what the table was
+//   chosen on):
 //   mean place, autopilot player, 11 seeds      race 1   race 2   race 3
 //   100% pace   before / after                  2.2/2.5  3.8/3.1  3.8/3.8
 //    85% pace   before / after                  6.0/4.1  6.0/5.0  6.2/6.1
+//
+//   HONEST, shipped only (D67): the 85% ladder is 4.00 / 5.00 / 6.00 and the
+//   100% one 2.43-2.55 / 3.73-3.90 / 4.10-4.38. The struggling child no longer
+//   reads 6th on every race, which is the whole point of the stretch.
 //
 // The falloff is squared so race 2 keeps most of the escalation: the stretch is
 // 1.8x at d01 = 0, 1.2x at d01 = 0.5 and 1.0x (i.e. Wave-1 behaviour) at d01 = 1.
@@ -629,6 +882,211 @@ const slotStretch = d01 => 1 + (SLOT_STRETCH_EASY - 1) * (1 - d01) * (1 - d01);
 
 const NO_INPUT = { throttle: 0, brake: 0, steer: 0, drift: false, hop: false };
 
+// ---------------------------------------------------------------------------
+// ProgressTracker — the ONE way a kart's race progress is accumulated (D64).
+// Every accumulator in the game is an instance of this: the seven opponents get
+// theirs from AIDriver, and race.js builds the player's from the same class, so
+// there is exactly one definition of "how far round the lap is this kart".
+//
+// Progress is `laps + fraction past def.startT`, integrated from the kart's
+// centreline projection `body.lapT`. Two things make the raw integral lie, and
+// both are fixed here rather than in five copies of the same three lines:
+//
+// 1. PROJECTION SNAPS. `TrackSpline.closestT()` is a GLOBAL nearest-sample
+//    lookup (its `hintT` argument is declared and never read). A kart that runs
+//    wide — off the road, or across the neck of a hairpin — can have its nearest
+//    centreline sample flip to a different branch of the lap, and `lapT` then
+//    jumps discontinuously. Integrated raw, that jump is FREE PROGRESS.
+//    Measured before this guard, over 3 tracks x 4 seeds: worst single step
+//    +13.67 m of progress for 0.29 m actually travelled (cloud/19, kart
+//    'plada', 13.0 m off a 9.3 m half-width), and every one of the 12
+//    net-nonzero events was a GAIN, up to +10.23 m for one kart over one race.
+//    Progress is an accumulator, so that credit is permanent.
+// 2. TELEPORTS. `respawn()` / `placeAt()` move the kart without driving it.
+//    Those must be absorbed, never integrated.
+//
+// THE GUARD: a step may not advance progress by more than the kart could
+// physically have covered.
+//
+//     cap = ground * (1 + PROGRESS_ARC_EPS) + quantisation floor
+//
+// where `ground` is the larger of the measured horizontal displacement and
+// `speed * dt` over the SAME interval `lapT` moved across (see step()).
+//
+// WHY AN EPS AT ALL, AND WHICH DIRECTION IS REAL. Centreline arc and ground
+// distance are not equal: on the INSIDE of a corner of radius R, a kart at
+// lateral offset L sweeps the same angle on radius R-L, so it covers R/(R-L)
+// times its own ground distance in CENTRELINE ARC. That is the one direction an
+// upper bound has to allow for — on the OUTSIDE it covers less, and a cap never
+// cares about less. The tightest corner in the game is circuit's first hairpin,
+// R = 18.8 m (oasis 29.4 m, cloud 33.6 m); at the inside edge of its 8 m
+// half-width the honest factor is 18.8/14.8 = 1.27. EPS = 0.60 (cap factor
+// 1.60) leaves 26% over that worst case, which also absorbs the residual
+// mismatch between a step's displacement and its slightly-stale speed.
+//
+// WHY AN ADDITIVE FLOOR, AND WHY IT IS THE SAMPLE SPACING. `closestT()` refines
+// onto the segment [i, i+1] of the arc-length table and CLAMPS the parameter to
+// [0, 1], so a kart sitting just behind sample i reads exactly t = i/N until it
+// passes the sample. `lapT` is therefore a slight staircase with a tread of one
+// sample spacing (0.826 m on oasis, 0.845 circuit, 0.855 cloud), and a single
+// step's arc delta can legitimately carry up to about half a tread of catch-up.
+// A pure multiplicative cap sits INSIDE that noise (at 20 m/s, 1.6 x 0.33 m =
+// 0.53 m) and misfires on 13% of all steps, bleeding ~0.06 m each. Measured
+// unguarded over 892,800 steps (3 tracks x 4 seeds x 8 karts), the excess
+// |arc step| - 1.6 x ground runs to 0.4 m of quantisation noise and then stops:
+// 50 steps exceed 0.40 m, 31 exceed 0.60 m, and those 31 are the projection
+// snaps themselves (0.83 m to 16.4 m). The floor is set at 0.72 of a sample
+// spacing (0.60 m here) — above all the noise, below every real snap.
+//
+// SENSITIVITY, stated the way the gate's 0.06 m tie tolerance is: the guard
+// rejects any single step that gifts more than ~0.60 m of arc beyond what the
+// kart could physically cover — 0.93 m of progress in one 1/60 s step at
+// 20 m/s. It fires 31 times in 892,800 steps of clean racing.
+//
+// NEVER FREEZES. When the cap bites the step is not dropped — it is replaced by
+// the kart's own along-track displacement (Δposition · tangent), clamped to the
+// cap. So a kart whose projection is misbehaving keeps making the progress it
+// is really making, in the right direction. Every bite is COUNTED
+// (`.clamps`, `.clampedM`) and surfaced through `field.telemetry()`, so a
+// mis-firing guard is observable instead of silent.
+//
+// AND IT HEALS — WHICH IS WHERE ON-TRACK vs OFF-TRACK MATTERS.
+// A cap on its own trades one bias for the mirror image of it. The snaps
+// measured here are not transient: a kart 12-15 m off the road in a corner has
+// its projection jump 1.6-4.1 m forward and STAY there, so a pure cap leaves
+// that kart's progress permanently BEHIND its own projection — up to -6.60 m on
+// oasis/3 — and the child then sees it ranked behind karts it is visibly
+// alongside. That is the same lie with the sign flipped.
+//
+// The way out is to notice WHEN the projection can be trusted. On the road it
+// is unambiguous: the nearest centreline branch is tens of metres from any
+// other (the tightest hairpin puts its two sides 37 m apart against a 16 m
+// road), so `lapT` IS the kart's arc position and "equal progress == physically
+// abreast" must hold exactly. Off the road it is a global nearest-sample lookup
+// with nothing to keep it on the branch the kart came from, and it snaps.
+//
+// So: while the kart is ON TRACK and the step was clean, progress is set
+// exactly to the projection — there is no residual to see, ever, and the
+// ranking the child reads is the ranking on the tarmac. While the kart is OFF
+// TRACK, progress converges toward the projection at no more than
+// PROGRESS_REANCHOR_MPS (a thirteenth of racing speed): a snap cannot flip
+// anyone's place in one frame, and nothing can be banked, because the moment
+// the kart touches the road again the accumulator is simply the truth.
+// Measured over 113,749 steps x 12 cells with this in: every pair of ON-TRACK
+// karts is ordered correctly, worst error 0.000 m, and no on-track kart's
+// progress differs from its projection at all. The 140 remaining
+// order-vs-projection disagreements ALL involve a kart that is off the road at
+// that instant, where the projection is the thing that is lying — that is
+// `closestT()`'s ignored `hintT`, and it belongs to trackdef.js.
+export const PROGRESS_ARC_EPS = 0.60;
+// Fraction of one arc-length-table sample spacing allowed as additive slack.
+export const PROGRESS_FLOOR_SAMPLES = 0.72;
+// Metres/second of allowed convergence toward the projection while the kart is
+// OFF the road. On the road the convergence is immediate — see the header.
+export const PROGRESS_REANCHOR_MPS = 1.5;
+// An offset bigger than this is not a projection snap — it is a lost lap or a
+// broken accumulator. Don't quietly heal it; count it (`.faults`) and leave it
+// visible.
+export const PROGRESS_REANCHOR_MAX_M = 40;
+// A kart that trips the guard this many times in one race is not "running wide
+// occasionally" — something is wrong with its projection or its physics. Warn
+// once, loudly, rather than quietly clamping forever.
+const CLAMP_WARN_AT = 240;
+
+const _tmpTan = new THREE.Vector3();
+
+export class ProgressTracker {
+  /**
+   * @param {TrackSpline} spline
+   * @param {KartBody} body   seeded from where this body is standing RIGHT NOW
+   * @param {number} startT   the start/finish line t. progress 0 == on the line.
+   */
+  constructor(spline, body, startT = 0) {
+    this.spline = spline;
+    this.lapLen = spline.length;
+    // Additive slack: the `lapT` staircase tread (see the header).
+    this.floorM = PROGRESS_FLOOR_SAMPLES * spline.length / (spline.N || 1400);
+    this.startT = startT;
+    this.value = TrackSpline.deltaT(body.lapT, startT);
+    this.clamps = 0;
+    this.clampedM = 0;
+    this.healedM = 0;      // metres re-anchored back onto a trusted projection
+    this.faults = 0;       // offsets too big to be a snap — see the header
+    this._warned = false;
+    this.resync(body);
+  }
+
+  /** Absorb a teleport (respawn / placeAt): re-anchor without integrating. */
+  resync(body) {
+    this._prevT = body.lapT;
+    this._px = this._qx = body.position.x;
+    this._pz = this._qz = body.position.z;
+    this._prevSpeed = 0;
+  }
+
+  /**
+   * Integrate one fixed step. Call AFTER `body.update()`, so that every kart's
+   * progress describes the same instant (see the phase note in createAIField).
+   * @returns {number} the metres of arc actually credited (signed).
+   */
+  step(dt, body) {
+    const t = body.lapT;
+    const raw = TrackSpline.deltaT(t, this._prevT) * this.lapLen;
+    // THE GROUND DISTANCE MUST COVER THE SAME INTERVAL AS `raw`, and that is
+    // NOT the step just taken. `KartBody.update` samples `lapT` at its TOP,
+    // from the position the kart held at the end of the previous step, and only
+    // integrates afterwards — so `lapT` lags `position` by exactly one step.
+    // The honest ground distance for `raw` is therefore the one between the
+    // PREVIOUS TWO position snapshots, with the speed recorded alongside them.
+    // (Pairing `raw` with the current step's displacement instead makes the
+    // guard fire ~2600 times a race on the standing start alone, where the
+    // grid's collision shoves and the acceleration ramp put the two intervals
+    // an order of magnitude apart.)
+    const dx = this._px - this._qx, dz = this._pz - this._qz;
+    const ground = Math.max(Math.hypot(dx, dz), Math.abs(this._prevSpeed || 0) * dt);
+    const cap = ground * (1 + PROGRESS_ARC_EPS) + this.floorM;
+    let use = raw, clamped = false;
+    if (!(Math.abs(raw) <= cap)) {           // NaN-safe: an unusable raw also lands here
+      clamped = true;
+      const tan = this.spline.tangentAt(this._prevT, _tmpTan);
+      const along = dx * tan.x + dz * tan.z;
+      use = Math.max(-cap, Math.min(cap, Number.isFinite(along) ? along : 0));
+      this.clamps++;
+      this.clampedM += Math.abs((Number.isFinite(raw) ? raw : 0) - use);
+      if (this.clamps === CLAMP_WARN_AT && !this._warned) {
+        this._warned = true;
+        console.warn(`ProgressTracker: ${CLAMP_WARN_AT} clamped steps ` +
+          `(${this.clampedM.toFixed(1)} m of bogus arc rejected) — the centreline ` +
+          'projection or the physics for this kart is misbehaving.');
+      }
+    }
+    this.value += use / this.lapLen;
+
+    // ---- converge onto the projection ------------------------------------
+    // `deltaT` reduces the difference to the nearest half-lap, so `err` is the
+    // signed offset, in metres, between the accumulator and where this kart's
+    // centreline projection says it actually is. ON THE ROAD that projection is
+    // the truth and the offset is taken out in full; OFF the road it is only
+    // approached, at a rate no snap can ride. See the header.
+    if (!clamped && Number.isFinite(t)) {
+      const err = TrackSpline.deltaT(t - this.startT, this.value) * this.lapLen;
+      if (Math.abs(err) > PROGRESS_REANCHOR_MAX_M) this.faults++;
+      else if (err !== 0) {
+        const lim = body.offTrack ? PROGRESS_REANCHOR_MPS * dt : Math.abs(err);
+        const corr = Math.max(-lim, Math.min(lim, err));
+        this.value += corr / this.lapLen;
+        this.healedM += Math.abs(corr);
+      }
+    }
+
+    this._prevT = t;
+    this._qx = this._px; this._qz = this._pz;
+    this._px = body.position.x; this._pz = body.position.z;
+    this._prevSpeed = body.speed || 0;
+    return use;
+  }
+}
+
 export class AIDriver {
   /**
    * @param {object} o
@@ -640,6 +1098,11 @@ export class AIDriver {
    *   difficulty  race number 1..3 or 0..1 fraction
    *   pace        optional hard pace override (used by the test's scripted
    *               player and by preview stand-ins); disables the rubber band.
+   *   startT      the track's start/finish line t (def.startT). Progress is
+   *               measured FROM it, so a grid slot behind the line seeds a
+   *               small negative progress. Defaults to 0 — a caller that
+   *               passes neither startT nor a def still works, it just uses
+   *               t = 0 as its origin.
    */
   constructor(o = {}) {
     this.body = o.body;
@@ -669,8 +1132,17 @@ export class AIDriver {
     this.devTarget = 0;
     this.band = 1;             // rubber-band multiplier, smoothed
     this.pace = 1;
-    this.progress = 0;         // laps completed, fractional & monotonic
-    this._prevT = this.body.lapT;
+    // Progress ORIGIN is the start/finish line, not "wherever this kart was
+    // constructed". gridSlots() parks row r 4..22 m BEHIND the line, so a kart
+    // seeded at 0 carried a permanent free-metres credit in every progress
+    // comparison (order(), _rankPass, race positions, the band's gap terms).
+    // Seeding with the signed arc offset from startT makes progress == 0 mean
+    // "on the line" and equal progress mean physically abreast. See D58.
+    // Accumulated by `commitProgress(dt)`, which the field calls AFTER this
+    // kart's body has been stepped — never inside update(), which runs BEFORE
+    // it. See the phase note in createAIField.update.
+    this.startT = o.startT ?? 0;
+    this._prog = new ProgressTracker(this.spline, this.body, this.startT);
     this._passSide = 0;
     this._passHold = 0;
     this._blockT = 0;
@@ -691,6 +1163,24 @@ export class AIDriver {
       throttleTime: 0, brakeTime: 0, blockTime: 0,
     };
   }
+
+  /**
+   * Laps + fraction past the start/finish line. 0 means ON the line; a kart on
+   * the grid is a small negative number. Backed by a guarded accumulator; the
+   * setter exists so a test can re-seed it.
+   */
+  get progress() { return this._prog.value; }
+  set progress(v) { this._prog.value = v; }
+
+  /**
+   * Integrate this kart's progress for the step just taken. MUST be called
+   * after `this.body.update()`, so `order()` compares end-of-step against
+   * end-of-step. Returns the metres of arc credited.
+   */
+  commitProgress(dt) { return this._prog.step(dt, this.body); }
+
+  /** Absorb a respawn/teleport of this kart's body without integrating it. */
+  resyncProgress() { this._prog.resync(this.body); }
 
   /** Rebuilds the target-speed table (call after a parts change). */
   rebuildProfile() {
@@ -740,9 +1230,12 @@ export class AIDriver {
     const v = Math.max(b.speed, 0.001);
     const t = b.lapT;
 
-    // lap progress (monotonic, wrap-safe)
-    this.progress += TrackSpline.deltaT(t, this._prevT);
-    this._prevT = t;
+    // NOTE: progress is NOT accumulated here. This method runs BEFORE
+    // `body.update()` moves the kart, so anything integrated here would
+    // describe the START of the step while the player's accumulator (folded in
+    // by the field from an already-stepped body) describes the END of it — a
+    // systematic ~0.3 m/frame gift to the player in every order() comparison.
+    // The field calls `commitProgress(dt)` after the bodies move instead.
 
     // ---- pace ------------------------------------------------------------
     const wave = 1 + P.paceWave * Math.sin(this.time * (P.waveHz ?? 0.42) + this._wavePhase);
@@ -838,7 +1331,11 @@ export class AIDriver {
   /** Lowest band multiplier this driver can ever reach (the absolute floor). */
   bandFloor() { return 1 - bandHoldMax(this.basePace()); }
 
-  /** Small fixed per-racer pace offset so the field is not eight clones. */
+  /**
+   * Small fixed per-racer pace offset so the field is not eight clones. This is
+   * an OPPONENT's own character; the player's kart choice is corrected for
+   * elsewhere and once, by kartPace() feeding `trackPace`.
+   */
   racerPace() {
     if (this._racerPace == null) {
       const r = makeRng(1 + (this.racer.id || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0));
@@ -1088,8 +1585,14 @@ export function createAIField(spline, def, engine, opts = {}) {
   const count = opts.count ?? 7;
   const slots = opts.slots || gridSlots(spline, def, count + 1);
   const playerSlot = opts.playerSlot ?? 0;
+  // Origin for every progress accumulator in this field, player included.
+  const startT = def?.startT ?? 0;
   const surface = def?.theme === 'cloud' ? 'cloud' : def?.theme === 'circuit' ? 'grass' : 'sand';
-  const trackPace = TRACK_PACE[def?.id] ?? 1;
+  // Per-geometry calibration x the per-kart correction for the kart the child
+  // actually chose (see KART_PACE above). Faster kart -> faster field, so the
+  // choice keeps its FEEL and stops buying finishing places. Not clamped as a
+  // product: TRACK_PACE.oasis is 1.09 and a clamp here would erase it.
+  const trackPace = (TRACK_PACE[def?.id] ?? 1) * kartPace(playerId, def?.id);
   // The opponents' own garage. `opts.parts` still wins (A/B telemetry hands the
   // whole field the player's parts on purpose); otherwise the field runs the
   // championship tier for this difficulty. Exposed on the api as `parts` so the
@@ -1108,7 +1611,7 @@ export function createAIField(spline, def, engine, opts = {}) {
       parts: aiParts, surface,
     });
     const drv = new AIDriver({
-      body, spline, racer, difficulty, trackPace,
+      body, spline, racer, difficulty, trackPace, startT,
       seed: (opts.seed ?? 1) * 101 + i * 37,
       rubberBand: opts.rubberBand !== false,
     });
@@ -1129,7 +1632,7 @@ export function createAIField(spline, def, engine, opts = {}) {
   let tokens = null;
   let bandPeak = 1, bandTrough = 1;
   let time = 0;
-  let playerProgress = 0, playerPrevT = null;
+  let playerProgress = 0, playerTrack = null;
 
   const api = {
     drivers, bodies, karts, line: racingLine(spline), difficulty: d01,
@@ -1162,14 +1665,30 @@ export function createAIField(spline, def, engine, opts = {}) {
       // ---- fold the player into the awareness list (never into the band's
       //      "who do we slow down" set — the player is never rubber-banded) --
       const pb = playerState?.body || (playerState?.lapT != null ? playerState : null);
+      let stepPlayer = false;
       if (pb) {
         if (!playerEntry) { playerEntry = { body: pb, driver: null, isPlayer: true }; karts.push(playerEntry); }
         else playerEntry.body = pb;
-        if (playerPrevT == null) playerPrevT = pb.lapT;
-        playerProgress += TrackSpline.deltaT(pb.lapT, playerPrevT);
-        playerPrevT = pb.lapT;
+        // Seed the human's accumulator on the same origin as the opponents':
+        // the signed arc offset of their grid slot from the start/finish line.
+        if (!playerTrack || playerTrack.body !== pb) {
+          playerTrack = new ProgressTracker(spline, pb, startT);
+          playerTrack.body = pb;
+          playerProgress = playerTrack.value;
+        }
+        // The human's body was stepped by the caller BEFORE this call, so its
+        // lapT already describes the end of the step; the opponents' do not
+        // until their bodies are stepped below. Both accumulators are therefore
+        // committed together, after the drive loop.
+        stepPlayer = true;
       }
-      if (playerState?.progress != null) playerProgress = playerState.progress;
+      if (playerState?.progress != null) {
+        // The caller keeps its own accumulator (race.js does). Honour it, and
+        // re-anchor ours to it so a later frame without one does not jump.
+        playerProgress = playerState.progress;
+        if (playerTrack) { playerTrack.value = playerProgress; playerTrack.resync(pb); }
+        stepPlayer = false;
+      }
 
       // ---- rubber band -----------------------------------------------------
       // Reference = a blend of the human's progress and the pack's own mean.
@@ -1200,6 +1719,16 @@ export function createAIField(spline, def, engine, opts = {}) {
         const all = pb ? bodies.concat([pb]) : bodies;
         KartBody.resolveCollisions(all);
       }
+
+      // ---- progress, all karts at the SAME instant -------------------------
+      // Every body has now been stepped (the human's by the caller, before this
+      // call). Committing here — and only here — is what makes order() compare
+      // end-of-step against end-of-step. Doing it inside AIDriver.update, which
+      // runs before the bodies move, handed the player a systematic ~0.3 m per
+      // frame: 972 wrong orderings over 113,749 steps, worst lie 4.15 m.
+      for (const d of drivers) d.commitProgress(dt);
+      if (stepPlayer) { playerTrack.step(dt, pb); playerProgress = playerTrack.value; }
+
       api._rankPass(dt, pb);
     },
 
@@ -1235,9 +1764,18 @@ export function createAIField(spline, def, engine, opts = {}) {
     telemetry() {
       return {
         bandMax: bandPeak, bandMin: bandTrough, time,
+        // Guard diagnostics: how many steps the progress cap had to reject, and
+        // how many metres of bogus arc that was. Both should be ~0 in a healthy
+        // race; a non-zero clampedM is a projection snap that DIDN'T become free
+        // progress. Non-silent by design — see ProgressTracker.
+        progressClamps: drivers.reduce((n, d) => n + d._prog.clamps, 0) +
+          (playerTrack ? playerTrack.clamps : 0),
+        progressClampedM: drivers.reduce((n, d) => n + d._prog.clampedM, 0) +
+          (playerTrack ? playerTrack.clampedM : 0),
         drivers: drivers.map(d => ({
           id: d.racer.id, name: d.racer.nameEn, personality: d.personality,
           progress: d.progress, band: d.band, pace: d.pace,
+          progressClamps: d._prog.clamps, progressClampedM: d._prog.clampedM,
           ...d.stats,
           cornerEntry: d.stats.cornerEntryN ? d.stats.cornerEntrySum / d.stats.cornerEntryN : 0,
         })),
@@ -1310,7 +1848,7 @@ export function preview(engine) {
   const player = ROSTER[0];
   const slots = gridSlots(spline, def, 8);
   const playerBody = new KartBody({ spline, stats: player.stats, startSlot: slots[0], surface: 'sand' });
-  const playerDrv = new AIDriver({ body: playerBody, spline, racer: player, seed: 5, pace: 0.95 });
+  const playerDrv = new AIDriver({ body: playerBody, spline, racer: player, seed: 5, pace: 0.95, startT: def.startT ?? 0 });
   const field = createAIField(spline, def, engine, {
     difficulty: 1, playerRacerId: player.id, slots, playerSlot: 0, seed: 3,
   });
@@ -1381,6 +1919,7 @@ export function preview(engine) {
       time += dt;
       const pi = playerDrv.update(dt, { karts: field.karts });
       playerBody.update(dt, pi);
+      playerDrv.commitProgress(dt);   // stand-in driver isn't in the field's loop
       field.update(dt, playerBody);
 
       trailClock += dt;

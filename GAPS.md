@@ -536,7 +536,7 @@ pace constant.** It is something these six numbers do not measure — camera, on
 spacing, audio, or how distinguishable the karts around the player are — and it needs a
 different kind of observation rather than another tuning round.
 
-### Tyres and frame buy nothing on the finale, and that is a `kartphysics` fact
+### Tyres and frame buy nothing ON THE FINALE — but the ranking is TRACK-DEPENDENT (corrected, Wave 7)
 Autopilot lap time on `cloud`, one kart, no traffic, tier 0 → 3: **engine 48.07 → 45.50 s,
 turbo 48.07 → 46.33 s, frame 48.07 → 47.98 s (flat), tyres 48.07 → 48.84 s (SLOWER).** Present
 at every AI tier and on Wave 5.1 too, so it is a `kartphysics` / `autopilotInput` interaction
@@ -547,6 +547,27 @@ only, so such a purchase at least does not COST a place, and `tests/ai.test.mjs`
 residual at 0.65 places) but the underlying flatness is unfixed and lives in `kartphysics.js`.
 It also means the garage's four slots are not four equal choices, which the garage's copy
 implies they are.
+
+**Wave 7 correction — this entry was true of `cloud` and was written as if it were true of the
+game.** Re-measured per track on the honest instrument (single-kart autopilot flat-out, stock →
+tier 3; this measurement never involved the progress bug, so only the scope was wrong, not the
+cloud numbers):
+
+| track | stock | engine 3 | turbo 3 | frame 3 | tyres 3 |
+|-------|-------|----------|---------|---------|---------|
+| cloud (race 3)   | 47.82 | **45.34** | 46.07 | 47.91 | 48.67 — SLOWER |
+| circuit (race 2) | 54.37 | 53.29 (nearly flat) | — | — | **52.66 — the FASTEST part** |
+| oasis (race 1)   | 46.71 | — | — | — | 46.82 — slower |
+
+So on `circuit` the sign flips and tyres are the best purchase in the game, while on `cloud` they
+are actively harmful. The garage's four slots are not four equal choices AND their ranking changes
+between races — which the garage's copy does not say, and which no child could infer.
+
+This has a live consequence for difficulty: `playerPartTier` reads engine and turbo ONLY (D58,
+deliberately, so a tyres/frame purchase cannot COST a place in the finale). Race 2 runs on circuit,
+where tyres are the fast part — so a child who spends their visit on tyres gets race 2's best
+upgrade and the scaling field cannot see it. Measured: tyres-3 reads **3.00** on race 2 against
+engine-3's 3.15, with the opposing field still at its floor tier.
 
 ### The `tokens-200` badge clears by two tokens
 `TOKEN_STEPS.high` is 80 and the modelled plausible child banks **82** by the end of the second
@@ -604,3 +625,97 @@ cannot leave. Found while stress-testing Wave 6's curtain with a deliberately th
 the curtain itself is correctly disposed and the modal registry stays clean (so the audio does
 not stay ducked), but the game is over. Pre-existing, not reachable by any code path today, and
 not fixed in the final wave. The fix is a try/catch in `goto` that routes to the menu.
+
+## Wave 7 — the instrument wave
+
+### `TrackSpline.closestT` ignores its own `hintT`, and that is a free-metres leak
+`closestT(v, hintT = null)` (`src/track/trackdef.js`) declares the hint and never reads it;
+none of its 34 call sites passes one. Projection is therefore a GLOBAL nearest-sample lookup
+over the spatial hash, and `_buildGrid` registers every sample into a 1-cell neighbourhood at
+`_cell = 12` m — so a kart well off the centreline can sit in a bucket holding samples from a
+different branch of the lap, and `lapT` snaps discontinuously to it.
+
+Measured at the frame: `plada`, cloud, t=47.68 s, lateral −13.0 m against a 9.3 m half-width,
+speed 17.6 m/s — travelled 0.29 m that step and `lapT` moved **+13.67 m**. Across 12 cells
+(3 tracks × 4 seeds) oasis shows 3–6 jumps >1 m per race and cloud up to 13.67 m; circuit shows
+none. Net per-race credit reaches **+10.3 m for one kart**, and every one of the seven
+net-nonzero events measured was a GAIN — a systematic leak, not symmetric noise. It is over half
+the size of the Wave-7 origin bug (18 m) and permanent, because progress is an accumulator.
+
+**Wave 7 contained it rather than fixing it**, with a physical-plausibility guard on the two
+progress accumulators (`ai.js`, `race.js`): a step may not advance progress by more than the
+kart could have travelled. The ROOT cause is still here, and it still moves anything else that
+reads `lapT` off-line. It was not fixed because `closestT`'s blast radius is the whole game —
+track meshing, prop scatter, signage placement, the camera, quiz beacons and off-track detection
+all call it, and `signage`/`beacons`/`quizboxtest` are already documented as one question from
+red on quiz cadence. A hinted projection is a wave of its own, with those gates re-measured.
+
+The player is exposed to the identical leak the moment a real child runs wide; the autopilot
+nets 0.0 m only because it never leaves the road, which is also why five waves of autopilot
+measurement never saw it.
+
+### Kart choice still swings difficulty by ~1.8 places on race 1, and pace cannot close it
+D69 scaled the field by the chosen kart's measured flat-out pace. Race 2 responded (spread
+1.48 → **1.02**); race 1 barely did (1.83 → **1.78**) against a 0.75 target. Two measured causes:
+
+**1. Field composition, worth 1.13 / 0.93 / 1.35 places on its own.** Picking a racer also removes
+it from the seven opponents, so the choice changes who you are racing as well as what you drive.
+Measured with the player's physics HELD at the reference kart and the pace correction OFF, so it is
+the confound alone — and it is already over target on all three races. No pace constant can reach
+it. Closing it means a field whose composition does not depend on the player's pick (an eighth
+"ghost" opponent, or a fixed field with the player's twin removed), which changes who a child races
+against and is a design decision, not a tuning one.
+
+**2. The pace lever is saturated on oasis.** +5% field pace moves the field's 3-lap time by −0.7%
+on oasis, −1.3% on cloud, −4.8% on circuit. `TRACK_PACE.oasis` is already 1.09 and the field there
+is TOP-SPEED limited — which is `ai.js`'s own TRACK_PACE comment ("pace above ~1.05 buys nothing
+there but off-track time") proving itself. Race 1 receives roughly a sixth of its correction.
+
+**The only lever that closes race 1 is the field's top speed — its part tier — not its pace.**
+Race 1's field is stock by design (it is the gentle opening race), so raising it is a real design
+change with a real cost, and Wave 7 did not take it unasked. The residual is concentrated in plada
+and kaftor at ~1.0 place each on oasis.
+
+What DID close: the reported bug is much better — kaftor on race 1 goes 1.20 with 32 wins in 40 to
+**1.48 with 22**, and race 2's spread is now inside target. Karts still feel different (the
+correction never touches a `KartBody`, a stat, or the player; `kartpace.mjs` is bit-identical
+across the change) — they are simply no longer ordered by which kart is objectively faster.
+
+### ~~Race 1's "passing" target is unmet on honest data~~ — WITHDRAWN, the comparison was invalid
+This entry claimed race 1's passing target was unmet and that D58's Wave-6 repair was an artefact.
+It was withdrawn the same wave: the claim rested on comparing an honest number against a
+crooked-ruler one. Re-measured with BOTH builds on the honest instrument, D58's repair triples race
+1's visible passes (1.9 → 6.3) and cuts the share of the race led from ~69% to ~51%. Race 1 has a
+rival within 1.5 s for 95% of the race and a visible pass about every 24 s. See the D67 CORRECTION
+in DECISIONS.md. Nothing is owed here.
+
+### The three Space-taking teaching cards name the key three different ways
+D65 unified the KEY CONTRACT across the one-time teaching cards (button, Space, Enter, Escape, with
+`e.repeat` swallowed for D20), and Wave 7 extended it to the third card. What is still not unified
+is how each card TELLS a child the key exists:
+
+  * the quiz and token cards put it in the button label — `קדימה לשאלה! (רווח)`, `הבנתי! (רווח)`;
+  * `src/race/introcard.js` uses a separate hint line, `רווח או נגיעה במסך`;
+  * `src/ui/menus.js`'s how-to screen uses keycap chips.
+
+Each is defensible for its own surface — a full-screen intro card has room for a hint line, a small
+modal does not — so this is recorded as a DECISION not yet taken rather than a defect. It is worth
+one deliberate choice at some point instead of three surfaces drifting apart, and the moment to make
+it is when a fourth card appears.
+
+### The garage's scrim does not swallow pointer input, and a click lands on the card behind it
+Found while gating the meet-Boreg card. With that card up, a real click at an option card's centre
+**reaches the option behind the scrim**, selects it, and closes the teaching card through
+`choose()`'s safety net (`garage.js:1304`). The token and quiz scrims opt pointer events back in
+with `.on` (style.js turns them off for everything inside `#ui` by default) so they absorb taps;
+`.grg-scrim` does not.
+
+So a child who taps anywhere while being introduced to Boreg can silently make a garage choice they
+never saw. It is a one-line class change in principle, but it is a garage/style change that was out
+of scope for the piece that found it, and it wants its own gate (a click at an option's centre with
+the card up must change nothing) plus a check of whatever else mounts under `.grg-scrim`. Not fixed
+in Wave 7.
+
+Note the shape of this one for the future: the keyboard path was audited three times this wave and
+the POINTER path had no coverage at all. `modaltest`'s teaching-card sections assert keys; none of
+them clicks through a scrim.

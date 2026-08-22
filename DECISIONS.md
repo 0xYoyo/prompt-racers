@@ -2024,3 +2024,374 @@ where the caller can forget to pass it, and the only gate that can see that is o
 the value **out of a scene the game itself built**. The same shape has now bitten here three
 times — the garage's `setPart`/`setParts` mismatch (D24), the kart-preview dead seam, and this
 — which is enough to call it a class rather than a coincidence.
+
+## D65 — Two one-time teaching cards, one key contract
+The first-token explainer (`firstTokenPopup`, garage.js) took only Escape; the first-question-box
+explainer (`firstQuizPopup`, quiz.js) took the button, Space, Enter and Escape. Same shape of card,
+same moment in a child's first race, two different ways out — and the one a child would actually
+try, Space, worked on one of them.
+
+The token card now uses quiz.js's handler verbatim, including the two non-obvious parts:
+
+  * `e.repeat` is swallowed with a `preventDefault` and no close. Space is also the DRIFT key
+    (D20). A child holding Space when the card appears must not have it taken away by a key they
+    never released — the card would vanish before it was read, and the child would never know why.
+  * capture phase plus `stopPropagation`, so Escape closes THIS rather than falling through to
+    input.js and opening the pause menu underneath a card the child is still reading.
+
+The difference that was deliberately KEPT: the token card holds a modal-registry id (`'token'`)
+and the quiz card does not, because the quiz card opens inside the quiz system's own frozen
+sequence which already holds `'quiz'`. Unifying the key handling is not a reason to unify the
+registry behaviour; see D15/D18.
+
+The card also now names its key in its own button label — `הבנתי! (רווח)` — which is the pattern
+quiz.js already used (`קדימה לשאלה! (רווח)`). A modal that accepts a key without saying so is a
+modal a child dismisses with the mouse forever.
+
+Pinned by `tools/modaltest.mjs` section 8b (nine assertions) for the token card and section 10 for
+the quiz card. Both mutants go red: reverting to Escape-only fails the close, the registry release
+and the resume; removing the `e.repeat` guard lets a held Space dismiss the card and the world runs
+**47.8 m** behind it.
+
+## D66 — One selection action is one sound, and the fix is not a de-bounce
+Selecting a kart played a fast double click. The cause was two paths into one emit: the select
+card carries both `onclick: () => select(i)` and `onfocus: () => { if (index !== i) select(i) }`,
+and `select()` ended with an unconditional `bus.emit('menu:racer', r)`. A mouse press FOCUSES the
+card first (cards are focusable even at `tabindex -1`) — emit #1 — and the click that follows
+calls `select(i)` again — emit #2, a few milliseconds later. `audio.js` maps `menu:racer` to
+`ui.select`. Keyboard selection was always single, because `index` is updated before `c.focus()`
+and the `onfocus` guard then declines.
+
+Instrumenting the real build showed two more emits nobody had reported: entering the screen
+emitted a selection sound (`build()` calls `select(index, false)`), and re-clicking the
+ALREADY-selected card emitted one for a state change that did not happen.
+
+`select()` takes a third argument and emits only when `index` actually changed; the build-time
+call passes `notify: false`. This is deliberately NOT a time-based de-bounce. A rate limiter
+would have silenced the symptom while leaving two live emit paths, and the next screen to grow a
+third path would have been silent-by-luck rather than correct.
+
+The gate (`tools/selecttest.mjs` section 2b) is written so a de-bounce could not have satisfied it:
+re-clicking the selected card is pinned at ZERO sounds (nothing changed, so a sound there is a lie
+about state), and two arrow presses must produce exactly TWO — which any interval-based
+suppression fails. Reverting the fix turns four of the six assertions red with the doubled
+payloads printed (`["tipa","tipa"]`).
+
+## D64 — Progress is measured from the line, and on the road it IS the projection
+Every difficulty number this project has published since Wave 4 was read off a crooked ruler.
+Three separate leaks, all in the same quantity — how far around the lap a kart has got.
+
+**1. THE ORIGIN.** `AIDriver.progress`, `createAIField`'s `playerProgress` and `race.js`'s
+`S.progress` all initialised to `0`, but `gridSlots()` places the eight karts **−4.0 m to −22.0 m**
+behind the start/finish line, two abreast. A kart starting further back therefore carried a
+permanent credit equal to its own stagger — up to **18.0 m** — in every comparison that mattered:
+`order()`, `_rankPass`, race positions, `race:position` toasts, the rubber band's gap terms and
+`finishPlayer()`'s projected standings. The player starts on pole, the LEAST advantaged slot, so
+the bias ran against the child: mean AI advantage **+7.7 m ≈ 0.31 s**.
+
+Measured over 15 races, recorded place against physical crossing order: **the player's recorded
+place was wrong in 10 of 15 races, always demoting them**, including one P5 recorded for a
+physical P3. That is exactly the reported symptom — "passed" by karts visibly behind, losing races
+visibly won. It is also why the same bug survived five waves: `tests/ai.test.mjs` carried it too,
+requiring all eight karts to reach one shared `finishAt` measured from the pole slot. **The game
+and the instrument were wrong in the same direction, so they agreed.**
+
+The fix is one line per accumulator: seed with `TrackSpline.deltaT(body.lapT, def.startT)`.
+`progress == 0` now means "on the line", and equal progress means physically abreast.
+
+**2. THE PHASE SKEW.** `createAIField.update()` read the player's `lapT` after race.js had stepped
+the player, while each AI's progress was written inside `d.update()` — before `d.body.update()`
+moved that kart. `order()` compared the player's end-of-step against the AI's start-of-step: a
+systematic ~0.3 m/frame gift to the player, worst lie **4.15 m** at the phase the game actually
+reads. Every kart now commits its progress after the drive loop and after collision resolution, so
+one `order()` describes one instant.
+
+**3. THE PROJECTION SNAPS, and why a physical cap alone was the WRONG fix.** `lapT` could jump
+**+13.67 m in a single step** for 0.29 m of travel (see the `closestT`/`hintT` entry in GAPS.md).
+The obvious guard is to bound a step by what the kart could have driven. That guard alone is
+actively harmful, and measuring it is what saved this fix: the raw accumulator is a telescoping
+sum of `deltaT`, i.e. **identically equal to the projection**, so 100% of the error lives in
+`closestT()` and none in the accumulation. Capping therefore does not remove the lie, it inverts
+it — measured, karts ended **−6.60 m BEHIND their own projection**, ranked behind karts they were
+visibly alongside. Trading a forward lie for a backward one is not a fix.
+
+What is true is that the projection is trustworthy exactly when the kart is ON THE ROAD (at the
+tightest hairpin the two branches are 37 m apart against a 16 m road) and untrustworthy off it. So
+`ProgressTracker` **converges on the projection**: in full and immediately while on-road, and at a
+rate limit of 1.5 m/s while off-road. On-road progress is *exactly* the projection — zero residual,
+none of the gate's 0.06 m tolerance spent — and nothing can be banked, because rejoining the road
+simply lands the kart on the truth.
+
+Two numbers behind the constants, both measured rather than chosen. The multiplier `1 + 0.60`
+comes from geometry: a kart at lateral offset L sweeps radius R−L, so it covers `R/(R−L)` of its
+ground distance in centreline arc, and the worst honest case in the game is circuit's hairpin at
+18.8/14.8 = **1.27** — eps 0.60 leaves 26% over it. The **additive floor matters more**, and a
+multiplicative-only cap was nearly shipped: `closestT()` clamps its segment parameter, so `lapT` is
+a staircase with a tread of one sample spacing (~0.84 m), and a pure multiplier sits INSIDE that
+quantisation noise (0.53 m at 20 m/s) — it misfired on 13% of all steps and bled 60+ m per kart.
+Over 892,800 unguarded steps the excess runs to 0.4 m of quantisation noise and then stops: 31
+steps exceed 0.60 m and **those 31 are the snaps themselves** (0.83 m to 16.4 m). The floor sits in
+that gap.
+
+**WHAT THE BIAS HAD BEEN HIDING.** On-road order disagreements went 856 → **0**; steps where an
+on-road kart's progress differed from its projection went 674,086 → **0**; metres banked off-road
+71.6 → 1.2. And in flowtest's own play cell the autopilot went from **36 position changes,
+finishing P2** to **1 change, finishing P1**. Most of those 36 were never real — the phase skew
+chattering the order across a near-tie. Wave 6's position-toast hysteresis (D61) was built to calm
+exactly that chatter: the treatment was sound, the diagnosis was not. It stays, and it is no longer
+load-bearing.
+
+Pinned by `tools/spatialtest.mjs` (31 assertions), which audits at the post-`field.update` phase
+the game actually reads, carries a second truth that never touches `lapT`, drives the real built
+game for race.js's half, and ships four `--mutate=` routes plus `--ai=<path>` so every clause is
+shown going red. Tie tolerance 0.06 m; the per-step physical bound catches a gift of ~0.60 m.
+Note for anyone extending it: the displacement-integral truth is only first-order accurate and
+disagrees with the projection by 1.5–8.6 m over a 3.4 km race on geometry alone, so it is asserted
+at 15 m and **would not have caught the 10 m leak on its own** — the per-step bound is what catches
+that. A gate is only as good as its weakest truth, and that one is named in the file.
+
+## D67 — The honest re-measure: what the bias had been hiding, claim by claim
+With the instrument fixed (D64), the full autopilot matrix was re-run — race × skill × tier ×
+engagement × seeds, 40 seeds per target-bearing cell across five disjoint seed sets, ~8,500 races.
+This is the number set the project should be read against; where an older figure in this file or in
+GAPS.md disagrees, the older figure was measured on the crooked ruler.
+
+**SURVIVED.** The struggling-child ladder (85% pace → **4.00 / 5.00 / 6.00**, was 4.0/5.2/6.2);
+the never-lapped guarantee (70% pace, worst 0.11/0.14/0.21 laps down, **0 lapped in 600 races**);
+race 2's clean-stock target (**3.88**, 0 wins in 200, dead centre of its 3rd–4th ask — numerically
+the most stable claim in the file); race 2 tier-2/tier-3 (2.08 / 1.57); D58's conditional finale
+scaling (tier-2 ×0 = **2.15**, 7/40 wins — essentially bit-for-bit); and the tyres/frame flatness
+on the finale (though its SCOPE was wrong — see GAPS.md).
+
+**OVERTURNED.**
+  * **Race 3 stock was understated by ~0.32 places** (3.90 → **4.22**) and its podium rate HALVED
+    (15/40 → **7/40**). Every "race 3 is the frozen reference/the exemplar" statement in this file
+    was written against a number that was too kind.
+  * **A correct answer is worth 0.03–0.10 of a place** (D56/D58) → **0.125 / 0.019 / 0.137** per
+    answer on races 1/2/3. Race 3's engagement payoff more than doubled (0.50 → **1.09 places**);
+    race 2's fell to near nothing. The spread across races widened from 3× to **7×**.
+  * **Race 1's pack-feel numbers moved** — recorded 34.9% led / 10.1–11.0 close passes, honest
+    **47.3% led / 6.4 close passes**. See the D67 CORRECTION below: this was first written up as
+    D58's repair being an artefact, and that inference was wrong.
+  * **"Race 2 has 75% more visible passes than the exemplar"** — gone. Close-pass counts collapsed
+    ~55–60% across ALL THREE races (r1 10.5→6.4, r2 26.4→10.9, r3 15.1→11.7) once the phase skew
+    stopped chattering the running order. Race 2 now sits at 10.9 against race 3's 11.7, and it
+    no longer trails the exemplar on `ahead≤1.5s` at all (94.0 vs 93.5) — D58's "the single axis
+    on which race 2 trails" does not trail.
+  * **D44's inverted upgraded axis is not inverted — it is FLAT.** Race 2 tier-2 2.08 against race
+    3 tier-2 2.15: a gap of **−0.008 places over 200 seeds**. D58 correctly reported moving it from
+    −1.07 to ~0.00; what went unsaid is that 0.00 is not an escalation either. The championship
+    does not step up on the axis the garage sits on. That, not a walkover, is the real defect, and
+    it is what the Wave-7 race-2 scaling exists to fix.
+
+**GAPS' "race 2 cannot be won by engagement alone" DEAD END survived and got deader**: still 0 wins
+in 200 seeds, and engagement's value on race 2 fell from 0.22–0.37 places to **0.04–0.27**
+(pooled 0.13). The ≥15%-of-seeds win target set for Wave 7 is not reachable — see D68.
+
+**A framing correction the measurement invited and the code refutes:** the matrix shows race 1 as a
+40/40 walkover for any garage part at all (100% of the race led, zero close passes). That cell is
+UNREACHABLE in a real championship — the garage opens from the results screen after race 1, and
+`resetChampionship()` clears parts, so a child always drives race 1 stock. It pins an extreme, like
+the uniform tier-2 karts, and is not a live design hole. Free play is the only way to reach it.
+
+### D64 addendum — the convergence subsumes the seed, and that is why the origin bug cannot recur
+Found while mutation-testing the toast gates: re-zeroing the progress accumulators — the ORIGINAL
+Wave-4 bug, injected deliberately — no longer changes the running order at all. `ProgressTracker`
+converges on the centreline projection, so a wrong seed is taken out in full on the first on-road
+step and the ordering never sees it.
+
+That is worth stating explicitly because it inverts the usual worry. The seeding fix (D64 part 1)
+is no longer the thing holding the race order up; the convergence contract is. The seed still
+matters for the frames BEFORE anyone moves — the grid, the countdown, the pre-start order the HUD
+shows — which is exactly what `spatialtest.mjs` section C exists to pin, and why C is a separate
+section rather than a corollary of section A.
+
+The practical consequence: a future edit that breaks the seeding goes red in section C only, and a
+future edit that breaks the convergence goes red across A, B and E. Two independent failure modes,
+two independent sets of assertions. Neither one covers for the other, and neither is redundant.
+
+## D68 — Race 2's field is deliberately flat: matching the child was built, measured, and rejected
+Wave 7's brief made this an explicit override of the do-not-touch list: race 2's field should run
+`max(1, playerPartTier)` capped at 2, because "race 2's field is fixed tier-1 while the finale
+scales, so a tier-2/3 engine makes race 2 a walkover — confirmed by the player with a decent engine
+upgrade on a weak kart." The change was built exactly as specified, measured on the honest
+instrument, and **not shipped**. `aiPartTier` is unchanged. This entry is the reason, because the
+next person to read D44 will want to make this change too.
+
+**The premise did not reproduce.** On the honest instrument (D67) there is no walkover to fix:
+race 2 tier-2 reads **2.08** against race 3 tier-2 at 2.15, and engine-only realistic garages read
+3.27 (engine 2) / 3.15 (engine 3) on race 2. On `circuit` the engine is nearly flat
+(54.37 → 53.32 s) while TYRES are the fastest part (→ 52.67 s), so the "decent engine upgrade" the
+report names is close to the weakest purchase a child can make for that race. What is real is
+D67's finding that the upgraded ladder is **flat** (+0.09 places), and the change was carried
+forward on that revised justification rather than the original one.
+
+**It fails on its own revised justification.** Race 2's field is the only lever it has, it can only
+make race 2 HARDER, and race 3 is already capped at the top of `PART_TIERS` — so a flat rung
+becomes an inverted one. Over all **66 garages a two-visit championship can actually build**
+(40 seeds each, 2,680 races per build), mean race3−race2 goes **+0.15 → −0.22**, and the number of
+garages where race 3 is the harder race falls **37/66 → 23/66**. For a uniform tier-2 kart the gap
+goes +0.08 → **−0.87**; for the best reachable garage, −1.00 → **−1.87**.
+
+**And it costs three things the project already holds.**
+  * **D33, the fairness invariant** — "a child who buys a better part and finishes WORSE notices,
+    and resents it". Over the 240 one-purchase steps a championship can make on race 2, the worst
+    such step goes **+0.23 → +0.85 places, with 3 steps over half a place where today there are
+    none.** The field steps a whole uniform tier the moment engine-or-turbo reaches 2, while
+    `playerPartTier` cannot see tyres — the part that actually matters on circuit.
+  * **Race 2 is the race the garage wins** (the token economy leans on it): a tier-2 kart's gain
+    over stock falls **1.80 → 0.85 places**, and a fully-spent garage's win rate **43% → 10%**.
+  * Three assertions in `tests/ai.test.mjs` that encode those targets go red as design changes,
+    not as bounds needing re-derivation.
+
+**The tyres-aware variant was also built and measured** (`max(engine, turbo, tyres)`, race-2 only,
+frame excluded because it is flat on circuit). It fixes the D33 half — worst step **+0.42**, zero
+steps over half a place, exactly the figure D58 accepted for the finale — and is the correct signal
+IF race 2 ever scales. It does not rescue the rest: mean over 66 garages 3.22 → 3.71, ladder
++0.15 → −0.35. Recommended only as the form to use if a future wave decides to scale race 2 anyway.
+
+**The lever the honest data actually points at is race 3 or the tracks' own pace, not race 2's
+field.** Race 2 cannot be made a smaller step by making it bigger.
+
+The rejected patch, kept so nobody has to re-derive it:
+```js
+export const aiPartTier = (d01, playerTier = 0) => {
+  const n = difficulty01(d01);
+  const base = clamp(Math.round(2 * n), 0, 2);
+  const pt = clamp(Math.round(playerTier), 0, 3);
+  if (n >= 1) return Math.max(base, clamp(pt + 1, 0, 3));   // the finale: one tier ABOVE
+  if (base === 1) return Math.max(base, Math.min(pt, 2));   // race 2: MATCH, capped at 2
+  return base;                                              // race 1: always stock
+};
+```
+What DID ship from this piece: `tests/ai.test.mjs` section **3c, "THE FIELD-TIER CONTRACT"** — seven
+pure-function assertions (no races, milliseconds) pinning race 1 stock for every child, race 2 flat
+at tier 1 for every child, the finale's `2 2 3 3`, monotonicity in the child's tier at every
+difficulty (D33 at rule level), clamping of out-of-range tiers, `playerPartTier` reading engine and
+turbo only, and the no-garage default ladder — plus a catcher asserting race 2's tier is 1 as
+OBSERVED from inside a built `createAIField`, which the pure-function tests cannot see. Six mutants
+go red against it, including the change this entry rejects.
+
+**`3b(vii)` was re-derived, and the old bound measured nothing.** It required the race3−race2 gap to
+be `>= -0.25` against a population whose mean is −0.008 with a ±0.18 seed-set spread — i.e. it sat
+inside its own noise and would pass a genuinely inverted build. It is now `>= -0.55`, derived in
+the file from five disjoint 40-seed sets, with 0.40 places of margin under the worst shipped set,
+going red by 0.18 against the pre-Wave-6 inversion and by 0.35 against the match-the-child build.
+The file states plainly that this is a FLATNESS bound, not a ladder bound, and that **no bound
+requiring a real step can be green today** — which is the honest description of the game as it
+stands, and a question for the playtest rather than for the tuner.
+
+## D69 — Kart choice moved the field, not the kart, and the target is honestly missed
+The field is calibrated against one reference kart (`ROSTER[0]`, nitzotz). The roster's stat spread
+therefore bought finishing places: measured on the honest instrument, kaftor — the purple one the
+player named — laps **2.9% quicker than the reference on oasis and 2.2% on cloud**, worth ~4 s over
+a 3-lap race against a winning margin of ~1.4 s, and finished race 1 at **1.20 with 32 wins in 40**.
+
+The fix scales the FIELD's pace by the chosen kart's own clean flat-out figure, so the kart keeps
+its character and stops buying places:
+
+    ratio(kart, track) = lap(nitzotz, track) / lap(kart, track)      // >1 = kart is faster
+    trackPace = TRACK_PACE[track] * clamp(KART_PACE[racerId][track], 0.95, 1.05)
+
+Measured by `tools/kartpace.mjs` (20 flying laps per cell, 2 warm-ups discarded; no RNG on that
+path, so it is bit-reproducible; ratio noise floor ±0.15%). `trackPace` feeds `basePace()` and
+nothing else — there is no path from `KART_PACE` to any `KartBody`, to the player, or to any stat,
+which is what keeps FEEL intact: re-running `kartpace.mjs` after the change is bit-identical.
+
+**PER-TRACK IS LOAD-BEARING, not cosmetic.** zamzum spans 1.004 on oasis to 0.900 on circuit — a
+10.4-point spread, 70× the noise floor and twice the whole clamp. The cause is structural: circuit
+is the handling-limited track, so the low-handling karts (zamzum h=1, plada h=2, raash h=2) collapse
+there and are fine on the flowing tracks. A per-kart mean would get zamzum's circuit correction 6
+points wrong and flip its sign on oasis. Three cells clamp, all on circuit, all low-handling; the
+residual is deliberate — zamzum's field is corrected 5% against an honest 10% deficit, so it stays a
+genuinely hard kart on race 2.
+
+**THE TARGET IS MISSED AND WAS NOT TUNED AWAY.** Ask: mean finishing place across all 8 karts
+spreads ≤0.75 per race. Measured, 40 seeds: **1.78 / 1.02 / 1.63** (was 1.83 / 1.48 / 2.10). Race 2
+got most of the correction; race 1 barely moved. Two measured causes, neither reachable from this
+table:
+
+  1. **Field composition, 1.13 / 0.93 / 1.35.** Choosing a racer also REMOVES it from the seven
+     opponents, so the field itself changes with the choice. Measured with the player's physics held
+     at the reference and the correction off. The confound alone is over target on all three races,
+     and no pace number can touch it.
+  2. **The pace lever is saturated on oasis.** +5% field pace moves the field's 3-lap time by
+     **−0.7% on oasis, −1.3% on cloud, −4.8% on circuit** — which is `ai.js`'s own TRACK_PACE comment
+     ("pace above ~1.05 buys nothing there") turning out to be exactly right. `TRACK_PACE.oasis` is
+     already 1.09. Race 1 therefore receives about a sixth of its correction, and its residual is
+     plada and kaftor at ~1.0 place each.
+
+**The only lever that would close race 1 is the field's TOP SPEED — its part tier — not its pace.**
+That is a design change and Wave 7 did not take it; see GAPS.md.
+
+Gated by `tests/ai.test.mjs` section 8, 15 assertions over 960 races, which re-measures all 24 cells
+live from physics rather than trusting the stored table, and asserts the SIGN per cell — because a
+sign inversion does not merely fail to fix the bug, it doubles it: the inverted mutant gives kaftor
+**40 wins in 40**. Five mutants go red, including sign-inverted (9 assertions), collapse-to-one-
+number-per-kart (7), and constant-never-reaches-the-field (3). Everything reads through the
+`kartPace()` accessor rather than the literal table, so a mutant that inverts inside the accessor
+still bites.
+
+
+## D67 CORRECTION — "D58's race-1 repair is an artefact" was itself a cross-instrument comparison
+D67 as first written concluded that Wave 6's race-1 pack-feel repair was an artefact of the bias,
+by placing an HONEST number (47.3% of the race led, 6.4 close passes) beside a number recorded for
+the pre-Wave-6 build (46.0%, 7.7–8.7) that had itself been measured on the crooked ruler. **That is
+precisely the error D64 exists to name, committed while writing up D64.** It is corrected here
+rather than silently edited, because the failure mode is more instructive than the number.
+
+Re-measured like for like — `TRACK_PACE.oasis` reverted 1.09 → 1.03 (the pre-Wave-6 value, and the
+constant D58 raised), both builds run on the honest instrument, five disjoint 40-seed sets:
+
+| race 1, stock, 100% | shipped (1.09) | pre-Wave-6 (1.03) | halfway (1.06) |
+|---|---|---|---|
+| close passes / race | **5.70–6.80** | 1.68–2.10 | 4.65–4.98 |
+| % of race led | **45.6–55.9** | 64.6–73.0 | 44.4–65.9 |
+| median gap | **0.46–0.50** | 0.72–0.84 | 0.54–0.65 |
+| nearest rival ≤1.5 s | **95.0–96.3** | 86.1–90.9 | 91.7–96.8 |
+| mean place | **2.43–2.55** | 1.53–1.73 | 2.10–2.25 |
+
+**D58's repair is real and large**: three times the visible passes, 18 points less of the race led,
+half the distance to the nearest rival. What the crooked ruler did was flatter the LONELY build far
+more than the shipped one (7.7–8.7 recorded against 1.7–2.1 honest) — which is the mechanism
+working as D64 describes it, since a child cruising alone at the front is where a phase skew has the
+most near-ties to chatter across. The bias did not invent race 1's improvement; it hid how big it
+was.
+
+Race 1 on honest data is not lonely in any substantive sense: a rival is within 1.5 s for 95% of the
+race and a visible pass lands roughly every 24 s. What race 1 *is* is a race the child leads about
+half of — which is what the gentle opening race is for. There is no race-1 shortfall to log.
+
+**The general lesson, and it is the whole wave in one line: after fixing an instrument, a
+before/after comparison is only valid if BOTH sides are re-measured on the fixed instrument.** Every
+historical figure in this file predating D64 is a crooked-ruler figure, and none of them may be
+compared against a post-D64 number without re-running the old build. The full derivation and the
+mutant table now live in `tests/ai.test.mjs` §2c's header, where the bounds they justify are.
+
+### D65 addendum — there were THREE teaching cards, and the third leaked its modal id
+D65 unified the key contract across two one-time teaching cards. A smoothing pass found a third:
+the garage's "meet Boreg" card (`MEET_BOREG_FLAG` / `shouldShowBoregIntro`) took Escape or Enter
+only and its button named no key. It is now on the same contract — button, Space, Enter, Escape,
+`e.repeat` swallowed for D20, capture phase with `stopPropagation` — and its label names the key
+the way the other two do (`מתחילים! (רווח)` / `Let's start! (Space)`).
+
+Worth recording because the brief's premise for the original item was *"every other in-game modal
+dismisses with Space; this one doesn't"*, and that premise was wrong: two didn't. Fixing only the
+named card would have satisfied the request and left the goal — consistency — unmet, while making
+D65's own "one key contract" claim untrue on the day it was written.
+
+**A real bug fell out of it.** The meet card had TWO dismissal paths: the button, and a bubble-phase
+`document` handler in the garage's own `onKey`. The keyboard path never called `popModal('meet')`,
+so **every Escape/Enter dismissal leaked the modal id** — the audio stayed ducked and any later
+modal-policy check saw a phantom owner of the screen. Only the button released it. The duplicate
+path is deleted; there is now one `closeMeet()` that the button, the keys and `dispose()` all go
+through. This is D15/D18's whole argument arriving as a live defect: two implementations of "go on"
+drift, and only one of them carries the registry call.
+
+Pinned by `tools/modaltest.mjs` section 8c (nine assertions). One honest deviation from 8b's shape,
+stated because it would otherwise look like a weaker gate: **there is no sim to freeze behind this
+card** — the garage animates nothing under `__DEBUG.advance()`, verified by comparing every object
+matrix across a 2 s advance with the card both up and dismissed. A "the world did not move"
+assertion would therefore pass vacuously in every mutant. The frozen-world clause instead reads the
+two things that DO move when the card leaks away: the modal duck, and the unburned save flag. Both
+flip red under the `e.repeat` mutant.
