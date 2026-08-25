@@ -943,3 +943,1455 @@ The general rule for this project, where copy is revised by a smoothing pass eve
 **gate the behaviour, and name at most one string as an anchor.** A gate is allowed to know
 that a headline changes when you win; it is not allowed to know which words that headline
 uses.
+
+# WAVE 5
+
+## D43 — Race 2 was calibrated against a machine, and the fix is one constant
+Race 2 was not merely easier than intended, it was easier than race 1: measured at HEAD on
+40 fresh seeds, a clean 100% stock driver meant **2.92 on race 2 against 2.20 on race 1**,
+and won a seed outright. A well-upgraded kart with **zero quiz engagement** won race 2 on
+**63–71% of seeds** at tier 3 and ~24% at tier 2. The player's report — "winnable by clean
+driving alone regardless of upgrade" — was exact.
+
+The cause is in `TRACK_PACE`, the per-track calibration D33 introduced. It sizes each
+track's field against the **reference autopilot**, a machine whose skill is flat across
+geometries. A human's is not: `circuit` is the plainest, widest track in the game and the
+one a person drives closest to optimal on, so a −4% handicap sized against a machine
+over-pays precisely there. `TRACK_PACE.circuit` **0.96 → 0.98**, and nothing else.
+
+That constant is keyed by track id, and the championship maps race N → track N, so the
+blast radius is race 2 alone — verified rather than assumed: `TRACK_PACE` is read at one
+site, `createAIField` has one caller, and `circuit` is reachable only as championship
+race 2 (free play routes to the garage, the menu backdrop hard-codes track 0, racer-select
+previews are kart models rather than races). **Races 1 and 3 are bit-identical per seed,
+before and after, in all 12 measured cells.**
+
+Measured on four disjoint 40-seed sets (160 seeds), before → after:
+
+| cell | before | after |
+|---|---|---|
+| race 2 stock 100% | 2.92, best 1st, 1 win | **3.79, best 3rd, 0/160 wins** |
+| race 2 tier-2 100% | 1.85, 25% wins | 2.22, 12% wins |
+| race 2 tier-3 100% | 1.38, 63% wins | 1.68, 35% wins |
+| race 2 stock 85% | 5.05 | 5.20 |
+| races 1 / 3, every cell | — | unchanged, bit-identical |
+
+Two alternatives were measured and rejected rather than argued away, which is the D33b
+discipline: giving race 2's field tier-2 parts **inverted the curve** (race 2 stock 4.00,
+above race 3's 3.80) and made a fully-spent garage win only 1 seed in 5; and stretching the
+slot table moved the *struggling* child twice as far as the fast one (85%: 5.00 → 5.60,
+compressing the race-2/race-3 rung) while leaving the reported failure untouched at tier 3.
+`BAND_CATCH` was not touched, per D33.
+
+**A gate can be turned into a coin flip by a change that does not touch it.** The critic
+found that section 2b's pre-existing "a tier-2 kart is fighting for the win" assertion read
+**exactly 2.00 against a ≤2.0 bound and exactly 1 win against a ≥1 bound** after this
+change — passing by seed luck, and failing on two of four alternate 5-seed sets. The round-1
+builder had moved a *different* assertion out of 2b for being a 5-seed coin flip and left in
+one its own change had just converted into another. Both now run on `S40` (seeds 1..40,
+chosen by construction so the set cannot be re-picked to make a number come out), with
+bounds derived from the pooled 160-seed truth and re-verified green on three disjoint
+40-seed sets. **A balance assertion that sits exactly on its bound is not passing, it is
+about to fail.**
+
+Every assertion in the new section is now labelled **CATCHER** or **GUARD**: (i)(ii)(iv)
+fail against the pre-fix constant, (iii)(v)(vi) are other-direction guards that are green
+against the bug and say so in their own comments. An earlier draft quoted the tier-3 win
+rate as 48% from a 21-seed set; three alternate 21-seed sets read 29% and 160 seeds read
+35%. The number in the source comment is now the pooled one. **D33's lesson, restated: a
+balance measurement is only valid against the field it was taken on — and against the seed
+set it was taken on.**
+
+## D44 — The championship is inverted for an upgraded kart, and the fix is forbidden this wave
+The critic's finding, on the axis every engaged child is actually on:
+
+| kart | race 1 | race 2 | race 3 |
+|---|---|---|---|
+| tier-2 all slots | 1.00 (100% wins) | **2.22 (12%)** | **1.09 (92%)** |
+| tier-3 all slots | 1.00 (100%) | 1.68 (35%) | 1.00 (100%) |
+| realistic partial garage | 1.00 (100%) | 2.23 (11%) | 1.79 (37%) |
+
+A child who buys upgrades — which is the entire lesson of the game — hits the wall in the
+middle and coasts through the finale. The inversion is **pre-existing** (0.73 places at
+`circuit 0.96`) and D43 widened it to 1.07. Closing it means making race 3 harder, and the
+Wave-5 brief says races 1 and 3 are approved and must not be touched. That instruction is
+taken as binding, so this is **pinned rather than fixed**.
+
+Pinned by two assertions bounding the *current, wrong* numbers, under a comment block that
+says in as many words: **a green tick here does not mean the curve is correct, it means the
+curve is still as wrong as it was when this was measured**, with instructions to flip it
+into a real ladder assertion (`race 3 tier-2 ≥ race 2 tier-2`) once race 3 is fixed. The
+alternative — leaving the hole ungated — is how a shape regression becomes a playtest
+surprise two waves later.
+
+**The lever is measured and ready** (see GAPS.md): giving race 3's field tier-3 parts is one
+line, closes the inversion from 1.07 to 0.07 places, and keeps a fully-spent garage winning
+the finale 40/40. It costs D33b's approved race-3 stock number (3.90 → 4.90) and puts an
+85% child last on one seed in forty, which is why it needs a playtest verdict rather than an
+agent's judgement. Two alternatives were measured: `TRACK_PACE.cloud → 1.03` buys less
+inversion per unit of collateral, and pairing a pace cut with the parts lever **fully
+cancels** the fix because pace dominates that cell — the two levers are not separable.
+
+## D45 — Two harness traps that look exactly like game bugs
+Both cost agents ~40 minutes each this wave, and both were independently rediscovered by a
+second agent, so they are written down rather than remembered.
+
+**A driver that spins `D.advance()` inside one `page.evaluate` loop starves the page's own
+timers and rAF.** The quiz freeze then never releases: the race sits at `phase=racing`,
+`paused=false`, no modal visible, kart speed pinned, progress stuck at ~0.06 laps, on every
+track including race 1. It presents as a total gameplay freeze in the built game and is
+purely an artifact of the driver. One `await new Promise(r => setTimeout(r, 0))` per step
+fixes it. The dismissal list must also include `.qzint-scrim` and `.ic-scrim`, tested with
+flowtest's `present()` (display/visibility, not opacity — see the Wave-2 note on CSS
+transitions never settling under the harness).
+
+**A `.tmp/` backup restored by an `EXIT` trap silently reverted a later edit.** The gate
+caught it within one run because an aspect assertion went red. The lesson is not to stop
+using `.tmp/` copies — that is the git-safe method CLAUDE.md mandates — but that a restore
+hook armed early and firing late will undo work done in between: refresh the backup after
+every accepted edit, or arm the trap only around the mutation itself.
+
+## D46 — The performance brief named four levers; measurement killed three of them
+Item 7 asked for a dpr cap, a measured quality probe, hidden-tab suspend, and "make נמוך
+genuinely cheap (shadows off, reduced crowd/particles, lower draw distance)". The first
+three were real and shipped. **The fourth was measured lever by lever and none of it
+survived**, which is recorded here so nobody spends a day rediscovering it:
+
+| candidate | measured effect | verdict |
+|---|---|---|
+| anisotropy 16 → 4 → 1 | 0.1–0.3 ms, inside run-to-run noise (the "restored to 16" control measured *faster* than the baseline) | not changed |
+| `shadowMap.type` PCFSoft → PCF at medium | 2.4 → 2.3 ms | not changed |
+| shadows off entirely at medium | 2.4 → 2.0 ms | already the low/medium boundary |
+| lower low-tier particle caps | particles are **2 draw calls** and Δ0.00 ms when hidden *entirely* | nothing there to win |
+| crowd/prop density cuts in props.js | the whole world is **31–56 draw calls** — props.js already instances and merges | explicitly NOT applied |
+
+`textures.js`'s 16× anisotropy carries a comment explaining that it exists because the low
+tier has no MSAA and grazing ground speckle crawls without it. **Changing a documented
+decision for an unmeasurable gain, during a freeze, is the wrong trade** — and four files
+churned to look busy is worse than one file changed with numbers behind it.
+
+What the cost actually is, found by hiding scene-graph groups and re-benching:
+**805 of 847 draw calls (95%) are the eight karts.** Each AI kart is 140–237 meshes, and
+`createKartLOD(..., lod: 1)` — already selected for AI karts at the low tier since Wave 1 —
+measured **234 meshes against the high-tier path's 234**. The LOD path existed, was wired,
+and reduced nothing, for four waves, because **nothing ever asserted that the cheap path was
+cheaper than the expensive one**. That assertion now exists (D47).
+
+Shipped in `engine.js`: `TIERS.high.pixelRatio` 2 → **1.5** as a documented cap;
+`effectivePixelRatio(q, dpr)` with a floor of 1 so נמוך is exactly 1.0 even under browser
+zoom; the ratio **re-resolved on every resize** rather than at module load, which is why a
+monitor swap, a zoom or a headless viewport override never used to reach the renderer; and
+a hidden-document path that stops the loop, clears the accumulator and emits
+`audio:suspend`/`audio:resume` (measured: 121 fps → **0 frames, 0 simulated seconds**).
+
+Retina high tier, step+draw+finish: **8.00 → 4.90 ms** (track 0), 4.70 → 3.30, 8.10 → 5.90
+— 27–39% off, 44% fewer fragments. At dpr 1 the change is a provable no-op: all three
+high-tier race screenshots are **byte-identical by SHA-1** before and after. The 1.5 cap is
+a real visual change on a retina display and was judged on 1:1 crops rather than in the
+abstract: a gentle upscale blur on wall-panel seams and thin barrier rails, indistinguishable
+at full-frame, and — the argument that carries it — the DOM HUD and every Hebrew glyph are
+drawn by the browser at full device resolution and are untouched, so **nothing a child reads
+got softer**.
+
+Measured on an M4, which is not a school laptop. The honest form of the 60fps claim is
+therefore a margin, not a machine: medium's worst track is 5.0 ms median / 10.6 ms p95
+against a 16.7 ms budget — **3.3× headroom at the median**. A machine would have to be ~3×
+slower at the same workload before medium dropped under 60fps. What it does *not* prove is
+anything about Intel-iGPU hardware, which is draw-call and fill-rate bound in ways an M4
+hides completely. The real defence for that machine is the probe, which now puts it on
+נמוך by measurement instead of guessing `high` at it from `navigator.deviceMemory`.
+
+## D47 — The quality probe is opt-in, because D35 is about the mechanism, not the symptom
+The probe replaces a `deviceMemory`/`hardwareConcurrency` guess with 40 sampled frames after
+20 discarded warm-up frames. That creates a new problem: a probe reacting to real frame time
+hands every gate and preview whatever tier SwiftShader happened to earn that minute, and a
+screenshot silently taken at a different tier reads as a rendering regression in someone
+else's review. Gates must land on a **fixed** tier.
+
+The builder solved that with `navigator.webdriver`, flagged it for ratification rather than
+burying it, and argued — reasonably — that D35's rejection was about changing what a gate
+*sees of the game's content*, whereas this changes only which of three budget tables is in
+force. **Overruled, and the reasoning is the point.** D35 is about the mechanism as much as
+the symptom: a build with a mode that exists only for non-gates is the defect, whichever
+direction the difference runs. And a sniff can be satisfied *by accident* — anything that
+flips `navigator.webdriver` (a future harness, a browser change, a spoof in someone's own
+verification script) silently re-arms the probe under a gate.
+
+Inverted instead: nothing arms the probe unless someone asks. `main.js` — the only entry a
+child ever comes through — calls `engine.enableQualityProbe()`; the capture harness and
+every gate simply never call it and get `AUTO_TIER` by construction rather than by
+detection. An explicit call site cannot be satisfied by accident, and the divergence is one
+visible line instead of a sniff three files away. It also closed a hole the `_headless` belt
+did not cover: `bootPreview()` calls `engine.goto` before `installDebug`, so `_headless` is
+still false for the first frames, and isolated module previews now get the fixed tier for
+free.
+
+Three assertions replaced the automation one, each failing to a different mistake: `init()`
+must not arm the probe, no `navigator.webdriver` may appear **in code**, and `main.js` must
+actually call it — the last because the builder's original gate would have passed with the
+call site deleted so long as the sniff remained. The check strips comments first: an
+assertion that cannot tell the explanation from the thing explained would forbid documenting
+the decision, and that exact trap had already bitten once while the gate was being written,
+when a `deviceMemory` assertion failed on the prose explaining why `deviceMemory` was removed.
+
+## D48 — The menu was noisy at the source, and the number in GAPS was two sounds
+Sitting on the title screen for twelve seconds played **~19 overtake stingers**. The cause is
+the thing that makes the title screen good: its backdrop is a real `raceScene`, fast-forwarded
+through a pack. `race.js` gated *some* emissions behind `if (!backdrop)` and returned early
+from `driveFeedback`, but `updatePositions` and the lap/finish path were never gated —
+measured over 400 simulated seconds: `race:position` ×195 (61 up, 62 down), `race:lap` ×2,
+`race:bestlap` ×2, `race:finallap`, `race:finish`.
+
+Fixed at the source in the shape D31 established, not with a sixth `if (!backdrop)`:
+
+```js
+const bus = backdrop ? { ...appBus, emit() { /* a backdrop is seen, not heard */ } } : appBus;
+```
+
+All 20 emit sites in the file funnel through it and six redundant guards were deleted. A
+**scoped bus** rather than a renamed emitter, deliberately: the next person types `bus.emit`
+out of habit and inherits the guarantee, there is no second spelling to learn, and for a real
+race the binding is the identical module object. Post-fix, the same 400-second probe: zero
+events, zero sounds.
+
+Two bugs fell out of the same seam, neither previously reported. The backdrop was feeding
+`race:complete` to `badges.js` and `scenes.js` — recording races, tokens, championship
+progress and a **real glossary unlock** for a child who had not pressed a key. And it was
+writing **best laps into the save**, which the emission funnel could not catch because
+`save.set` is not an emission; that one is now guarded separately. The general form, which is
+the Wave-3 silence lesson generalised: **a backdrop is seen, not heard, and not remembered.**
+
+`audio.js` carries the second half as a categorical gate. It began as a denylist of five
+gameplay groups and became an **allowlist** (`ui`, `garage`, `screen`, `music`) after a critic
+measured invented ids in groups `crowd`, `weather`, `world`, `ambience` and `hazard` playing
+happily on the title screen — a denylist is fail-open, and props.js already has a crowd, so
+the next world system would have leaked. The decisive probe now invents a **group** as well as
+an id, and the gate's leak filter is written as the allowlist's complement so it cannot go
+stale.
+
+**The brief's item 4 rested on a number that was two sounds.** GAPS recorded "quiz stinger
+peak 0.52 — the loudest sound in the game". Measured on a virgin save, the first correct
+answer starts `['quiz.correct', 'garage.reveal']` — the badge-unlock cue — peaking 0.5024
+together; the second and third start `['quiz.correct']` alone at 0.2158. The sting by itself
+was **0.272 pre-trim, already below race music (0.439) and the wall hit (0.428)**. It also
+explains a puzzle nobody had connected: a "repeat" of the same sting metered 0.16 while the
+"first" metered 0.49.
+
+So the sting was scaled by **0.78, not the 0.58 the 0.52 figure implied** — 0.58 would have
+put it at 0.163, level with `quiz.wrong` at 0.167, destroying the only contrast the pair
+carries. It now sits at 0.216, 0.49× the music peak, and still reads as a reward at +3.8 dB
+over the ducked bed. **The gate pins an absolute ceiling (0.26) as well as the ratio**,
+because a critic showed the ratio alone could be satisfied by turning the *music* up: a
+mutant restoring the sting to 0.272 while raising the music bus 25% kept the old gate green.
+
+Honest residual, for the playtest rather than for a constant: "noticeably below music peaks"
+is partly a peak-meter artifact. In the 0.5–3 kHz presence band the sting and the music are
+equal (−42.2 vs −42.4 dB), and the sting occupies ~1s of a 2.5s window, so instantaneously it
+sits above the bed in the band the ear is most sensitive to. Music's advantage is all
+low-frequency. Only ears in a room settle that.
+
+Also measured and deliberately left alone: the first correct answer of a save peaks at 0.50
+because sting and badge cue stack. The event is the **cue**, not the stack — the sting adds
++0.2 dB on top of it — and staggering them makes the peak *worse* (0.5229 vs 0.5024), because
+the delayed cue lands in a compressor that has recovered rather than one the sting is already
+holding down. An accident, but one the measurement says to keep.
+
+Suspend-on-hidden is a real `AudioContext.suspend()`, writing no gain and no state, so mute,
+master volume and D34's modal duck are frozen rather than reapplied — there is no fourth
+writer of the buses to keep in step. One genuine bug was found by the critic and fixed: it
+was **not idempotent while its docstring claimed it was**, so two `audio:suspend` events then
+a resume left the context suspended with the clock at zero — silent for the rest of the
+session with no way back. Unreachable through `setHidden`'s transition guard, but
+`audio:suspend` is a public bus event.
+
+**A gate cannot prove silence with an analyser on a suspended context** — it keeps returning
+the last buffer it filled, so a volume ramp passes and a real suspend fails. The honest
+instrument is the context clock: ×1.00 → **×0.000**. That trap is now documented in the gate
+beside the assertion that depends on it.
+
+## D49 — Three ways a shared tree lies to a measurement
+Wave 5 ran up to six agents in one working tree, and each of these cost real time. Recorded
+as a class, because the fix for all three is the same: **know what you measured.**
+
+1. **A `dist/` you did not build yourself is not evidence.** An agent's gate failed
+   spuriously because another agent ran `npm run build` inside the ~40-second window in which
+   a mutated `audio.js` was on disk for a mutation test. The failing run was reading a build
+   made from someone else's mutant. Mutation testing through the real build has a blast
+   radius — which is a second argument for the lead's frequent commits, and an argument for
+   building mutants into `.tmp/` rather than into `dist/`.
+2. **A red gate whose cause you cannot name usually has a mundane explanation available
+   before the exotic ones.** `modaltest` was red for hours and two agents reasoned about load
+   averages and boot timeouts. The actual cause: a gate section had correctly landed *ahead of
+   the guard it gates*, because the guard lived in a file another agent held, so the builder
+   reported the patch rather than crossing the ownership boundary. **A gate and its fix in
+   flight on opposite sides of a file lock** is the signature red of this working method, and
+   it should be the first hypothesis, not the last.
+3. **A gate that exits non-zero while printing zero failure lines did not reach its
+   assertions.** Worth knowing on sight; it means crash or timeout, never a real failure.
+
+## D50 — The cheap kart was never cheap, because `1 !== 'low'`
+95% of the game's draw calls were the eight karts: 847 in a frame, of which the world —
+road, kerbs, barriers, crowd, signage, props — was 31–56, because props.js already instances
+and merges properly. `race.js` selects a reduced build for AI karts with `lod: 1`, a
+**number**; every test inside `createKart` is `lod === 'low'`, a **string**. So the cheap
+path fell through to mid detail and each rival was **235 meshes against the player's own 144
+at נמוך** — the opponents cost more to draw than the hero kart the camera sits behind. It
+shipped that way from Wave 1.
+
+Nothing caught it for four waves for one reason: **nothing ever asserted that the cheap path
+was cheaper than the expensive one.** That is the same shape as the Wave-1 finding that the
+garage's upgrades never reached the physics because three subsystems spelled the four slots
+differently — a seam between modules where each side is individually correct. The assertion
+now exists and is the first one in the section.
+
+Fixed with `normalizeLod()` (numbers are the renderer's usual LOD vocabulary) plus an opt-in
+static weld, enabled only by `createKartLOD`, that concatenates everything not animated
+relative to its parent pivot into one indexed geometry per material per animated frame.
+Measured **847 → 292 draw calls (−65.5%)**, median `draw()` 1.0 → 0.4 ms. The round-1 report
+claimed −73% and 3.40 → 1.50 ms; those did not reproduce under an independent build and the
+corrected figures are the ones above.
+
+The weld is lossless in the sense that matters, verified by a critic rather than asserted:
+identical triangles (25,416), vertices (71,970) and material set, largest bounding sphere
+unchanged at 2.234 m so frustum culling does not shift, and 9–38 differing pixels out of
+1.44M across four rigs. The player's kart is structurally identical at all three tiers under
+a deep signature including material params and shadow flags, and **pixel-identical in six
+paired captures** including the real chase camera.
+
+**The art argument was wrong, and the correction is the useful part.** Round 1 defended a
+visible reduction at 3.5 m by arguing the game never shows an AI kart that close. Measured
+over real racing, the closest rival-to-chase-camera distance is **2.99–3.49 m, at t = 4.3 s —
+the standing start of every race** — with one rival filling the bottom third of the frame at
+5.16 m, and the menu backdrop parking one at ~4 m on the first screen a child ever sees. At
+those distances a rear wheel was a flat black octagon ~150 px across and the chrome intake
+trumpets were stubs with no bore: the critic's word was *unfinished*, which is exactly right
+and is a different thing from *simpler*.
+
+The fix costs almost nothing **because the weld already happened**: on a welded kart, segment
+counts buy back roundness in triangles rather than draw calls. Tyre carcass 8 → 14, rim 8 →
+14, hub 6×4 → 8×6, intake cone 6 → 10 with its chrome lip restored, exhaust 8 → 12. Total
+cost +1 mesh per rival and ~1k triangles, against 555 draw calls of headroom. What stays
+dropped at נמוך is honest tier content — tread blocks, sidewall rings, spokes — meshes rather
+than segments. **Roundness is cheap and detail is expensive; a low tier should spend its
+budget on the first.**
+
+Two gate lessons, both from mutants that were 18/18 green. The section asserted **quantities
+the weld cannot change** — triangle count, vertex count, material set — and never asserted
+the one thing that can go wrong: that every vertex lands where it did. Skipping
+`applyMatrix4` for items at local Y 0 turned wheels into slabs through the bodywork (4.97% of
+pixels) and flipping transformed normal Y inverted the shading (7.5%); both passed. One
+assertion matching world-space positions **and normals** against an unwelded twin closes both.
+Notably the builder rejected a quantised hash for it: welding re-associates the matrix
+multiplies, moving vertices by up to 5.3e-8 m, and this kart's round coordinates sit exactly
+on quantiser boundaries — 1852 of 72766 rows flipped cells over 53 **nanometres**. That gate
+would have been flaky by construction, and choosing the slower exact match over a hash that
+looked cleaner is the right instinct.
+
+And `visible` was in the weld's bucket key, which would have silently baked invisible any
+future part that starts hidden and is toggled by `update()`. Fixed properly — hidden meshes
+are excluded from the weld and stay reachable — rather than commented as a hazard.
+
+`{ lod: 'high', merge: true }` — weld with **no** detail drop — is now supported and gated at
+61 meshes against 235, with identical triangles, vertices, materials and vertex positions.
+That is what lets בינוני take the draw-call win at zero art cost; the tier selection itself
+lives in `race.js` and is the lead's wiring.
+
+## D51 — The brief's preferred lever was arithmetically unavailable, so the rebate moved instead
+Item 5 asked that an engaged child afford one top-tier ask by garage visit 2–3 while a
+disengaged one cannot, and asked to reach that by **raising quiz-correct token rewards**.
+Measured, that lever does not exist.
+
+An engaged race meets **5–8 question boxes** (down from D28's 10/8/7 — the Wave-5 teaching
+cadence defers about one a race). Flat `REWARD_TOKENS` 1 → 2 therefore adds 10–16 tokens and
+puts a **21–25 token race** on the board, recreating exactly the failure D39 flattened the
+tiers to prevent, and nothing absorbs it: pickups are 3–6, `TOKEN_CLUSTERS_PER_LAP` cannot go
+below 1 without a source paying nothing, and `FINISH_TOKENS`' top is 5 against a floor GAPS
+says to raise rather than cut.
+
+A **tiered** raise cannot thread it either, and the reason is structural rather than
+empirical. `quizdata.js` maps difficulty → tiers as `1→[1]`, `2→[1,2]`, `3→[2,3]`, and
+`scenes.js` sets `difficulty = 1 + trackIndex`. So tier 3 appears **only in race 3 — the race
+followed by the podium, not a garage** — and raising it is worth exactly zero to a child;
+tier 1 appears in races 1–2 and a raise adds +5–8 to race 1 alone; tier 2 takes race 2 to
+16–20 and breaks the economy's own invariant at 29. **The only tier whose raise is safe is the
+only tier whose raise buys nothing.** While the top ask is 21 and a race can meet 8 boxes, the
+per-box reward can only be 1. That derivation now lives above `REWARD_TOKENS` so it is not
+re-litigated next wave.
+
+The lever that moved instead is the garage **rebate** (`tokenReward`: guided rate 0.045 → 0.08
+cap 4 → 7; expert 0.075 → 0.095 cap 7 → 8, both caps now *derived* from `MAX_COST` rather than
+typed, because D39's finding was that a written invariant rots without anyone editing the line
+it is written on). It is defensible on the lesson as well as the arithmetic: the rebate is paid
+for **writing a good prompt**, which is more on-lesson than quiz recall.
+
+**The diagnosis was worse than the brief's complaint.** Pre-fix, an engaged child who bought
+the best ask they could afford at the first garage arrived at the last with 16–19 and could
+never reach 21; the only route to the top tier was to buy the **cheapest** thing first. The
+game paid a child for not engaging with its own teaching screen.
+
+**The hoarding question, settled by measuring the right currency.** A critic found that
+hoarding still reaches 23–28 against exactly 21 for buying something real, and concluded the
+fix had not changed which strategy the economy rewards. It had priced hoarding in *tokens* —
+but tokens are not the child's objective, the championship is. Re-measured in places:
+
+| | spender | hoarder |
+|---|---|---|
+| race 2 | P3 / P4 / P3 | P4 / P4 / P3 |
+| race 3 | **P1 / P3 / P1** | P3 / P4 / P5 |
+| championship points over the two spendable races | **43** | 31 |
+
+Hoarding wins 2–7 tokens and costs **twelve championship points — more than a race win**.
+It is nearly free in race 2 and ruinous in race 3, where the tier-0 engine's deficit compounds
+to 1.5–3.5 s a lap. So it is a real trade rather than a dominant strategy, and the child on the
+intuitive policy is the one winning the championship. **A dominance claim is only as good as
+the currency it is measured in.**
+
+That also settled the tuning: raising the rebate to 8 makes the intuitive policy reach 21 on
+6/6 runs, but then hoarding is dominated in *both* currencies and there is no choice left at
+all. Left at 7. Honest statement of where it lands: **the target is met, but on the poorest
+engaged run it requires one act of restraint at the first garage**, and the gate pins that
+shortfall at a bounded ≤ half a rebate rather than asserting that a perfect reserve exists —
+which is what it did before, and why it was green while the intuitive policy failed on 4 of 6
+runs.
+
+**An exploit, clamped at source.** `garage.js`'s `spent()` returns only the part row's cost in
+expert mode (free text replaces the three priced rows), so an 8-token rebate against a 4-token
+spend made an expert build a net **profit**: typing the placeholder example the screen itself
+displays scores 92 and left a child with a free tier-3 part and 4 tokens conjured from
+nothing — at the first garage, where the wallet is floored to 4 — and cleared `prompt-80` on a
+wallet of 4, routing around D40's "needs 17" entirely. It predates Wave 5 at +3 and this wave
+widened it to +4. `tokenReward` now takes the spend and clamps to it, **inside the function
+rather than at the call site, because a call site that forgets is how the rule rotted the first
+time.** D17's rule stated properly: a rebate is below the SPEND, not below a constant.
+
+`prompt-80` is finally under D40's rule too — `PROMPT_STEPS` is derived from the garage's own
+tier cuts and checked against `tierForScore`, so "precise prompt" provably means "you built a
+tier-3 part", in both languages. It was the one badge with neither a derivation nor a string
+assertion, while GAPS names it as the first thing to check after any economy change.
+
+# ═══ WAVE 5.1 — regression fixes ═══
+
+## D52 — A box may only decline to fire for a reason the child can see
+Wave 5 gave question boxes a second, invisible reason to stay shut: a 15s teaching-card
+cadence checked at the beacon. It interacted with D16's answered/ignored cooldown and only
+~every third box fired, with the first boxes of a championship firing nothing. The bug was
+not the deferral — it was that **the beacon was consumed before the decision**
+(`hit.alive = false; hit.respawn = RESPAWN_S` ran, and only then did the code decide not to
+open), so a deferred box was an eaten box and a child could not tell it from a crash.
+
+Boxes no longer consult the teaching-card clock at all. The cooldown is the only pacing
+rule, and it is now **game language rather than bookkeeping**: charging beacons ghost, a
+constant-diameter ring fills with a bright arc, re-activation pops and announces itself, and
+driving through a charging box pays a soft reward instead of nothing. Cards still space
+themselves off box episodes — that half was never the problem.
+
+**The soft reward's currency is time, not tokens, and that is the load-bearing choice.**
+Round 1 paid a token for touching a ghosted box. That quietly made beacon income "how many
+beacons were touched", which collided with D51's 21-token ceiling, which forced `RESPAWN_S`
+26 → 60 to hold the ceiling — which starved the track. Questions per engaged race landed at
+6.6 against Wave 4's 7.7: the round improved the fire *rate* from 49% to 72% purely by
+meeting a third fewer beacons, and reported it as a win. Paying 1.2s off the recharge
+instead cannot inflate the wallet, which freed `RESPAWN_S` back to 30 and took questions to
+**8.6 mean / 77 over nine races** (Wave 4: 7.7/69; broken: 6.4/58) with tokens 15–19 and a
+worst race of 19. It is also the better teaching object: the boxes come back sooner because
+you went and got them.
+
+**A ratio gets greener as the game gets emptier.** The round-1 gate asserted the fire rate
+and a token ceiling. A starvation mutant — `RESPAWN_S` 60 → 150, nothing else — passed the
+*entire* gate with the ratio *improving* to 82% while the child answered 14 questions instead
+of 20. Any metric that is a fraction of what is left on the track rises when you halve the
+track. The count itself is now asserted, and that absolute floor is the only assertion the
+mutant fails.
+
+**And the gate ran one seed.** Section 6 drove seed 3, where the build happens to measure
+8/8/8 against floors of 7 and 22 — margins of one and two. Every argument this wave actually
+turned on happened on seeds it never ran: round 1's claimed "+2 questions" was a seed-3
+artifact that vanished across seeds, and seed 11 track 0 is where both the worst ratio and the
+old 20-token race live. Widened to three seeds × three tracks, the section **immediately
+falsified its own floors** — seed 11 track 0 opens 6/11 = 54.5% and failed both, though Wave 4
+also opened 6 there, so it was never a regression. A single race's count is a property of the
+seed and the beacon layout as much as of the cadence rule. The per-race floors are now honest
+"not starved" catches set below the worst legitimate case; the totals carry the assertion.
+
+## D53 — Presentation is not simulation, and the leak was in the navigation, not the scene
+The home screen ramped fans after minutes of idling. Nothing countable leaked: across 60
+navigations and 10 simulated idle minutes, bus subscriptions, DOM listeners, ResizeObservers
+and node counts all returned to identical numbers. **The menu was presenting a 552-draw-call,
+1,225,167-triangle live race scene every frame behind a static menu**, and rebuilding it on
+every screen hop (median 1809 ms). One shared refcounted backdrop and a 30fps presentation cap
+took entry to 65 ms median.
+
+The brief asked for the *simulation* capped. It is not, deliberately: the backdrop sim
+measures 0.072 ms per fixed step — ~4.3 ms per wall second, 0.4% of a core — against 6–9 ms to
+draw it, so a 1/30 sim cap would save ~0.2% of a core while handing a real race double its
+fixed timestep (D5/D11) and re-graining every preview shot keyed to `floor(uTime*12)`.
+**Cap what costs, not what looks like it costs.**
+
+The actual leak was elsewhere and was found by a critic, not by the 20-cycle walk.
+`engine.goto()` disposed `this.active`, awaited the factory, and assigned only afterwards —
+so a second navigation arriving inside that ~1.8s window disposed the outgoing scene twice
+and orphaned the incoming one forever. There is no navigation lock in menus.js, and a child
+double-clicking "start race" is the most likely way an 8-to-15-year-old enters a race. Five
+un-awaited pairs: bus subscriptions **10 → 145**, window listeners **1 → 21**, heap **+13 MB**,
+permanently. Fixed with a monotonic ticket plus forgetting the outgoing scene before the
+await; last caller wins, so an Escape out of a still-loading race is not swallowed.
+
+**Honesty note carried deliberately into this entry:** the cycle-counting assertions were
+green on the pre-fix build too. They caught nothing; they are a future guard. The `goto`
+orphan is their first real catch, and the write-up should not credit the walk with a
+discovery it did not make.
+
+## D54 — Auto-detect stops at בינוני, and the gate tier is stated rather than inherited
+Auto-detect handed גבוה to any machine that could hold 50fps, which on a strong laptop meant
+a tier school hardware cannot run. First-run auto-detect now selects **at most בינוני**;
+גבוה is a manual choice and still outranks the probe permanently.
+
+The compatibility trap was that gates and previews got their tier *by construction* — they
+never call `enableQualityProbe()`, so they inherited whatever the auto default happened to be,
+and moving that default would have silently shifted every screenshot baseline in the repo.
+Resolved by applying the auto session's medium **inside `enableQualityProbe()`**, before any
+frame, leaving `init()` — shared with every gate — untouched, and by having the harness state
+`AUTO_TIER` at its own call site. The gate tier is now a line a reader can see rather than a
+default they must infer. `PROBE.highMs` was deleted outright: a knob wired to nothing.
+
+Art consequence, checked rather than assumed: בינוני reads as a deliberate tier on all three
+tracks (shadows, crowd, bunting, sign legibility, circuit's neon road reflections all survive;
+oasis' distant mesas flatten, which reads as a hazier hour). נמוך had one real defect — see D55.
+
+## D55 — The contact shadow drew every frame for five waves and nobody could see it
+נמוך has `shadows: false`, and at the tier auto-detect can now select, the kart read as pasted
+onto the road on both daylight tracks. The first diagnosis was that the existing contact-shadow
+plane never drew a pixel, because its falloff came from a `createRadialGradient` CanvasTexture
+and such textures were said to upload fully transparent under ANGLE/SwiftShader. **That is
+false and the retraction matters more than the fix**, because it nearly became a project-wide
+ban on a technique the game depends on: `gfx/props.js glowTexture()` is exactly that pattern
+and renders in every race frame, as do the sky, the signage and the garage.
+
+Measured by toggling `visible` on the real build and diffing framebuffers, the retired card
+moved 20,715 px on oasis and 26,911 px on cloud. It rasterised every frame, every tier, since
+Wave 1. It was simply **below the perceptual floor**: peak alpha 0.55 × material opacity 0.85
+= 0.47 of black over near-black asphalt, ~2.5 per channel. An authoring bug wearing a driver
+bug's clothes.
+
+Two rules came out of it. **Ground-shadow work is judged as a rendered-pixel delta, never as
+"the mesh is in the graph"** — every assertion in the original gate was CPU-side, so the bug
+the builder *believed in* would have passed it. And **an opaque debug material is not a
+visibility probe** for a card relying on `renderOrder:-1`/`depthWrite:false`: forcing it opaque
+moves it into the opaque pass, where it draws before the road and the road covers it. The
+"solid red quad proves nothing renders" step was measuring its own instrumentation.
+
+The replacement is a computed `DataTexture` — chosen for determinism and one shared texture
+across eight karts, *not* because canvas is broken — created only for karts that cast no real
+shadow. Since `createKartLOD` forces `shadows:false`, that means rivals get it at every tier,
+where they had been nearly floating too.
+
+## D56 — Race 2 was already fixed, and engagement is under-rewarded, not over-rewarded
+Item 5 was briefed to tighten race 2 until clean driving alone stops winning. Measured over 40
+seeds it already does: clean-driving-only finishes **3.73 mean with zero wins in 40**, dead
+centre of the 3rd–4th target, and it survives the restored 8.6-question cadence at 3.48. The
+tightening had landed earlier in Wave 5 (`TRACK_PACE.circuit` 0.96 → 0.98). **Nothing was
+retuned** — and the check that made that safe was running the old constant against the *new*
+cadence: at 0.96 an engaged child now reads 2.80 with 2 wins in 40, so the earlier retune is
+load-bearing under the restored question count rather than incidental.
+
+A correct quiz answer is worth **0.03–0.10 of a finishing place** (0.16–0.38s of lap time)
+against 7.2–9.5s for one garage tier. The quiz boost is 1.30× while a purple drift release is
+1.38×, and a clean lap is already inside a drift boost about two thirds of the time, so most
+answers land on top of a stronger boost and buy only the difference. So race 2's old walkover
+was a **pace** problem, not an engagement one — and the tempting fix was measured before being
+rejected: raising the boost to 1.45× hands race 1 to any child who answers (22/40 → 40/40 wins)
+and still never wins race 2. The boost constant stays, and the gate now goes red if it moves.
+
+## D57 — "Every box is one question" became a lie the moment boxes could be dim
+The smoothing pass found the one real copy defect of Wave 5.1, and it was not a register
+problem — it was a **factual** one. `quiz.intro.1` promised "כל תיבה היא שאלה אחת על AI" /
+"Every box is one question about AI". That was true until D52 put the boxes on a visible
+recharge: a ghosted beacon opens no question, so the universal was precisely the promise the
+redesigned boxes no longer keep, printed on the one card whose entire job is telling a child
+what a box is. Now "תיבה דולקת" / "a lit box".
+
+The fix is also the cheapest possible answer to a question this wave kept asking — whether the
+recharge state needs words. It does not need a card, a toast or a tutorial beat: naming the LIT
+state in the explainer the child is already reading pays off the first time the boxes dim, at
+zero cadence cost. **A new mechanic taught without words still needs its vocabulary introduced
+once, and the right place is the card that already exists.**
+
+Two smaller things worth recording. The word `אחת` / `one` was dropped as a *typographic*
+consequence, not a stylistic one: adding `דולקת` pushed the Hebrew line to wrap for the first
+time and the wrap split the bolded `טוקנים למוסך` with a two-word widow — measured in the real
+card at 486 px content width. And the English `Auto-detect` in the new settings note was
+replaced ("The game picks for you, up to Medium") because it was the only jargon in a panel of
+plain words **and it named a control that is not on screen** — the segments are Low/Medium/High
+with no "auto" chip for a child to attach the word to. The Hebrew never had that trap because it
+says "the game" rather than naming a mechanism; the correction ran the other way there, replacing
+a passive technical adverb (`נבחר רק ידנית`) with the plain active plural the rest of the panel
+speaks. **Each language was wrong in its own direction, which is the case a single-language
+reviewer cannot see.**
+
+## D58 — "Cruising alone" was three different faults, and the nearest-kart gap could not see any of them
+The playtest verdict — race 3 on a stock kart is the exemplar, races 1–2 read as cruising
+alone even though their finish-position targets are met — was measured before it was acted
+on. New pack-feel metrics on the gate's own headless harness (40 seeds, 100% pace, stock
+kart; gaps in seconds converted exactly as `createAIField.update` converts them, so the
+number means the same thing the band's own input means):
+
+| | mean place | % of race led | rival ahead ≤1.5s | nearest ≤1.5s | mean gap | lead changes | behind winner |
+|---|---|---|---|---|---|---|---|
+| race 1 before → after | 2.25 → 2.67 | **46.0 → 34.9** | 45.0 → 42.7 | 95.8 → **99.2** | 0.53 → **0.43** | 14.9 → **17.4** | 1.08 → 1.89 s |
+| race 2 before → after | 3.73 → 3.67 | 2.0 → 2.3 | 89.7 → **93.4** | 100 → 100 | 0.22 → 0.23 | 38.6 → 39.1 | **2.73 → 2.02 s** |
+| race 3 (reference, frozen) | 3.90 | 3.1 | 95.7 | 99.9 | 0.30 | 22.6 | 2.24 s |
+
+**Two of those columns were instruments rather than measurements, and a critic
+caught both.** `nearest ≤1.5s` is structurally pinned at 100.0% for the first 15
+seconds of every race on every build — the grid has not spread out yet — which
+inflates the whole-race figure a bound was then set against. And 41% of race 1's
+`lead changes` (7.2 of 17.4) came from the same 15 seconds of grid scramble; worse,
+the metric points the wrong way, since race 2 runs 10.0 changes a minute against
+the exemplar race 3's 6.8 and race 2 is the race the player complained about.
+Corrected: **nothing is sampled until the field has settled (15 s), and a place
+change only counts when the nearest rival is within 1.0 s** — a pass a child can
+see rather than a rank flicker. A negative result worth keeping: after the settle
+skip, the close-pass filter changes nothing in any cell measured, because once the
+field has spread every sustained swap already happens inside a second. It is kept
+because it is the definition the assertion means, not because it moved a number.
+
+**The metric everyone would have reached for is the one that says nothing.** Every race in
+this game keeps a rival inside one second, on every seed — `nearest ≤1.5s` reads 94–100%
+before *and* after. "Cruising alone" was never an empty track. It was two unrelated things
+wearing one complaint: on race 1 a clean child spent **46% of the race in front of the
+entire field**, and on race 2 the two front-runners sat at their +2.06 s / +0.83 s slots
+**2.7 s up the road**, in a race the child never joined. Race 2's pack density was already
+at the finale's. So the brief's "tune race 1 and race 2 toward race 3's proximity profile"
+resolved into two different repairs, and a single lever applied to both would have fixed
+neither.
+
+Three constants, each measured, each written as `1 − k·max(0, …)` so the multiplier is
+**exactly** 1.0 at `d01 = 1` — that is the mechanism by which the finale is bit-identical,
+rather than an empirical claim about it:
+
+1. **`TRACK_PACE.oasis` 1.03 → 1.09.** Race 1's field is the sloppiest by design and its
+   catch-up is *already pinned at the `BAND_CATCH` ceiling* (`bandCatchMax` is 1.00× at
+   d01 = 0), so no band setting could ever put an opponent in front of a clean child —
+   only the opponents' own speed could. 1.12 and 1.15 buy more proximity and cost the
+   engaged child their win (18/40 → 8/40 → 5/40), which is the one thing race 1 exists to
+   teach.
+2. **Race 1's hold branch reaches twice as far down the gap (`HOLD_REACH_R1 = 0.5`).** The
+   pace bump alone slid D33b's struggling child from 4.0 to 5.0 on race 1, because partial
+   hold-back is a fraction of a base pace that had just gone up. Halving the hold term's
+   *time constant* — not its authority, not the floor, not the catch branch — puts the 85%
+   championship back at **4.0 → 5.2 → 6.2 exactly**, and improves the 70% never-lapped
+   margin (0.17 → 0.12 laps). Deepening race 1's backward slots also restores 4.0 and gives
+   back every point of the proximity gain; measured and rejected.
+3. **Race 2's forward slots compressed to the finale's own spacing (`SLOT_FWD_R2 = 0.65`,
+   +2.06/+0.83 → +1.63/+0.65).** Time behind the winner 2.73 → 2.02 s, rival-ahead 89.7 →
+   93.4%, engaged podiums 16/40 → 23/40, and the 3rd–4th target untouched (3.67 mean, zero
+   wins in 120 seeds).
+
+**The finale now scales with the child's own garage, which is the fix D44 measured and was
+forbidden to apply.** `aiPartTier` takes an optional second argument and, on race 3 only,
+runs `max(2, min(3, playerTier + 1))`; `createAIField` derives it from a new optional
+`playerParts`, which `race.js` fills from the same `toPhysicsParts(parts)` it already builds
+the player's body from. D44's lever (tier-3 flat) cost the approved race-3 stock number;
+this one cannot, because it is conditional on a tier that is zero for a stock kart.
+
+**Which slots that tier is read from is the whole decision, and round 1 got it wrong.**
+Round 1 took the MAXIMUM over all four garage slots. A fresh-context critic measured what
+that does to an uneven garage — which is the normal garage, since each slot's tier comes
+from its own prompt score — and found it punishes a child for buying a better part: engine
+tier 1 → tier 2 moved a finish from 3.13 to **3.25**, three tier-2 parts (3.73) finished a
+full place behind four tier-1 parts (2.63), and a tier-3 frame alone (4.90) finished a place
+behind buying nothing (3.90). One good part summoned a tier-3 field. The game's entire
+lesson is "your prompt bought this part", and the finale was answering a child's single best
+prompt with a worse trophy, silently, with the gate green — because the only garage cell the
+gate asserted was the uniform tier-2 kart, the one cell where the maximum is harmless.
+
+The critic's proposed fix (floor of the mean over four slots) was measured and **rejected**,
+on a fact neither round had established: **a garage visit builds exactly one part, and there
+are exactly two visits before the finale**, so at race 3 a child has at most two non-zero
+slots. Floor-of-mean steps at a slot total of 8 and two visits cannot exceed 6 — it is
+monotone because it never fires, and it hands the finale back to a tier-3-engine + tier-3-turbo
+kart at 39–40 wins in 40 with zero questions answered. That is D44 fully reopened.
+
+What shipped is `max(engine, turbo)`, and the reason is measured physics rather than taste.
+Autopilot lap time on `cloud`, one kart, no traffic, tier 0 → 3: **engine 48.07 → 45.50 s,
+turbo 48.07 → 46.33 s, frame 48.07 → 47.98 s (flat), tyres 48.07 → 48.84 s (slower)**. On the
+finale's geometry only the engine and the turbo make a kart quicker, so reading the tier from
+those two slots means the field escalates for a purchase that actually paid and ignores one
+that did not. Over every reachable garage (67 karts, 200 seeds): worst "bought a part,
+finished worse" **0.90 places under round 1's aggregator → 0.42 under this one**, against a
+0.40-place floor that the no-scaling build already has; steps larger than half a place
+**8 → 0**. The one residual is the threshold crossing itself (engine 1 → 2 reads 3.17 → 3.31,
+about one standard error): a discrete field tier cannot have no boundary, and moving the
+boundary to tier 3 makes the step bigger (+0.57) *and* gives the finale back to a tier-2
+engine. The gate now asserts the **property** — a strictly better kart never finishes more
+than 0.65 places worse — over realistic partial garages, not just the uniform tiers:
+
+| race 3, 40 seeds | before | after |
+|---|---|---|
+| stock ×0 / ×8 | 3.90 (0 wins) / 3.40 (1 win) | **bit-identical** |
+| tier-2 ×0 | 1.10, **36/40 wins** | **2.10, 8/40** |
+| tier-2 ×8 | 1.00, 40/40 | **1.18, 34/40** |
+| tier-3 ×0 | 1.00, 40/40 | 1.00, 40/40 — the field is capped at tier 3 (D33: it never out-equips a fully-spent garage). The race is much closer (mean gap 2.55 → 1.37) but still won. |
+
+So "winning the finale wants a decent upgrade **and** engagement" is true for the first
+time, and D44's pinned-wrongness assertions are flipped into a real ladder, exactly as their
+own comment block instructed: race 3 tier-2 minus race 2 tier-2 goes **−1.07 → 0.00**.
+
+**"Bit-identical" is proved, not asserted.** 240 race-3 stock races (×0/×8 engagement ×
+pace 1.00/0.85/0.70 × 40 seeds) dumping position, laps behind, both finish times, band
+min/max, loneliness and the pack metrics at full float precision, run against
+`git show HEAD:src/kart/ai.js` and against the new file: `diff` empty, on three disjoint
+seed sets.
+
+**Race 2's own fix moved one number, and the honest answer is that it is not the number the
+player felt.** On the corrected metrics, over five disjoint 40-seed sets, race 2 is at or
+inside the exemplar on every axis but one: it leads no more of the race (2.0% vs 1.7%), its
+nearest rival is closer (0.24 s vs 0.31 s), it has 75% more visible passes (26.4 vs 15.1) and
+its winner is closer (2.06 s vs 2.24 s). The single axis where it trails is *rival ahead
+within 1.5 s* — 91.1% against 96.8%, i.e. a child in 4th has open road in front about 6% more
+of the time. `SLOT_FWD_R2` moved exactly that axis and the distance to the winner, and nothing
+else. Compressing it further was swept (0.55 / 0.50 / 0.40) and rejected: it buys 2–4 points
+of that one number by pulling the winner from 2.06 s to 1.71 s, spending the "race 2 is still
+a race to win" guard on a difference no child perceives. **So if race 2 still reads as cruising
+alone at the next playtest, the cause is not a band or a pace constant** — it is something these
+six instruments do not measure, and it needs a different kind of observation rather than another
+tuning round. That is in GAPS rather than dressed up as a fix.
+
+**Race 2 still cannot be won by quiz engagement alone, and the brief's target for it is
+arithmetically unavailable from `ai.js`.** This is the one player-made design decision this
+wave did not deliver, so the reasoning is recorded rather than the outcome. Eight correct
+answers make the player **0.77% quicker** (1.28 s over a 166 s race); the field's own pace
+spread is ±4%. With the band on, the winner also gains 1.20 s of the player's 1.28 s — 94%
+cancellation — and that is not a tunable: a rival's steady gap is `slot + τ·atanh(δ/holdMax)`
+and a player speed gain `Δδ` moves it by `τ·Δδ/holdMax`, so the *ratio* is `Δδ/δ`,
+independent of `BAND_TAU`, `holdMax` and the slot table alike. Winning would need the boost
+to cancel the fastest rival's entire natural pace advantage. Nine configurations were
+measured — forward slot → 0, catch ×0.6/×0.3, τ ×1.5/2.5/4.0, `racerPace` spread
+×0.6/0.35/0.15, and pairs — and not one produced a single win in 20–40 seeds; the
+configurations that compress the field enough to make a boost worth places also make the
+finishing *order* noise-dominated, at which point clean driving starts winning race 2 too,
+which the same design decision forbids. What was delivered on that axis instead: engagement
+now buys **12 → 23 podiums of 40** on race 2 and puts the win 2.02 s away rather than 2.73 s.
+Round 1 left one escape hatch open — a **race-2-only** quiz boost in `quiz.js`, which D56's
+objection to a *global* buff does not apply to — and the critic closed it by measuring it:
+**1.80× / 5.0 s / impulse 12, with twelve correct answers, reads mean 2.75 with 0 wins in 40**.
+That is roughly a 3× buff, far past anything shippable, buying 0.9 of the 2.7 places needed;
+as a global constant it would read race 1 = 1.00 with 40/40 wins. Two further race-2-only
+levers were swept and are also null: `SLOT_FWD_R2` to zero (3.45, 0 wins) and a race-2-only
+`bandCatchMax` of 0.60/0.40 (3.63/3.60, 0 wins — and it helps the *tier-3* kart rather than the
+engaged stock one). The root number is that engagement is worth 0.22–0.37 of a place on race 2
+across five seed sets against 0.99 on race 1: race 2 is the race where answering matters least,
+and a 2.4 s boost eight times in a 172 s race is about 3% of average pace. **This is a measured
+dead end and is recorded as one in `tests/ai.test.mjs` under "MEASURED DEAD END", so the next
+person does not re-run the same search.** See GAPS.
+
+**The gate measures the profile, two-sided.** `tests/ai.test.mjs` grew a pack-feel section
+that bounds all three races from both directions — race 1 must not go back to cruising
+*and* must not become race 3 — plus the finale-scaling ladder. Eight assertions were
+verified red against HEAD's `ai.js` (restored from a `.tmp/` copy, never from git, refreshed
+after every accepted edit per D45). Five pre-existing bounds were re-derived because this
+wave moved the numbers under them, each with its measurement in the source, each checked on
+three disjoint 40-seed sets. One was re-derived **against the mutant it exists to catch**
+rather than against the shipped number: places-per-answer now reads 0.087–0.144 while the
+1.45×/4.0 s boost buff reads 0.206–0.209 against the same field, so the bound sits at 0.17,
+~18% clear of both — where 0.14 would have been ~3% clear of the shipped number.
+
+Round 2 re-derived **every** new or moved bound on **five** disjoint 40-seed sets, because the
+critic found several of round 1's were a single seed from red on sets round 1 had not tried
+(one read 23 wins against a ≥22 bound and 1.55 against a ≤1.60 bound). Three structural
+corrections came out of it, and each is the more useful lesson:
+
+* **A bound whose populations do not separate on every set is no longer called a catcher.**
+  Round 1's comment claimed one assertion separated the two builds on all three of its sets;
+  on a fourth, the pre-fix build *passed* one half of it and failed the other by 0.003. That
+  half is dropped and the assertion is demoted to a GUARD whose comment says plainly that it
+  does not bite. **A comment claiming a gate bites when it does not is worse than no comment.**
+* **The constant that had no assertion of its own now has one.** `HOLD_REACH_R1` exists to keep
+  race 1 at 85% pace at 4.0; nothing checked that number, so removing the constant entirely was
+  caught only incidentally, by different assertions on different seed sets and by neither with
+  margin. It is now asserted directly (4.00 on all five sets, bound 4.40, the mutant reads 4.97).
+  Likewise the wave's headline constant, `TRACK_PACE.oasis`, is now caught by two bounds with
+  real margin rather than by the two weakest in the file.
+* **And a gate bug that made a new assertion pass vacuously.** The harness's 40-seed cell cache
+  is keyed by `race|pace|tag|boosts` and *not* by `parts`, so two karts sharing a tag silently
+  serve each other's forty races — the first draft of the monotonicity assertion was reading
+  the uniform tier-2 kart's results and passing at 2.10. `cell40` now throws on a tag collision.
+  This is the third distinct way this project has found a gate to be green about nothing.
+
+Runtime 69 s.
+
+## D59 — The row count and the row income were the same number, and that is why the lap was empty
+`TOKEN_CLUSTERS_PER_LAP` was 1 because a taken token came back after 26 s — less than a lap
+— so income was `rows × laps`, and the only lever that could hold a winning engaged race
+under D51's 21-token maximum garage ask was to author **one** row. That bought the wallet
+with the whole lap: three laps offered the child the same row three times. Wave 6 splits the
+two levers — `TOKEN_CLUSTERS_PER_LAP = 3` is what the child SEES, and
+`TOKEN_RESPAWN_S = Infinity` / `TOKEN_ROW_CLEAR_S = 1.2` is what a row PAYS.
+
+**The unit had to be the row, not the token, and only measurement showed it.** The brief's
+own arithmetic — "three rows seen once each pay what one row seen three times paid" — is
+right and empirically wrong on its own. A row is 3–4 octahedra laid *across* the road, so a
+pass takes only the one or two the kart's line crosses, and lap 2 comes back on a slightly
+different line and takes another. Measured on the built game: three rows with per-token
+retirement paid **9 pickups on cloud and put a 23-token race on the board**. Retiring the
+whole ROW lands the same three rows at 2–5. The clear is delayed 1.2 s — about 30 m behind
+the kart at racing speed — so nothing is ever snatched from in front of a child, which is
+D52's rule applied to pickups.
+
+| | pickups | banked, engaged winner |
+|---|---|---|
+| before, 1 row a lap | oasis 4–5, circuit 4–6, cloud 4 | 15–18 |
+| after, 3 rows a lap | oasis 2–3, circuit 3–5, cloud 4–5 | 14–19 |
+| 4 rows (rejected) | oasis 5–7 | **20** — one under the ask |
+
+Radius (2.6 m, deliberately generous), placement, `FINISH_TOKENS` and the flat per-token
+value are all untouched. **The pickup floor moved 3 → 2 and is recorded rather than rounded
+up**: on oasis the racing line misses two of the three rows on some seeds. Invariant B is
+re-derived from it (2 + 3 = 5 against a cheapest complete ask of 4) and holds; the ceiling
+stays where Waves 4–5 measured it, because a guard that follows the last measurement
+downwards has stopped guarding.
+
+**A gate that pins a count without pinning what the count pays is half a gate**, and so is
+the reverse: drop the count back to one and the lap goes quiet; leave the count up and let
+rows pay per lap and the wallet drifts up behind invariants that still happen to hold. Both
+halves are asserted now, and the pickup ceiling is **derived** from the top ask
+(`MAX_COST − 1 − 9 quiz − best finish = 6`) rather than typed — D40's rule for badge
+thresholds, applied to the one term of the economy that had no other guard. It is asserted
+on **race 2 as well as race 1**: the mutant that restores per-token retirement measures 4
+pickups on `oasis` and sails under the ceiling, and 7 on `circuit`. A ceiling gate that only
+looks at the leanest track is not a ceiling gate.
+
+**What this buys and what it costs, measured on all three laps.** The three rows are
+collected on lap 1 and laps 2–3 are pickup-dead (oasis 4/0/0, circuit 4/1/0, cloud 4/0/0).
+That is the honest shape of the trade, and both ways out were built and measured rather than
+argued: **2 rows with a 55 s respawn** pays 5/6/5 — one token more everywhere, which puts
+circuit exactly *on* the derived pickup ceiling — and **still leaves lap 2 dead**, because laps
+run 45–56 s so the row returns after the kart has already gone past; it also drops the lap
+below the three visible clusters the brief asked for. **3 rows with a 55 s respawn** pays
+7/13/8 and puts a **25-token race** on the board against the 21-token ask, which is D39/D51's
+failure exactly. The ~4 row-passes a race the top ask leaves you can spend as three rows once
+or two rows twice, and no arrangement reaches all three laps. Closing it needs an income lever
+that does not exist — a respawned row that pays a sparkle and no token — so it is in GAPS with
+its table, and the table is in `tests/economy.test.mjs` so nobody re-litigates it blind.
+
+**The pickup ceiling could not be given headroom, so the measurement was given it instead.**
+`PICKUP_CEIL` is derived from the top ask and cannot be raised without moving garage prices or
+the quiz reward. Both flowtest pickup assertions are therefore strict `<` rather than `<=`,
+and print their margin — which is what turns "circuit measured exactly 6 against a ceiling of
+6" from a silent pass into a red.
+
+**And the stale input this shook loose, which is the more useful half of the entry.** The
+pickup change turned `tests/badges.test.mjs` red on one assertion — `tokens-200` fell to 75
+lifetime tokens against an 80 rung at the two-championship mark. The tempting fix is the
+constant that had just moved. Re-measuring its NEIGHBOUR instead found the real error:
+`QUESTIONS = [7, 7, 6]` had gone stale one wave earlier, when Wave 5.1 restored the question
+cadence (D56, ~8.6 boxes opened per engaged race) and this model was not re-measured with
+it. Measured again on the built game across three player profiles: **8 boxes a race, flat,
+no per-race gradient**. With both terms honest the rung clears at 82. `src/core/badges.js`
+and `TOKEN_STEPS` were not touched — the badge board is player-approved, so the economy has
+to carry the rung and not the other way round. **A calibration model is a sum, and when one
+term of a sum moves, the right response is to re-measure the others, not to tune the one
+that moved.** The rung clears by two tokens, which is a knife-edge by design (it was
+calibrated to land exactly at the two-championship mark); that is logged in GAPS rather than
+widened away.
+
+## D60 — A beacon is a place a child is stopped, so two places on the lap may not have one
+A question box freezes the world. Two places must never do that, and they are the same place
+seen from two sides: just *after* the start/finish line (met seconds into lap 1, and again
+on every lap crossing, on top of the lap banner and the jingle) and just *before* it (frozen
+out of the run to the flag). Nothing had ever looked. The last beacon's ideal,
+`startT + 5.62/6`, sat **53–75 m before the line on all three tracks**, and on `oasis` the
+forward runway search — which only ever walks forward, and had no reason to know the line
+was there — then carried it 76 m further, to **3 m AFTER the line, 0.10 s into the lap**. A
+child's first question box arrived at the start banner.
+
+The rule is stated in **seconds**: 3 s of drive, converted at the same 28 m/s the runway
+tiering in the same block already reasons at, so two rules about the same geometry cannot
+drift apart by using different physics. 3 s because the lap banner and jingle run ~1.7 s and
+a full-screen freeze on top of them is two ceremonies in one place.
+
+Beacon 5 was the only illegal one — and it was illegal on **all three** tracks, which is why
+the keep-out earns its place rather than being an oasis patch. Metres past the line, with the
+one beacon that moves in bold:
+
+| track | before | after |
+|---|---|---|
+| oasis (L 1156) | 119 / 332 / 519 / 723 / 890 / **3** | 119 / 332 / 519 / 723 / 890 / **1072** |
+| circuit (L 1183) | 166 / 436 / 531 / 774 / 1027 / **1130** | 166 / 436 / 531 / 774 / 1027 / **1099** |
+| cloud (L 1196) | 124 / 347 / 592 / 722 / 951 / **1134** | 124 / 347 / 592 / 722 / 951 / **1112** |
+
+Five of six beacons per track are bit-identical to what shipped in Wave 3.
+
+The implementation is a **clamp**: the existing `(i + 0.62)/count` rhythm is untouched, an
+ideal that lands inside a keep-out arc is pushed to the near edge of it, and the forward
+runway search may not select a candidate inside the zone. Order, spacing and all four
+runway/curvature tiers are intact, and the existing runway assertions still pass at the same
+bars. The first attempt re-spaced all six ideals across the lap minus the keep-out arcs —
+"legal by construction" rather than by correction, which reads better and cost two gates; see
+below.
+
+**The reason this rule was asked for turned out not to be a real problem, and the rule is
+worth keeping anyway — for the other reason.** The brief wanted the keep-out so the
+first-token teaching card would naturally precede the first-quiz card on a fresh save. A
+critic tested that consequence instead of assuming it, and it does not hold up: it built the
+pre-change placement and ran the shipped end-to-end card-order gate against it — **7/7 pass,
+the gate cannot fail**. Instrumenting `quiz:beacon` on the pre-change build showed why. That
+oasis beacon 3 m past the line, 25 m from the back of the grid, **is never hit on lap 1**: it
+sits at lateral −1.7 m and the kart's opening line misses it, so it first fires at 47.4 s, at
+the *end* of the lap. On circuit and cloud the first beacon was already 188 m / 146 m against
+token rows at 96 m / 97 m. **The card order was already correct on all three tracks**, and it
+comes from `shouldShowFirstQuizPopup()`'s modal deferral plus the grid's lateral offset — not
+from the layout. Recorded rather than quietly dropped, because the next person to read this
+geometry will otherwise re-derive the same false motivation.
+
+What survives is the half of the rule that was always the stronger one: a beacon a few metres
+either side of the line drops a full-screen freeze on top of the lap banner and jingle **on
+every lap crossing**, not once on lap 1. That is worth the keep-out on its own.
+
+**And the first implementation of it broke two systems this wave was forbidden to touch,
+without editing either of them.** Re-spacing the six ideals across `L − 168 m` moved every
+beacon on every track (oasis `119/332/519/723/890/3 m` → `200/375/519/680/889/1010 m`), and
+that perturbation of the whole lap's pacing pushed `tools/modaltest.mjs` below its 6-second
+teaching-card floor (5.08 s, reproduced twice) and `tools/quizboxtest.mjs` below its
+22-question cadence floor (21) — the cadence Wave 5.1 exists to have restored. Attribution was
+measured, not argued: a build of the current tree with *only* `quiz.js` reverted passes both,
+with the token change still in place. So the keep-out became a **clamp** on the beacons that
+actually violate it — one, on one track — rather than a new schedule for all eighteen.
+**A system can be broken by moving the geometry underneath it, so "I did not edit that file"
+is not a blast-radius argument. Running its gate is.**
+
+## D61 — The toast is a claim; the number is a fact
+`race:position` fired the instant the spline-progress order flipped. Progress is arc length,
+so it flips while two karts are still side by side, flips back a tenth of a second later,
+and flips again through a whole corner: measured on the built game, **33 order flips
+produced 33 toasts, the closest pair 0.02 s apart**, about a rival the child could still see
+beside them. That is the shape of feedback that teaches a player to stop believing the HUD,
+which is expensive in a game whose teaching is all HUD.
+
+Hysteresis at the emit site, no new system: a change must **hold 0.6 s** *and* **open a 3.0 m
+margin** — just over a kart length — before it is announced. Both, because either alone has
+a hole: a hold alone still announces a 20 cm pass the next corner undoes, and a margin alone
+still announces the half-second divergence at a chicane. After: **40 flips → 4 toasts,
+closest pair 0.73 s.**
+
+**Which number the child sees change when, decided rather than left implicit.** The HUD
+position *number* keeps tracking live — it is a fact about the current order, it is on screen
+continuously, and a number lagging its own leaderboard is a bug a child catches by looking at
+the karts. The *toast* waits, because it is a claim that an event happened, and a claim
+retracted a tenth of a second later is worse than a late one. So the number may tick to P3 up
+to 0.6 s before "עקפת!" appears, and if the pass does not stick the number ticks back and
+nothing was ever claimed. `from` is the position the child was last *told*, so a suppressed
+flicker can never turn the next real pass into a silent `from === to`.
+
+**Hysteresis at the emit site was only half of it, and the other half was in the HUD.** A
+critic measured the toasts a real race actually produces — oasis seed 3: `1→5 @1.78s,
+5→4 @3.25s, 4→2 @4.05s, 2→1 @4.78s` — against `showNote`'s 1.5 s hold plus a 0.26 s fade. The
+0.80 s and 0.73 s gaps are both far shorter than 1.76 s, so two position notes sat on screen
+together, and from 4.78 s the HUD position **number read 1 while a live note underneath said
+"now in second place"**. The self-contradiction the emit-site fix exists to prevent, arriving
+through the front door of the file that displays it. `showNote` now takes a `channel`: notes on
+the same channel reuse one slot and cancel the previous hold, with a per-slot generation stamp
+so an in-flight fade cannot clear the note that replaced it. `race:position` passes
+`'position'`; nothing else in the HUD moved. **A rule about how often something may be SAID has
+to agree with how long it stays on screen, or the display re-creates the bug underneath it.**
+
+The decision was trapped inside the `raceScene` closure with no way in, which is why nothing
+had ever tested it in five waves. It is now an exported pure factory with its own gate — and
+that gate runs **the pre-change emitter as a control on the same 210 frames** (13 toasts), so
+"no flurry" cannot pass because nothing happened in the scenario.
+
+## D62 — The game already owned a curtain for the freeze, and was raising it one second too late
+GAPS carried "starting a championship still freezes on the FIRST visit to each track" for a
+wave, with the fix it named — prebaking a track on idle frames — explicitly rejected as a new
+system rather than a cache. Measured at the start of Wave 6 (`tools/transitiontest.mjs`, cold
+lap, headless SwiftShader): racer select → race **3913 ms**, championship start on a new theme
+**5460 ms**, the third track **2485 ms**; roughly 1.5–2 s of that on a real mid-range laptop.
+
+The cheap fix is that the game already shows a full-screen curtain at exactly that moment and
+was building it on the wrong side of the work. The pre-race intro card owns the whole screen,
+freezes the world (phase `intro`, time scale 0) and appears before every race anyway — but it
+was created *inside* `raceScene()`, after the track mesh, the twelve baked textures, the sky,
+the signage occlusion layout and eight karts. So it could only ever appear after the freeze,
+with nothing in front of it.
+
+`scenes.js` now raises the card BEFORE calling `raceScene()` and hands it in as
+`opts.introCurtain`. Same card, same copy, same modal id, same place in the child's
+experience; it is simply on screen while the world is built behind it. Measured on the player
+path, cold first visit to each track: **the curtain is up 2–6 ms into the transition with 0 ms
+of main-thread block in front of it, and the entire 1.9–5.7 s build happens behind it.**
+
+Two details are what make it honest rather than a trick, and both were found by trying it
+without them:
+
+* **The double `requestAnimationFrame`.** Mounting an element is not showing it. Without a
+  real paint between the mount and the build, the browser coalesces both into one frame and
+  the child sees the freeze with nothing on top of it. Two frames: one to lay it out, one to
+  present it.
+* **`armed: false`.** A synchronous build does not swallow input, it QUEUES it — every key and
+  tap a child makes during those two seconds is dispatched the instant the build returns. An
+  armed card would be dismissed by the first of them, having been readable for zero
+  milliseconds. The curtain is mounted inert and `race.js` arms it two animation frames after
+  the build. `dispose()` still works either way, because teardown is not a dismissal.
+* **An opaque scrim while unarmed.** The normal scrim is deliberately translucent, but what is
+  behind a curtain is the screen the child just left — racer select's kart tiles, with the new
+  race's HUD chips already painted over them — which reads as "the last screen has not gone
+  away". It drops back to the usual scrim at `arm()`, so nothing about the card a child reads
+  in a warm entry changes.
+
+Nothing about the harness paths changed, deliberately: `introCardEnabled` is false for
+backdrops, autopilot and `engine._headless`, so gates and screenshots keep paying the
+first-visit cost **in the open, where it stays measurable**. The `race` scene factory became
+`async` for the yield; `engine.goto` already awaited it.
+
+**Both of those details were shipped in a form that did not work, and a critic caught both by
+building mutants rather than by reading the code.** The write-up above is what the second
+version does; the first version's is worth keeping because the two failures are different
+species of the same mistake — believing a mechanism because it is described at length.
+
+* **The latch was inert.** `arm()` was called synchronously at the end of the blocking build —
+  that is, in the very task that queued the input — so the browser armed the card a moment
+  before delivering the child's keypress. Measured: a Space dispatched 250 ms into a 2.5 s
+  build arrived at 2558 ms with `armed === true` and took the card down (`phase: "countdown"`);
+  pointer taps behaved identically. Every assertion about it read `armed` **after** the build,
+  where it is true whether the latch works or is decorative. It is now armed two animation
+  frames later — strictly after every queued event — with a 300 ms timer as a backstop for a
+  page producing no frames at all, since a card that never arms is the one outcome worse than
+  the freeze. The gate now presses a real key mid-build and asserts the card **survives**, and
+  then that a key after arming still dismisses it.
+* **The paint metric measured DOM insertion, not pixels.** A `MutationObserver` fires the
+  moment the element is appended, which is 2–4 ms regardless of whether the browser ever gets
+  a rendering opportunity. A mutant that mounts the card and replaces the double `rAF` with
+  `await Promise.resolve()` — showing a child a frozen title screen for the whole build —
+  **passed the section clean at "2 ms to curtain"**. The number is now the time from insertion
+  to the first animation-frame callback with the card in the DOM, which is the frame the
+  browser is about to render; the same mutant now fails at 1464 ms and 1492 ms. A companion
+  assertion that was worse than useless is gone: `blockBeforeCard` read the heartbeat's
+  high-water mark from inside a microtask that runs at insertion, so it was **structurally
+  always 0** and reported 0 ms even against a mutant with 2460 ms of block in front of the card.
+
+So the section now measures the only stretch a child can perceive as a freeze — asking for a
+race and having something on screen — at 0–4 ms against a 400 ms budget, and asserts the other
+half too: that the masked build was at least 500 ms, because **a mask that masks nothing passes
+trivially** and a race that failed to build at all would otherwise read as a success. It also
+asserts the card mounted and the scene is in phase `intro`, for the same reason.
+
+One measurement honesty note that came out of the same pass: the gate's own first transition on
+a freshly loaded page pays one-time WebGL program links that belong to the rasteriser rather
+than the game (track 0 read 642 ms to first paint against a 200 ms build behind the curtain), so
+the section takes one priming transition first — the same argument this file already makes for
+its 20-second cold budget. And **track 0 is never really cold**: the title screen's backdrop is
+a live race on it, so booting the page has already baked its theme. Tracks 1 and 2 are the
+genuine first visits, and they are the ones carrying 1.4–1.5 s of build behind the curtain.
+
+**A third thing the critic found, which is a real bug rather than a gate one.** A child
+double-tapping "לזינוק!" starts a second `goto` while the first is still building, and
+`engine.goto` only clears the modal registry when it has an active scene to leave — the first
+call has already forgotten its scene. So the second `createIntroCard` saw the FIRST curtain's
+own `'intro'` id, deferred, returned null, and the second race built **with no curtain at all**:
+a bare two-second freeze plus a silently skipped welcome. Measured `icRoots: 0,
+phase: "countdown"`. `scenes.js` now retires its own previous curtain before raising a new one;
+the same scenario now ends `icRoots: 1, phase: "intro"`. Kids double-tap buttons.
+
+## D63 — A feature can be fully tested and completely inert, and this one was for an afternoon
+The finale scaling of D58 lives in `ai.js`, is exercised by fourteen assertions in
+`tests/ai.test.mjs`, and was proved bit-identical over 240 races. All of that is true of a
+version of the game where the feature **does nothing at all**, because `tests/ai.test.mjs`
+builds its own `createAIField` and passes `playerParts` itself. The only thing that connects
+the feature to the game a child plays is one argument at one call site in `race.js`.
+
+That argument was added, verified, built, and then **silently lost** — a `.tmp/` restore in the
+shared tree, armed before the edit and fired after it, which is D45's trap exactly, one wave
+after D45 was written down. Nothing went red. `npm test` was green, `tests/ai.test.mjs` was
+green, the balance numbers in this file were all still true of `ai.js`, and the feature they
+describe was not in the built game. It was found only because a later agent happened to grep
+for `playerParts` and report the absence.
+
+Two things follow, and the second is the one worth keeping.
+
+**The seam is now gated where seams are gated.** `tools/flowtest.mjs` asserts, on the built
+game, that `field.partTier` is 2 for a stock kart on race 3, 3 once the player arrives with a
+tier-2 engine, 3 for a tier-2 **wing** as well — that last one because the garage saves
+`{engine, tires, wing, chassis}` and the physics wants `{engine, tyres, frame, turbo}`, so
+handing the raw save shape across would resolve `turbo` to tier 0 and the bug would be
+invisible on the engine case (D24's seam, still the most expensive one this project has had)
+— and 0 on race 1, so the blast radius is asserted rather than assumed.
+
+**The general rule this project keeps rediscovering, in its sharpest form yet: a test that
+constructs its own subject cannot prove the game constructs the same one.** `tests/ai.test.mjs`
+is a good gate and it was never going to catch this, because the thing it would have to check
+is not in its scope. Every wave that adds an option to a subsystem's constructor adds a place
+where the caller can forget to pass it, and the only gate that can see that is one that reads
+the value **out of a scene the game itself built**. The same shape has now bitten here three
+times — the garage's `setPart`/`setParts` mismatch (D24), the kart-preview dead seam, and this
+— which is enough to call it a class rather than a coincidence.
+
+## D65 — Two one-time teaching cards, one key contract
+The first-token explainer (`firstTokenPopup`, garage.js) took only Escape; the first-question-box
+explainer (`firstQuizPopup`, quiz.js) took the button, Space, Enter and Escape. Same shape of card,
+same moment in a child's first race, two different ways out — and the one a child would actually
+try, Space, worked on one of them.
+
+The token card now uses quiz.js's handler verbatim, including the two non-obvious parts:
+
+  * `e.repeat` is swallowed with a `preventDefault` and no close. Space is also the DRIFT key
+    (D20). A child holding Space when the card appears must not have it taken away by a key they
+    never released — the card would vanish before it was read, and the child would never know why.
+  * capture phase plus `stopPropagation`, so Escape closes THIS rather than falling through to
+    input.js and opening the pause menu underneath a card the child is still reading.
+
+The difference that was deliberately KEPT: the token card holds a modal-registry id (`'token'`)
+and the quiz card does not, because the quiz card opens inside the quiz system's own frozen
+sequence which already holds `'quiz'`. Unifying the key handling is not a reason to unify the
+registry behaviour; see D15/D18.
+
+The card also now names its key in its own button label — `הבנתי! (רווח)` — which is the pattern
+quiz.js already used (`קדימה לשאלה! (רווח)`). A modal that accepts a key without saying so is a
+modal a child dismisses with the mouse forever.
+
+Pinned by `tools/modaltest.mjs` section 8b (nine assertions) for the token card and section 10 for
+the quiz card. Both mutants go red: reverting to Escape-only fails the close, the registry release
+and the resume; removing the `e.repeat` guard lets a held Space dismiss the card and the world runs
+**47.8 m** behind it.
+
+## D66 — One selection action is one sound, and the fix is not a de-bounce
+Selecting a kart played a fast double click. The cause was two paths into one emit: the select
+card carries both `onclick: () => select(i)` and `onfocus: () => { if (index !== i) select(i) }`,
+and `select()` ended with an unconditional `bus.emit('menu:racer', r)`. A mouse press FOCUSES the
+card first (cards are focusable even at `tabindex -1`) — emit #1 — and the click that follows
+calls `select(i)` again — emit #2, a few milliseconds later. `audio.js` maps `menu:racer` to
+`ui.select`. Keyboard selection was always single, because `index` is updated before `c.focus()`
+and the `onfocus` guard then declines.
+
+Instrumenting the real build showed two more emits nobody had reported: entering the screen
+emitted a selection sound (`build()` calls `select(index, false)`), and re-clicking the
+ALREADY-selected card emitted one for a state change that did not happen.
+
+`select()` takes a third argument and emits only when `index` actually changed; the build-time
+call passes `notify: false`. This is deliberately NOT a time-based de-bounce. A rate limiter
+would have silenced the symptom while leaving two live emit paths, and the next screen to grow a
+third path would have been silent-by-luck rather than correct.
+
+The gate (`tools/selecttest.mjs` section 2b) is written so a de-bounce could not have satisfied it:
+re-clicking the selected card is pinned at ZERO sounds (nothing changed, so a sound there is a lie
+about state), and two arrow presses must produce exactly TWO — which any interval-based
+suppression fails. Reverting the fix turns four of the six assertions red with the doubled
+payloads printed (`["tipa","tipa"]`).
+
+## D64 — Progress is measured from the line, and on the road it IS the projection
+Every difficulty number this project has published since Wave 4 was read off a crooked ruler.
+Three separate leaks, all in the same quantity — how far around the lap a kart has got.
+
+**1. THE ORIGIN.** `AIDriver.progress`, `createAIField`'s `playerProgress` and `race.js`'s
+`S.progress` all initialised to `0`, but `gridSlots()` places the eight karts **−4.0 m to −22.0 m**
+behind the start/finish line, two abreast. A kart starting further back therefore carried a
+permanent credit equal to its own stagger — up to **18.0 m** — in every comparison that mattered:
+`order()`, `_rankPass`, race positions, `race:position` toasts, the rubber band's gap terms and
+`finishPlayer()`'s projected standings. The player starts on pole, the LEAST advantaged slot, so
+the bias ran against the child: mean AI advantage **+7.7 m ≈ 0.31 s**.
+
+Measured over 15 races, recorded place against physical crossing order: **the player's recorded
+place was wrong in 10 of 15 races, always demoting them**, including one P5 recorded for a
+physical P3. That is exactly the reported symptom — "passed" by karts visibly behind, losing races
+visibly won. It is also why the same bug survived five waves: `tests/ai.test.mjs` carried it too,
+requiring all eight karts to reach one shared `finishAt` measured from the pole slot. **The game
+and the instrument were wrong in the same direction, so they agreed.**
+
+The fix is one line per accumulator: seed with `TrackSpline.deltaT(body.lapT, def.startT)`.
+`progress == 0` now means "on the line", and equal progress means physically abreast.
+
+**2. THE PHASE SKEW.** `createAIField.update()` read the player's `lapT` after race.js had stepped
+the player, while each AI's progress was written inside `d.update()` — before `d.body.update()`
+moved that kart. `order()` compared the player's end-of-step against the AI's start-of-step: a
+systematic ~0.3 m/frame gift to the player, worst lie **4.15 m** at the phase the game actually
+reads. Every kart now commits its progress after the drive loop and after collision resolution, so
+one `order()` describes one instant.
+
+**3. THE PROJECTION SNAPS, and why a physical cap alone was the WRONG fix.** `lapT` could jump
+**+13.67 m in a single step** for 0.29 m of travel (see the `closestT`/`hintT` entry in GAPS.md).
+The obvious guard is to bound a step by what the kart could have driven. That guard alone is
+actively harmful, and measuring it is what saved this fix: the raw accumulator is a telescoping
+sum of `deltaT`, i.e. **identically equal to the projection**, so 100% of the error lives in
+`closestT()` and none in the accumulation. Capping therefore does not remove the lie, it inverts
+it — measured, karts ended **−6.60 m BEHIND their own projection**, ranked behind karts they were
+visibly alongside. Trading a forward lie for a backward one is not a fix.
+
+What is true is that the projection is trustworthy exactly when the kart is ON THE ROAD (at the
+tightest hairpin the two branches are 37 m apart against a 16 m road) and untrustworthy off it. So
+`ProgressTracker` **converges on the projection**: in full and immediately while on-road, and at a
+rate limit of 1.5 m/s while off-road. On-road progress is *exactly* the projection — zero residual,
+none of the gate's 0.06 m tolerance spent — and nothing can be banked, because rejoining the road
+simply lands the kart on the truth.
+
+Two numbers behind the constants, both measured rather than chosen. The multiplier `1 + 0.60`
+comes from geometry: a kart at lateral offset L sweeps radius R−L, so it covers `R/(R−L)` of its
+ground distance in centreline arc, and the worst honest case in the game is circuit's hairpin at
+18.8/14.8 = **1.27** — eps 0.60 leaves 26% over it. The **additive floor matters more**, and a
+multiplicative-only cap was nearly shipped: `closestT()` clamps its segment parameter, so `lapT` is
+a staircase with a tread of one sample spacing (~0.84 m), and a pure multiplier sits INSIDE that
+quantisation noise (0.53 m at 20 m/s) — it misfired on 13% of all steps and bled 60+ m per kart.
+Over 892,800 unguarded steps the excess runs to 0.4 m of quantisation noise and then stops: 31
+steps exceed 0.60 m and **those 31 are the snaps themselves** (0.83 m to 16.4 m). The floor sits in
+that gap.
+
+**WHAT THE BIAS HAD BEEN HIDING.** On-road order disagreements went 856 → **0**; steps where an
+on-road kart's progress differed from its projection went 674,086 → **0**; metres banked off-road
+71.6 → 1.2. And in flowtest's own play cell the autopilot went from **36 position changes,
+finishing P2** to **1 change, finishing P1**. Most of those 36 were never real — the phase skew
+chattering the order across a near-tie. Wave 6's position-toast hysteresis (D61) was built to calm
+exactly that chatter: the treatment was sound, the diagnosis was not. It stays, and it is no longer
+load-bearing.
+
+Pinned by `tools/spatialtest.mjs` (31 assertions), which audits at the post-`field.update` phase
+the game actually reads, carries a second truth that never touches `lapT`, drives the real built
+game for race.js's half, and ships four `--mutate=` routes plus `--ai=<path>` so every clause is
+shown going red. Tie tolerance 0.06 m; the per-step physical bound catches a gift of ~0.60 m.
+Note for anyone extending it: the displacement-integral truth is only first-order accurate and
+disagrees with the projection by 1.5–8.6 m over a 3.4 km race on geometry alone, so it is asserted
+at 15 m and **would not have caught the 10 m leak on its own** — the per-step bound is what catches
+that. A gate is only as good as its weakest truth, and that one is named in the file.
+
+## D67 — The honest re-measure: what the bias had been hiding, claim by claim
+With the instrument fixed (D64), the full autopilot matrix was re-run — race × skill × tier ×
+engagement × seeds, 40 seeds per target-bearing cell across five disjoint seed sets, ~8,500 races.
+This is the number set the project should be read against; where an older figure in this file or in
+GAPS.md disagrees, the older figure was measured on the crooked ruler.
+
+**SURVIVED.** The struggling-child ladder (85% pace → **4.00 / 5.00 / 6.00**, was 4.0/5.2/6.2);
+the never-lapped guarantee (70% pace, worst 0.11/0.14/0.21 laps down, **0 lapped in 600 races**);
+race 2's clean-stock target (**3.88**, 0 wins in 200, dead centre of its 3rd–4th ask — numerically
+the most stable claim in the file); race 2 tier-2/tier-3 (2.08 / 1.57); D58's conditional finale
+scaling (tier-2 ×0 = **2.15**, 7/40 wins — essentially bit-for-bit); and the tyres/frame flatness
+on the finale (though its SCOPE was wrong — see GAPS.md).
+
+**OVERTURNED.**
+  * **Race 3 stock was understated by ~0.32 places** (3.90 → **4.22**) and its podium rate HALVED
+    (15/40 → **7/40**). Every "race 3 is the frozen reference/the exemplar" statement in this file
+    was written against a number that was too kind.
+  * **A correct answer is worth 0.03–0.10 of a place** (D56/D58) → **0.125 / 0.019 / 0.137** per
+    answer on races 1/2/3. Race 3's engagement payoff more than doubled (0.50 → **1.09 places**);
+    race 2's fell to near nothing. The spread across races widened from 3× to **7×**.
+  * **Race 1's pack-feel numbers moved** — recorded 34.9% led / 10.1–11.0 close passes, honest
+    **47.3% led / 6.4 close passes**. See the D67 CORRECTION below: this was first written up as
+    D58's repair being an artefact, and that inference was wrong.
+  * **"Race 2 has 75% more visible passes than the exemplar"** — gone. Close-pass counts collapsed
+    ~55–60% across ALL THREE races (r1 10.5→6.4, r2 26.4→10.9, r3 15.1→11.7) once the phase skew
+    stopped chattering the running order. Race 2 now sits at 10.9 against race 3's 11.7, and it
+    no longer trails the exemplar on `ahead≤1.5s` at all (94.0 vs 93.5) — D58's "the single axis
+    on which race 2 trails" does not trail.
+  * **D44's inverted upgraded axis is not inverted — it is FLAT.** Race 2 tier-2 2.08 against race
+    3 tier-2 2.15: a gap of **−0.008 places over 200 seeds**. D58 correctly reported moving it from
+    −1.07 to ~0.00; what went unsaid is that 0.00 is not an escalation either. The championship
+    does not step up on the axis the garage sits on. That, not a walkover, is the real defect, and
+    it is what the Wave-7 race-2 scaling exists to fix.
+
+**GAPS' "race 2 cannot be won by engagement alone" DEAD END survived and got deader**: still 0 wins
+in 200 seeds, and engagement's value on race 2 fell from 0.22–0.37 places to **0.04–0.27**
+(pooled 0.13). The ≥15%-of-seeds win target set for Wave 7 is not reachable — see D68.
+
+**A framing correction the measurement invited and the code refutes:** the matrix shows race 1 as a
+40/40 walkover for any garage part at all (100% of the race led, zero close passes). That cell is
+UNREACHABLE in a real championship — the garage opens from the results screen after race 1, and
+`resetChampionship()` clears parts, so a child always drives race 1 stock. It pins an extreme, like
+the uniform tier-2 karts, and is not a live design hole. Free play is the only way to reach it.
+
+### D64 addendum — the convergence subsumes the seed, and that is why the origin bug cannot recur
+Found while mutation-testing the toast gates: re-zeroing the progress accumulators — the ORIGINAL
+Wave-4 bug, injected deliberately — no longer changes the running order at all. `ProgressTracker`
+converges on the centreline projection, so a wrong seed is taken out in full on the first on-road
+step and the ordering never sees it.
+
+That is worth stating explicitly because it inverts the usual worry. The seeding fix (D64 part 1)
+is no longer the thing holding the race order up; the convergence contract is. The seed still
+matters for the frames BEFORE anyone moves — the grid, the countdown, the pre-start order the HUD
+shows — which is exactly what `spatialtest.mjs` section C exists to pin, and why C is a separate
+section rather than a corollary of section A.
+
+The practical consequence: a future edit that breaks the seeding goes red in section C only, and a
+future edit that breaks the convergence goes red across A, B and E. Two independent failure modes,
+two independent sets of assertions. Neither one covers for the other, and neither is redundant.
+
+## D68 — Race 2's field is deliberately flat: matching the child was built, measured, and rejected
+Wave 7's brief made this an explicit override of the do-not-touch list: race 2's field should run
+`max(1, playerPartTier)` capped at 2, because "race 2's field is fixed tier-1 while the finale
+scales, so a tier-2/3 engine makes race 2 a walkover — confirmed by the player with a decent engine
+upgrade on a weak kart." The change was built exactly as specified, measured on the honest
+instrument, and **not shipped**. `aiPartTier` is unchanged. This entry is the reason, because the
+next person to read D44 will want to make this change too.
+
+**The premise did not reproduce.** On the honest instrument (D67) there is no walkover to fix:
+race 2 tier-2 reads **2.08** against race 3 tier-2 at 2.15, and engine-only realistic garages read
+3.27 (engine 2) / 3.15 (engine 3) on race 2. On `circuit` the engine is nearly flat
+(54.37 → 53.32 s) while TYRES are the fastest part (→ 52.67 s), so the "decent engine upgrade" the
+report names is close to the weakest purchase a child can make for that race. What is real is
+D67's finding that the upgraded ladder is **flat** (+0.09 places), and the change was carried
+forward on that revised justification rather than the original one.
+
+**It fails on its own revised justification.** Race 2's field is the only lever it has, it can only
+make race 2 HARDER, and race 3 is already capped at the top of `PART_TIERS` — so a flat rung
+becomes an inverted one. Over all **66 garages a two-visit championship can actually build**
+(40 seeds each, 2,680 races per build), mean race3−race2 goes **+0.15 → −0.22**, and the number of
+garages where race 3 is the harder race falls **37/66 → 23/66**. For a uniform tier-2 kart the gap
+goes +0.08 → **−0.87**; for the best reachable garage, −1.00 → **−1.87**.
+
+**And it costs three things the project already holds.**
+  * **D33, the fairness invariant** — "a child who buys a better part and finishes WORSE notices,
+    and resents it". Over the 240 one-purchase steps a championship can make on race 2, the worst
+    such step goes **+0.23 → +0.85 places, with 3 steps over half a place where today there are
+    none.** The field steps a whole uniform tier the moment engine-or-turbo reaches 2, while
+    `playerPartTier` cannot see tyres — the part that actually matters on circuit.
+  * **Race 2 is the race the garage wins** (the token economy leans on it): a tier-2 kart's gain
+    over stock falls **1.80 → 0.85 places**, and a fully-spent garage's win rate **43% → 10%**.
+  * Three assertions in `tests/ai.test.mjs` that encode those targets go red as design changes,
+    not as bounds needing re-derivation.
+
+**The tyres-aware variant was also built and measured** (`max(engine, turbo, tyres)`, race-2 only,
+frame excluded because it is flat on circuit). It fixes the D33 half — worst step **+0.42**, zero
+steps over half a place, exactly the figure D58 accepted for the finale — and is the correct signal
+IF race 2 ever scales. It does not rescue the rest: mean over 66 garages 3.22 → 3.71, ladder
++0.15 → −0.35. Recommended only as the form to use if a future wave decides to scale race 2 anyway.
+
+**The lever the honest data actually points at is race 3 or the tracks' own pace, not race 2's
+field.** Race 2 cannot be made a smaller step by making it bigger.
+
+The rejected patch, kept so nobody has to re-derive it:
+```js
+export const aiPartTier = (d01, playerTier = 0) => {
+  const n = difficulty01(d01);
+  const base = clamp(Math.round(2 * n), 0, 2);
+  const pt = clamp(Math.round(playerTier), 0, 3);
+  if (n >= 1) return Math.max(base, clamp(pt + 1, 0, 3));   // the finale: one tier ABOVE
+  if (base === 1) return Math.max(base, Math.min(pt, 2));   // race 2: MATCH, capped at 2
+  return base;                                              // race 1: always stock
+};
+```
+What DID ship from this piece: `tests/ai.test.mjs` section **3c, "THE FIELD-TIER CONTRACT"** — seven
+pure-function assertions (no races, milliseconds) pinning race 1 stock for every child, race 2 flat
+at tier 1 for every child, the finale's `2 2 3 3`, monotonicity in the child's tier at every
+difficulty (D33 at rule level), clamping of out-of-range tiers, `playerPartTier` reading engine and
+turbo only, and the no-garage default ladder — plus a catcher asserting race 2's tier is 1 as
+OBSERVED from inside a built `createAIField`, which the pure-function tests cannot see. Six mutants
+go red against it, including the change this entry rejects.
+
+**`3b(vii)` was re-derived, and the old bound measured nothing.** It required the race3−race2 gap to
+be `>= -0.25` against a population whose mean is −0.008 with a ±0.18 seed-set spread — i.e. it sat
+inside its own noise and would pass a genuinely inverted build. It is now `>= -0.55`, derived in
+the file from five disjoint 40-seed sets, with 0.40 places of margin under the worst shipped set,
+going red by 0.18 against the pre-Wave-6 inversion and by 0.35 against the match-the-child build.
+The file states plainly that this is a FLATNESS bound, not a ladder bound, and that **no bound
+requiring a real step can be green today** — which is the honest description of the game as it
+stands, and a question for the playtest rather than for the tuner.
+
+## D69 — Kart choice moved the field, not the kart, and the target is honestly missed
+The field is calibrated against one reference kart (`ROSTER[0]`, nitzotz). The roster's stat spread
+therefore bought finishing places: measured on the honest instrument, kaftor — the purple one the
+player named — laps **2.9% quicker than the reference on oasis and 2.2% on cloud**, worth ~4 s over
+a 3-lap race against a winning margin of ~1.4 s, and finished race 1 at **1.20 with 32 wins in 40**.
+
+The fix scales the FIELD's pace by the chosen kart's own clean flat-out figure, so the kart keeps
+its character and stops buying places:
+
+    ratio(kart, track) = lap(nitzotz, track) / lap(kart, track)      // >1 = kart is faster
+    trackPace = TRACK_PACE[track] * clamp(KART_PACE[racerId][track], 0.95, 1.05)
+
+Measured by `tools/kartpace.mjs` (20 flying laps per cell, 2 warm-ups discarded; no RNG on that
+path, so it is bit-reproducible; ratio noise floor ±0.15%). `trackPace` feeds `basePace()` and
+nothing else — there is no path from `KART_PACE` to any `KartBody`, to the player, or to any stat,
+which is what keeps FEEL intact: re-running `kartpace.mjs` after the change is bit-identical.
+
+**PER-TRACK IS LOAD-BEARING, not cosmetic.** zamzum spans 1.004 on oasis to 0.900 on circuit — a
+10.4-point spread, 70× the noise floor and twice the whole clamp. The cause is structural: circuit
+is the handling-limited track, so the low-handling karts (zamzum h=1, plada h=2, raash h=2) collapse
+there and are fine on the flowing tracks. A per-kart mean would get zamzum's circuit correction 6
+points wrong and flip its sign on oasis. Three cells clamp, all on circuit, all low-handling; the
+residual is deliberate — zamzum's field is corrected 5% against an honest 10% deficit, so it stays a
+genuinely hard kart on race 2.
+
+**THE TARGET IS MISSED AND WAS NOT TUNED AWAY.** Ask: mean finishing place across all 8 karts
+spreads ≤0.75 per race. Measured, 40 seeds: **1.78 / 1.02 / 1.63** (was 1.83 / 1.48 / 2.10). Race 2
+got most of the correction; race 1 barely moved. Two measured causes, neither reachable from this
+table:
+
+  1. **Field composition, 1.13 / 0.93 / 1.35.** Choosing a racer also REMOVES it from the seven
+     opponents, so the field itself changes with the choice. Measured with the player's physics held
+     at the reference and the correction off. The confound alone is over target on all three races,
+     and no pace number can touch it.
+  2. **The pace lever is saturated on oasis.** +5% field pace moves the field's 3-lap time by
+     **−0.7% on oasis, −1.3% on cloud, −4.8% on circuit** — which is `ai.js`'s own TRACK_PACE comment
+     ("pace above ~1.05 buys nothing there") turning out to be exactly right. `TRACK_PACE.oasis` is
+     already 1.09. Race 1 therefore receives about a sixth of its correction, and its residual is
+     plada and kaftor at ~1.0 place each.
+
+**The only lever that would close race 1 is the field's TOP SPEED — its part tier — not its pace.**
+That is a design change and Wave 7 did not take it; see GAPS.md.
+
+Gated by `tests/ai.test.mjs` section 8, 15 assertions over 960 races, which re-measures all 24 cells
+live from physics rather than trusting the stored table, and asserts the SIGN per cell — because a
+sign inversion does not merely fail to fix the bug, it doubles it: the inverted mutant gives kaftor
+**40 wins in 40**. Five mutants go red, including sign-inverted (9 assertions), collapse-to-one-
+number-per-kart (7), and constant-never-reaches-the-field (3). Everything reads through the
+`kartPace()` accessor rather than the literal table, so a mutant that inverts inside the accessor
+still bites.
+
+
+## D67 CORRECTION — "D58's race-1 repair is an artefact" was itself a cross-instrument comparison
+D67 as first written concluded that Wave 6's race-1 pack-feel repair was an artefact of the bias,
+by placing an HONEST number (47.3% of the race led, 6.4 close passes) beside a number recorded for
+the pre-Wave-6 build (46.0%, 7.7–8.7) that had itself been measured on the crooked ruler. **That is
+precisely the error D64 exists to name, committed while writing up D64.** It is corrected here
+rather than silently edited, because the failure mode is more instructive than the number.
+
+Re-measured like for like — `TRACK_PACE.oasis` reverted 1.09 → 1.03 (the pre-Wave-6 value, and the
+constant D58 raised), both builds run on the honest instrument, five disjoint 40-seed sets:
+
+| race 1, stock, 100% | shipped (1.09) | pre-Wave-6 (1.03) | halfway (1.06) |
+|---|---|---|---|
+| close passes / race | **5.70–6.80** | 1.68–2.10 | 4.65–4.98 |
+| % of race led | **45.6–55.9** | 64.6–73.0 | 44.4–65.9 |
+| median gap | **0.46–0.50** | 0.72–0.84 | 0.54–0.65 |
+| nearest rival ≤1.5 s | **95.0–96.3** | 86.1–90.9 | 91.7–96.8 |
+| mean place | **2.43–2.55** | 1.53–1.73 | 2.10–2.25 |
+
+**D58's repair is real and large**: three times the visible passes, 18 points less of the race led,
+half the distance to the nearest rival. What the crooked ruler did was flatter the LONELY build far
+more than the shipped one (7.7–8.7 recorded against 1.7–2.1 honest) — which is the mechanism
+working as D64 describes it, since a child cruising alone at the front is where a phase skew has the
+most near-ties to chatter across. The bias did not invent race 1's improvement; it hid how big it
+was.
+
+Race 1 on honest data is not lonely in any substantive sense: a rival is within 1.5 s for 95% of the
+race and a visible pass lands roughly every 24 s. What race 1 *is* is a race the child leads about
+half of — which is what the gentle opening race is for. There is no race-1 shortfall to log.
+
+**The general lesson, and it is the whole wave in one line: after fixing an instrument, a
+before/after comparison is only valid if BOTH sides are re-measured on the fixed instrument.** Every
+historical figure in this file predating D64 is a crooked-ruler figure, and none of them may be
+compared against a post-D64 number without re-running the old build. The full derivation and the
+mutant table now live in `tests/ai.test.mjs` §2c's header, where the bounds they justify are.
+
+### D65 addendum — there were THREE teaching cards, and the third leaked its modal id
+D65 unified the key contract across two one-time teaching cards. A smoothing pass found a third:
+the garage's "meet Boreg" card (`MEET_BOREG_FLAG` / `shouldShowBoregIntro`) took Escape or Enter
+only and its button named no key. It is now on the same contract — button, Space, Enter, Escape,
+`e.repeat` swallowed for D20, capture phase with `stopPropagation` — and its label names the key
+the way the other two do (`מתחילים! (רווח)` / `Let's start! (Space)`).
+
+Worth recording because the brief's premise for the original item was *"every other in-game modal
+dismisses with Space; this one doesn't"*, and that premise was wrong: two didn't. Fixing only the
+named card would have satisfied the request and left the goal — consistency — unmet, while making
+D65's own "one key contract" claim untrue on the day it was written.
+
+**A real bug fell out of it.** The meet card had TWO dismissal paths: the button, and a bubble-phase
+`document` handler in the garage's own `onKey`. The keyboard path never called `popModal('meet')`,
+so **every Escape/Enter dismissal leaked the modal id** — the audio stayed ducked and any later
+modal-policy check saw a phantom owner of the screen. Only the button released it. The duplicate
+path is deleted; there is now one `closeMeet()` that the button, the keys and `dispose()` all go
+through. This is D15/D18's whole argument arriving as a live defect: two implementations of "go on"
+drift, and only one of them carries the registry call.
+
+Pinned by `tools/modaltest.mjs` section 8c (nine assertions). One honest deviation from 8b's shape,
+stated because it would otherwise look like a weaker gate: **there is no sim to freeze behind this
+card** — the garage animates nothing under `__DEBUG.advance()`, verified by comparing every object
+matrix across a 2 s advance with the card both up and dismissed. A "the world did not move"
+assertion would therefore pass vacuously in every mutant. The frozen-world clause instead reads the
+two things that DO move when the card leaks away: the modal duck, and the unburned save flag. Both
+flip red under the `e.repeat` mutant.

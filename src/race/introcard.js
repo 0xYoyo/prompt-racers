@@ -44,6 +44,32 @@
 //     scrim swallows pointer events and it takes Escape in the CAPTURE phase, so
 //     Escape dismisses the card instead of falling through to input.js and
 //     opening the pause menu over it.
+// ── TEACHING-CARD CADENCE: THIS CARD IS THE CURTAIN, NOT A CARD ─────────────
+// (Wave 5, round 2; primitive in ui/style.js.)
+// This card is never itself deferred for cadence — it stays exactly where it
+// is, pre-countdown, every race. What changed in round 2 is the OTHER half: it
+// no longer calls `noteTeachingCard()` when it closes, so it casts no shadow.
+//
+// Round 1 had it start the clock, and that deleted the first-token explainer
+// outright. Measured on a complete first race: the intro card closes at 1.7s,
+// the first token is picked up at 9.2s — 7.5s later, inside a 15s shadow — so
+// the explainer deferred; and every later pickup fell inside a question box's
+// shadow instead, because trackbuild lays the token rows along the same racing
+// line as the beacons, so pickups CORRELATE with box episodes rather than being
+// independent of them. A child finished race 1 and walked into the garage with
+// `garageTokenIntroSeen` still unset, never having been told what a token is.
+//
+// A 1.7s welcome does not earn a 15s quiet zone, and it is the cheapest card in
+// the game spending the most valuable window in the race. It does not need one
+// either: it closes BEFORE the countdown, so the 3·2·1 plus the drive to the
+// first token is the buffer — nothing in the race can even fire until the world
+// starts moving (the quiz self-gates on `ctx.racing`, and tokens are only
+// collected while `racing`). The first pickup is 7.5s after the card in
+// practice, which is the gap this shadow was pretending to enforce anyway.
+//
+// The in-race cards still space THEMSELVES: the token explainer and every box
+// episode call `noteTeachingCard()` when they close, so nothing lands on the
+// heels of anything that mattered. Gated by tools/modaltest.mjs section 11.
 // NOTE for the lead: pause.js refuses to open over `modalHas('token') ||
 // modalHas('meet')` by name. 'intro' is not in that list. In practice the pause
 // menu is unreachable while the card is up (Escape is taken in capture, the
@@ -76,15 +102,19 @@ const PACK = {
     'intro.know': 'הידעתם?',
     'intro.go': 'יוצאים לדרך',
     'intro.hint': 'רווח או נגיעה במסך',
+    // "מהדוגמאות" is the concrete noun that NAMES training data, on the card
+    // whose whole job is teaching what data is; "שווה לה" keeps someone the
+    // small clean oasis is worth more TO. The em dash is the joint every one of
+    // the three facts now uses between its claim and its elaboration.
     'intro.fact.oasis':
       'נתונים הם המים של הבינה המלאכותית — היא לומדת רק מהדוגמאות שמראים לה. ' +
       'נווה קטן ונקי שווה לה יותר מאגם ענק ובוצי.',
     'intro.fact.circuit':
-      'מאחורי כל תשובה של בינה מלאכותית עומדת רשת נוירונים: מיליוני חיבורים זעירים שנדלקים יחד, ' +
-      'כמו רחובות שנדלקים בעיר בלילה. אף אחד מהם לא יודע את התשובה לבד.',
+      'מאחורי כל תשובה של בינה מלאכותית עומדת רשת נוירונים — מיליוני חיבורים זעירים שנדלקים יחד, ' +
+      'כמו רחובות בעיר בלילה. אף אחד מהם לא יודע את התשובה לבד.',
     'intro.fact.cloud':
-      'הענן הוא בסך הכול מחשבים ענקיים שיושבים במקום אחר בעולם. ' +
-      'הפרומפט שלכם טס אליהם, נענה שם, וחוזר — הכול בשנייה אחת.',
+      'הענן הוא פשוט מחשבים ענקיים במקום אחר בעולם — ' +
+      'הפרומפט שלכם טס אליהם, נענה שם וחוזר, והכול בשנייה אחת.',
   },
   en: {
     'intro.welcome': 'Welcome to',
@@ -96,11 +126,11 @@ const PACK = {
       'Data is the water an AI grows on — it only ever learns from the examples it is shown. ' +
       'A small clean oasis is worth more to it than a huge muddy lake.',
     'intro.fact.circuit':
-      'Behind every AI answer stands a neural network: millions of tiny connections lighting up together, ' +
-      'like streets switching on across a city at night. Not one of them knows the answer alone.',
+      'Behind every AI answer stands a neural network — millions of tiny connections lighting up together, ' +
+      'like streets across a city at night. Not one of them knows the answer alone.',
     'intro.fact.cloud':
-      'The cloud is really just enormous computers sitting somewhere else in the world. ' +
-      'Your prompt flies over to them, gets answered there, and comes back — all in about a second.',
+      'The cloud is just enormous computers somewhere else in the world — ' +
+      'your prompt flies over, gets answered there and comes back, all in about a second.',
   },
 };
 registerStrings(PACK);
@@ -136,6 +166,15 @@ const INTRO_CSS = `
   padding:clamp(16px,4vh,40px);font-family:var(--font);
   background:radial-gradient(120% 90% at 50% 42%,rgba(10,8,22,.52),rgba(4,4,12,.88));
   backdrop-filter:blur(3px);cursor:pointer}
+/* While the card is a CURTAIN (mounted unarmed, with the world still being
+   built behind it) the thing underneath is the PREVIOUS screen — racer select's
+   kart tiles, with the new race's HUD chips already painted over them. The
+   normal scrim is deliberately translucent, which there reads as "the last
+   screen has not left yet". Opaque until arm(), then it drops back to the scrim
+   the child has seen before every other race. Copy, layout and timing are
+   untouched; only what is visible THROUGH it changes, and only during a window
+   that does not exist on any warm entry. */
+.ic-scrim.ic-curtain{background:#0a0816;backdrop-filter:none}
 .ic-card{position:relative;inline-size:min(680px,94%);
   padding:clamp(20px,3.4vh,34px) clamp(22px,3.4vw,40px) clamp(18px,2.8vh,28px);
   display:flex;flex-direction:column;align-items:center;text-align:center;gap:clamp(8px,1.4vh,14px);
@@ -264,8 +303,40 @@ export function introCardEnabled(opts = {}, engine = null) {
  * Mount the card. Returns null if it DEFERS (something else already owns the
  * screen) — the caller then goes straight to the countdown.
  *
- * @param o {track?:number|string, def?:object, mount:HTMLElement, onSkip?:fn}
- * @returns {{el:HTMLElement, open:boolean, skip:Function, dispose:Function}|null}
+ * ── `armed: false`, and why a curtain needs a latch (Wave 6, item 5) ────────
+ * The card is also the mask for the one-off cost of building a track the
+ * session has not seen yet (~1.5-2 s on a real laptop; GAPS' "Starting a
+ * championship still freezes on the FIRST visit to each track"). scenes.js
+ * mounts the card, lets the browser paint it, and only THEN builds the world —
+ * so the freeze happens behind a full curtain instead of behind nothing.
+ *
+ * A synchronous build does not swallow input, it QUEUES it: every keydown and
+ * tap a child makes during those two seconds is dispatched the instant the
+ * build returns, and the first of them would dismiss a card that has been on
+ * screen for zero readable milliseconds. `armed: false` mounts the card inert —
+ * `skip()` refuses until `arm()` is called — so those queued events land on a
+ * card that is not listening and the child simply presses again. It also mounts
+ * the scrim OPAQUE, because what is behind it during that window is the screen
+ * the child just left. Copy, timing on screen, the modal id, the e.repeat guard
+ * and the no-`noteTeachingCard()` rule are all untouched.
+ * `dispose()` always works, armed or not — teardown is not a dismissal.
+ *
+ * WHEN `arm()` IS CALLED IS THE WHOLE MECHANISM, and the first version of this
+ * got it wrong in a way that made the latch completely inert. Arming at the end
+ * of the blocking build runs in the SAME task that queued the input, and the
+ * browser drains that queue before the next rendering opportunity — so the key
+ * arrives a moment later to an already-armed card. Measured by a critic: a Space
+ * dispatched 250 ms into a 2.5 s build was delivered at 2558 ms with
+ * `armed === true`, and the card was gone (`phase: "countdown"`). Pointer taps
+ * behaved identically. The caller must therefore arm after **two animation
+ * frames**, which is strictly later than every queued event.
+ * `tools/transitiontest.mjs` presses a real key mid-build and asserts the card
+ * survives, so this cannot silently revert to a decorative flag.
+ *
+ * @param o {track?:number|string, def?:object, mount:HTMLElement, onSkip?:fn,
+ *           armed?:boolean}
+ * @returns {{el:HTMLElement, open:boolean, armed:boolean, arm:Function,
+ *            setOnSkip:Function, skip:Function, dispose:Function}|null}
  */
 export function createIntroCard(o = {}) {
   if (modalOpen()) return null;                 // defer; see the policy note above
@@ -274,6 +345,12 @@ export function createIntroCard(o = {}) {
   injectIntroCSS();
 
   let open = true;
+  let armed = o.armed !== false;
+  // Settable, because the curtain is now mounted by scenes.js BEFORE raceScene
+  // exists (see the `armed: false` note) and the thing that wants to know about
+  // the dismissal is the race. Nothing can call it before it is set: an unarmed
+  // card cannot be skipped, and the race arms it at the end of its own build.
+  let onSkip = o.onSkip;
   const release = pushModal('intro');
 
   // ONE code path for both inputs (keys and pointer), deliberately: two
@@ -281,11 +358,16 @@ export function createIntroCard(o = {}) {
   // e.repeat guard.
   function skip(source = 'unknown') {
     if (!open) return;
+    // Not armed yet: swallow. See the `armed: false` note above — these are the
+    // keys a child pressed while the world was being built behind the card.
+    if (!armed && source !== 'dispose') return;
     open = false;
     removeEventListener('keydown', onKey, true);
     root.remove();
     release();                                   // popModal('intro')
-    o.onSkip?.(source);
+    // NO noteTeachingCard() here — deliberately, and this is the single most
+    // load-bearing line in the file. See the CURTAIN note in the header.
+    onSkip?.(source);
   }
 
   function onKey(e) {
@@ -320,7 +402,8 @@ export function createIntroCard(o = {}) {
       h('p.ic-fact', null, c.fact)),
     h('div.ic-foot', null, h('span.ic-hint', null, c.hint), btn));
 
-  const scrim = h('div.ic-scrim.on.fade-in', { onclick: () => skip('pointer') }, card);
+  const scrim = h(`div.ic-scrim.on.fade-in${armed ? '' : '.ic-curtain'}`,
+    { onclick: () => skip('pointer') }, card);
   const root = h('div.ic-root', null, scrim);
   o.mount?.appendChild(root);
   btn.focus?.({ preventScroll: true });
@@ -328,6 +411,23 @@ export function createIntroCard(o = {}) {
   return {
     el: root,
     get open() { return open; },
+    get armed() { return armed; },
+    /**
+     * The world behind the card is ready: drop the opaque curtain back to the
+     * normal scrim and allow dismissal.
+     *
+     * MUST NOT be called synchronously at the end of the blocking build — see
+     * the `armed: false` note above. A blocked main thread QUEUES input, and the
+     * queue is drained before the next rendering opportunity, so arming inside
+     * that same task arms the card before the child's keypress is delivered and
+     * the latch swallows nothing at all. Measured: a Space pressed 250 ms into a
+     * 2.5 s build arrived at 2558 ms with `armed === true` and took the card
+     * down. The caller arms after two animation frames, which is strictly after
+     * every queued event.
+     */
+    arm() { armed = true; scrim.classList.remove('ic-curtain'); },
+    /** Late-bound dismissal callback — see `onSkip` above. */
+    setOnSkip(fn) { onSkip = fn; },
     skip,
     dispose() { skip('dispose'); },
   };

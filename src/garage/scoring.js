@@ -3,7 +3,7 @@
 // Nothing in this file is random. Same prompt in, same part out, every time —
 // which is what lets a child form the rule "more specific → better part" by
 // experiment, and what keeps the screenshot harness reproducible.
-import { SLOT_BY_KEY, optionById } from './prompts.js';
+import { SLOT_BY_KEY, optionById, MAX_COST } from './prompts.js';
 import { pickTips } from './tips.js';
 
 // The kart's stat baseline before any garage part is installed.
@@ -415,7 +415,77 @@ export function scoreFreeText(text, slotKey = 'engine', ctx = {}) {
  * and 4 tokens is still a whole part: generous enough to feel earned, never
  * enough to make a visit turn a profit.
  */
-export function tokenReward(score, expert = false) {
-  const raw = score * (expert ? 0.075 : 0.045);
-  return Math.min(expert ? 7 : 4, Math.round(raw));
+/*
+ * Wave 5 — the caps went back UP, 4 → 7 guided and 7 → 8 expert (rates 0.045 →
+ * 0.08 and 0.075 → 0.095), and this is the ONE constant that moved to make the
+ * top tier of the garage reachable at all. The measurement, taken end to end on
+ * the built game across four player profiles × three races × three seeds:
+ *
+ *   engaged + winning   13–17 tokens a race      engaged + mid-pack  13–16
+ *   half-right          10–14                    ignores every box    6–10
+ *
+ * A race therefore still cannot buy the 21-token ask — that invariant is
+ * untouched, because RACE income is untouched. But the wallet a child arrives at
+ * the SECOND garage with is `race1 − spend + rebate + race2`, and at a 4-token
+ * ceiling the rebate was too small to carry anyone there: a child who bought the
+ * best ask they could afford at the first garage arrived at the second with
+ * 16–19 and could never buy the top tier at all. The only way to reach it was to
+ * buy the cheapest possible thing at the first garage — i.e. the game paid you
+ * for NOT engaging with the teaching screen, which is precisely backwards.
+ *
+ * WHY THE REBATE AND NOT THE QUIZ. The obvious lever is the quiz reward, and it
+ * was measured first: an engaged child meets 5–8 question boxes a race, so a
+ * flat 1 → 2 adds 10–16 tokens and puts a 21–25-token RACE on the board. That is
+ * exactly the failure D39 flattened the tiers to prevent, and no compensating
+ * cut to pickups (3–6) or the finish table (5 at the top) can absorb it. The
+ * quiz reward can only be 1 while the top ask is 21; it is left alone, and the
+ * arithmetic is written down in quiz.js so the next person does not re-derive it.
+ * The rebate has none of that problem: it is not race income, so it cannot break
+ * the per-race invariant, and it scales with PROMPT QUALITY — a vague ask still
+ * refunds 1–3 — so it pays for exactly the engagement the target is about.
+ *
+ * The ceiling is DERIVED from the top ask rather than typed beside it. D39's
+ * finding was that "capped below the spend" rotted into "half a race's income"
+ * without anyone editing the line it was written on; a cap that reads off
+ * MAX_COST cannot rot that way. A third of the top ask for guided, one more than
+ * that for expert — both pinned in tests/economy.test.mjs against the derivation
+ * AND against drift, because "< half the top ask" alone let the cap grow 29%
+ * without a gate noticing.
+ *
+ * EXPERT IS ONLY ONE TOKEN ABOVE GUIDED, which is a change of intent from D39's
+ * "expert pays ~1.75×". The reason is the `spend` clamp below: expert mode
+ * charges only for the part row, so the expert rebate is measured against a
+ * 4-token spend and a bigger ceiling buys nothing once the clamp is wired up.
+ * The real incentive to leave the training wheels is the score itself, which
+ * free text alone can push past 90.
+ */
+export const REBATE_CAP = Math.floor(MAX_COST / 3);              // 7
+export const REBATE_CAP_EXPERT = REBATE_CAP + 1;                 // 8
+
+/**
+ * @param {number} score   the garage's 0–100 quality score
+ * @param {boolean} expert free-text mode
+ * @param {number} [spend] what the child actually paid for this build. Optional
+ *   only so existing call sites keep working; PASS IT.
+ *
+ * THE REBATE MUST NEVER EXCEED THE SPEND IT REBATES. That is D17's rule stated
+ * properly, and until Wave 5 it was only true by arithmetic coincidence on the
+ * guided price curve. It is false in EXPERT mode: garage.js computes
+ * `spent() = costOf(st.sel)` and expert mode's `st.sel` carries only the part
+ * row, so an expert build spends 4 whatever the child writes. Typing the game's
+ * own placeholder example scores 92 and refunded 8 — a net +4 conjured out of
+ * nothing every visit, and at a garage entered with the floored 4-token wallet
+ * it handed over a free tier-3 part AND left the child richer than they arrived.
+ * It also routed around D40's "prompt-80 needs a wallet of 17" entirely.
+ *
+ * Clamping here rather than at the call site is deliberate: this is the function
+ * that owns the rule, and a call site that forgets is exactly how the rule rotted
+ * the first time. `spend` is honoured whenever it is a finite non-negative
+ * number, so passing 0 legitimately means "this build was free, so is the rebate".
+ */
+export function tokenReward(score, expert = false, spend = Infinity) {
+  const raw = score * (expert ? 0.095 : 0.08);
+  const cap = expert ? REBATE_CAP_EXPERT : REBATE_CAP;
+  const paid = Number.isFinite(spend) && spend >= 0 ? spend : Infinity;
+  return Math.max(0, Math.min(cap, paid, Math.round(raw)));
 }

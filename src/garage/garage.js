@@ -10,6 +10,12 @@
 // stat bars move before they commit. Specificity is deterministic, visible and
 // paid for in tokens.
 //
+// This file also owns the ONE-TIME "what is a token" teaching card
+// (firstTokenPopup), because the word it teaches is this screen's currency —
+// but the card is shown mid-RACE, mounted by race/race.js the first time a
+// child collects a token. It follows the same key contract as quiz.js's
+// first-question card, down to the key named on the button (D65).
+//
 // ── Two rules this screen is built around ────────────────────────────────────
 // 1. **The screen must never display the answer.** Option cards therefore do NOT
 //    show a specificity rating; the dots appear only in the reveal, where they
@@ -127,7 +133,9 @@ registerStrings({
     'garage.meet.1': 'אני בינה מלאכותית. זאת מכונה שיודעת להבין מילים — ובמקרה שלי, גם לרתך.',
     'garage.meet.2': 'זה עובד ככה: אומרים לי במילים מה רוצים, ואני בונה. בדיוק את מה שכתוב, לא את מה שחשבתם בראש.',
     'garage.meet.3': 'למילים האלה קוראים פרומפט. ככל שהפרומפט מדויק יותר, החלק יוצא טוב יותר — וזה עובד בדיוק אותו דבר עם כל בינה מלאכותית שתפגשו במחשב.',
-    'garage.meet.go': 'מתחילים!',
+    // The key is named on the button, exactly as it is on the other two teaching
+    // cards ('garage.token.go', 'quiz.intro.go') — D65: one contract, one label.
+    'garage.meet.go': 'מתחילים! (רווח)',
     'garage.meet.word': 'פרומפט = מה שמבקשים מבינה מלאכותית, במילים',
 
     // ── First token ever picked up (one-time popup, mounted by the lead) ────
@@ -135,7 +143,10 @@ registerStrings({
     'garage.token.title': 'טוקנים — המטבע של הבינה המלאכותית',
     'garage.token.1': 'כל פרומפט שמבקשים מבינה מלאכותית עולה טוקנים. גם אצל בורג במוסך, וגם באמת.',
     'garage.token.2': 'לכן שווה לאסוף אותם במרוץ — ולחשוב רגע לפני שמבקשים.',
-    'garage.token.go': 'הבנתי!',
+    // The key is named on the button, exactly as quiz.intro.go names it: the
+    // card takes Space, and a card that takes a key without saying so teaches
+    // nobody it does.
+    'garage.token.go': 'הבנתי! (רווח)',
 
     // ── The debrief ─────────────────────────────────────────────────────────
     'garage.debrief.label': 'בורג מסביר',
@@ -240,14 +251,14 @@ registerStrings({
     'garage.meet.1': 'I am an artificial intelligence. A machine that understands words — and in my case, welds too.',
     'garage.meet.2': 'It works like this: you tell me in words what you want, and I build it. Exactly what is written, not what you pictured in your head.',
     'garage.meet.3': 'Those words are called a prompt. The sharper the prompt, the better the part — and it works exactly the same way with every AI you will meet on a computer.',
-    'garage.meet.go': "Let's start!",
+    'garage.meet.go': "Let's start! (Space)",
     'garage.meet.word': 'prompt = what you ask an AI for, in words',
 
     'garage.token.kicker': 'Your first token',
     'garage.token.title': 'Tokens — the currency of AI',
     'garage.token.1': 'Every prompt you send to an AI costs tokens. In Boreg\'s garage, and in real life too.',
     'garage.token.2': 'So they are worth collecting on track — and worth a moment of thought before you spend them.',
-    'garage.token.go': 'Got it!',
+    'garage.token.go': 'Got it! (Space)',
 
     'garage.debrief.label': 'Boreg explains',
     'garage.debrief.title': 'What each line of the prompt did',
@@ -882,12 +893,24 @@ export function firstTokenPopup(o = {}) {
     useTokenCss(false);
     o.onClose?.();
   };
+  // ONE way out, whatever asks for it: the button (mouse, finger, or an
+  // assistive activation), Space/Enter, or Escape — the same set quiz.js's
+  // firstQuizPopup takes, because a child who learns "space goes on" on one
+  // teaching card must not find the next one deaf to it.
+  //
   // Escape closes this rather than falling through to input.js, which would
   // open the pause menu ON TOP of it — and the pause menu's resume then
   // un-freezes the race underneath a modal the child is still reading. Capture
   // phase + stopPropagation, the same discipline ui/menus.js overlays use.
+  //
+  // e.repeat is swallowed, not acted on (D20): Space is also the DRIFT key, and
+  // a child who was holding it when the explainer fired must not have the card
+  // snatched away by a key they never released.
   const onKey = e => {
-    if (e.key !== 'Escape' || closed) return;
+    if (closed) return;
+    const isGo = e.code === 'Space' || e.key === ' ' || e.key === 'Enter';
+    if (!isGo && e.key !== 'Escape') return;
+    if (e.repeat) { e.preventDefault(); return; }
     e.preventDefault(); e.stopPropagation();
     close();
   };
@@ -1402,12 +1425,47 @@ export function garageScene(engine, opts = {}) {
   // Once, ever. Short, in character, and concrete: he does not define "machine
   // learning", he explains what HE does — which is the same thing every AI the
   // child will meet does. The word פרומפט is named here and never dropped again.
+  // The card's single close path — the button, the keys, and dispose() all come
+  // through here, so the modal id can never be released by one and leaked by
+  // another (the key path used to skip popModal('meet') entirely).
+  let meetKeyOff = null;
+  function closeMeet() {
+    if (!st.meet) return;
+    if (meetKeyOff) { meetKeyOff(); meetKeyOff = null; }
+    popModal('meet');
+    st.meet = false;
+    markBoregIntroSeen();
+    render();
+  }
+
   function meetOverlay() {
     pushModal('meet');
-    const go = h('button.btn', {
-      type: 'button',
-      onclick: () => { popModal('meet'); st.meet = false; markBoregIntroSeen(); render(); },
-    }, t('garage.meet.go'));
+    // ONE way out, whatever asks for it: the button (mouse, finger, or an
+    // assistive activation), Space/Enter, or Escape — the same set the token
+    // explainer and quiz.js's firstQuizPopup take (D65). A child who learns
+    // "space goes on" on one teaching card must not find the next one deaf to
+    // it, and the button says which key it is.
+    //
+    // Escape closes THIS rather than falling through to input.js, which would
+    // open the pause menu ON TOP of a card the child is still reading — capture
+    // phase + stopPropagation, the same discipline the other two cards use.
+    //
+    // e.repeat is swallowed, not acted on (D20): Space is also the DRIFT key,
+    // and a child who was holding it when this card appeared must not have it
+    // snatched away by a key they never released.
+    if (!meetKeyOff) {
+      const onMeetKey = e => {
+        if (!st.meet) { meetKeyOff?.(); meetKeyOff = null; return; }
+        const isGo = e.code === 'Space' || e.key === ' ' || e.key === 'Enter';
+        if (!isGo && e.key !== 'Escape') return;
+        if (e.repeat) { e.preventDefault(); return; }
+        e.preventDefault(); e.stopPropagation();
+        closeMeet();
+      };
+      addEventListener('keydown', onMeetKey, true);
+      meetKeyOff = () => removeEventListener('keydown', onMeetKey, true);
+    }
+    const go = h('button.btn', { type: 'button', onclick: closeMeet }, t('garage.meet.go'));
     // `grg-meet-scrim` is what the end-to-end gate looks for when it dismisses
     // one-time modals; it was checking for a class that did not exist.
     return h('div.grg-scrim.grg-meet-scrim', null,
@@ -1923,7 +1981,14 @@ export function garageScene(engine, opts = {}) {
 
   function revealOverlay() {
     const r = st.result;
-    const gain = tokenReward(r.score, st.expert);
+    // The spend is passed so the rebate can never exceed it. Expert mode charges
+    // only for the part row (free text replaces the three priced rows), so an
+    // 8-token rebate against a 4-token spend made an expert build a net PROFIT:
+    // typing the placeholder the screen itself shows scored 92 and left a child
+    // with a free tier-3 part and 4 tokens conjured from nothing — at the first
+    // garage, where the wallet is floored to 4. D17's rule stated properly is
+    // that a rebate is below the SPEND, not below a constant.
+    const gain = tokenReward(r.score, st.expert, spent());
     const ghost = ghostFor(r);
     // The caller needs BOTH halves of the transaction: what the prompt cost and
     // what the build paid. Reporting only `gain` is how the token economy ended
@@ -2023,9 +2088,10 @@ export function garageScene(engine, opts = {}) {
 
   // ── keyboard ───────────────────────────────────────────────────────────────
   function onKey(e) {
-    if (st.meet && (e.key === 'Escape' || e.key === 'Enter')) {
-      st.meet = false; markBoregIntroSeen(); render(); e.preventDefault(); return;
-    }
+    // Boreg's card is NOT handled here: it owns Space/Enter/Escape itself, on a
+    // capture-phase window listener that stops the event before this bubble-phase
+    // listener ever sees it (see meetOverlay). A second implementation of "go on"
+    // is exactly how the e.repeat guard gets left out of one of them.
     if (st.phase === 'reveal' && e.key === 'Escape') {
       st.phase = 'select'; st.result = null; render(); e.preventDefault(); return;
     }
@@ -2124,6 +2190,7 @@ export function garageScene(engine, opts = {}) {
     enter() { layoutKart(); },
     dispose() {
       popModal('meet');            // never leave a phantom behind a torn-down scene
+      if (meetKeyOff) { meetKeyOff(); meetKeyOff = null; }
       document.removeEventListener('keydown', onKey);
       root.remove();
       document.getElementById('grg-style')?.remove();

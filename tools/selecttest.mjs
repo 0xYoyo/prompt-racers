@@ -59,14 +59,22 @@ const evalp = (fn, ...a) => page.evaluate(fn, ...a);
 const scene = () => evalp(() => window.__DEBUG.engine.activeName);
 
 /** Boot the real build with a controlled save, then land on racer select. */
-async function bootSelect({ saveState = {}, lang = 'he', quality = 'high' } = {}) {
+async function bootSelect({ saveState = {}, lang = 'he', quality = 'high', tap = false } = {}) {
   await page.goto('file://' + dist, { waitUntil: 'load', timeout: 60000 });
   await evalp(s => localStorage.setItem('promptracers.v1', JSON.stringify(s)), saveState);
   await page.reload({ waitUntil: 'load', timeout: 60000 });
   await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  // `tap` records every menu:racer BEFORE the screen is entered — that event is
+  // what audio.js turns into the ui.select sound, so the recording is the sound
+  // log. Installed pre-goto so a stray emit during build() is caught too.
+  if (tap) await evalp(() => { window.__RACERTAP = []; window.__DEBUG.bus.on('menu:racer', r => window.__RACERTAP.push(r?.id ?? '?')); });
   await evalp((l, q) => window.__DEBUG.goto('select', { lang: l, quality: q }), lang, quality);
   await wait(350);
 }
+
+/** Selection sounds heard since the last resetTap(), oldest first. */
+const tapped = () => evalp(() => (window.__RACERTAP || []).slice());
+const resetTap = () => evalp(() => { if (window.__RACERTAP) window.__RACERTAP.length = 0; });
 
 const mounted = () => evalp(() => window.__DEBUG.engine.active.mountedKarts());
 const picked = () => evalp(() => window.__DEBUG.engine.active.selectedRacerId());
@@ -138,6 +146,54 @@ await bootSelect();
   await page.click('.mn-card[data-racer="tipa"]');
   await wait(250);
   ok('clicking the ALREADY-selected card still does not race', (await scene()) === 'select', await scene());
+}
+
+/* ══════════════════════════════ 2b. one selection action = one sound ══ */
+// Wave 6 regression: a card is focusable, so a mouse press FOCUSES it (onfocus →
+// select) and then CLICKS it (onclick → select). While select() emitted
+// menu:racer unconditionally that was two events a few ms apart, and audio.js
+// maps menu:racer to ui.select — an audible double click on every pick. The rule
+// pinned here is not "no more than one sound quickly", which a de-bounce would
+// satisfy while the double emit lived on; it is that the emit tracks a real
+// change of selection, so a redundant re-select is silent by construction.
+console.log('\n  2b. exactly one selection sound per selection action');
+{
+  await bootSelect({ tap: true });
+  ok('entering the select screen plays NO selection sound',
+    (await tapped()).length === 0, JSON.stringify(await tapped()));
+
+  await resetTap();
+  await page.click('.mn-card[data-racer="tipa"]'); await wait(250);
+  let t = await tapped();
+  ok('clicking an unselected card emits exactly ONE menu:racer (not the focus+click pair)',
+    t.length === 1 && t[0] === 'tipa', JSON.stringify(t));
+
+  await resetTap();
+  await page.click('.mn-card[data-racer="tipa"]'); await wait(250);
+  t = await tapped();
+  ok('re-clicking the ALREADY-selected card is silent (nothing changed)',
+    t.length === 0, JSON.stringify(t));
+
+  await resetTap();
+  await page.keyboard.press('ArrowLeft'); await wait(250);
+  t = await tapped();
+  ok('one arrow press emits exactly one menu:racer', t.length === 1, JSON.stringify(t));
+
+  await resetTap();
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowRight'); await wait(300);
+  t = await tapped();
+  ok('two arrow presses emit exactly two', t.length === 2, JSON.stringify(t));
+
+  // A pick made with the keyboard and then confirmed with the mouse must not
+  // re-sound: the click lands on a card that is already both focused and picked.
+  await resetTap();
+  await page.click('.mn-card[data-racer="raash"]'); await wait(200);
+  await page.click('.mn-card[data-racer="raash"]'); await wait(200);
+  t = await tapped();
+  ok('picking a card and clicking it again totals ONE sound', t.length === 1, JSON.stringify(t));
+  ok('…and the pick itself still landed', (await picked()) === 'raash', await picked());
+  ok('…and the scene never moved', (await scene()) === 'select', await scene());
 }
 
 /* ═══════════════════════════════════ 3. keyboard: arrows move, Enter waits ══ */

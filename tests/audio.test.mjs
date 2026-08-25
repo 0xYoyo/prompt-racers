@@ -162,6 +162,41 @@ try {
       clearInterval(iv); a.stopEngine();
       return out;
     };
+    // ── a THIRD meter: level + spectral centroid ─────────────────────────────
+    // "Is this cue a duplicate of the token pickup?" is a question about the
+    // SIGNAL, not about the wiring, so it needs an instrument that can hear the
+    // difference between a dark two-note nudge and a bright ascending sparkle.
+    // The centroid (magnitude-weighted mean frequency) is exactly that, and it
+    // is only accumulated on frames that actually contain something — otherwise
+    // the silence between the notes drags every cue toward the same number.
+    const anS = a.ctx.createAnalyser();
+    anS.fftSize = 4096;
+    anS.smoothingTimeConstant = 0;
+    a.master.connect(anS);
+    const bufS = new Float32Array(anS.fftSize);
+    const magS = new Float32Array(anS.frequencyBinCount);
+    window.__measureSpec = ms => new Promise(res => {
+      const binHz = a.ctx.sampleRate / anS.fftSize;
+      let sum = 0, n = 0, peak = 0, wsum = 0, msum = 0;
+      const iv = setInterval(() => {
+        anS.getFloatTimeDomainData(bufS);
+        let s = 0, p = 0;
+        for (let i = 0; i < bufS.length; i++) { const v = bufS[i]; s += v * v; if (Math.abs(v) > p) p = Math.abs(v); }
+        const rms = Math.sqrt(s / bufS.length);
+        sum += rms; n++; if (p > peak) peak = p;
+        if (rms > 0.002) {                       // only frames with real content
+          anS.getFloatFrequencyData(magS);
+          for (let i = 1; i < magS.length; i++) {
+            const m = Math.pow(10, magS[i] / 20);
+            wsum += m * i * binHz; msum += m;
+          }
+        }
+      }, 20);
+      setTimeout(() => {
+        clearInterval(iv);
+        res({ rms: sum / Math.max(1, n), peak, centroid: msum > 0 ? wsum / msum : 0 });
+      }, ms);
+    });
     // Silence every persistent voice so a single source can be measured alone.
     window.__hush = async () => {
       a.stopMusic(0.05); a.stopEngine(); a.drift.stop(a.now, 0.05); a.setAiEngines([]);
@@ -182,6 +217,292 @@ try {
   await page.evaluate(() => window.__hush());
   const quiet = await page.evaluate(() => window.__measure(400));
   ok('idle bus is quiet (proves the meter is honest)', quiet.rms < RMS_FLOOR, `rms ${quiet.rms.toFixed(5)}`);
+
+  // ── 2a. MENU AND BACKDROP SCREENS ARE GAMEPLAY-SILENT (Wave 5) ────────────
+  // Measured on the built game before the fix: sitting on the TITLE SCREEN, whose
+  // backdrop is a real raceScene with a real pack in it, produced 123 overtake
+  // stingers, 2 lap jingles, a best-lap chime, a final-lap warning and a podium
+  // sting in one 400s sit — plus a `race:complete` that scenes.js recorded into
+  // the save and badges.js scored as if it were the child's own race.
+  //
+  // This is deliberately measured on the screen that is SECRETLY RUNNING THE GAME
+  // (the same lesson as the idle-bus check above): a menu-silence assertion taken
+  // on a screen with no simulation behind it proves nothing at all. So the
+  // backdrop is stepped for 90 REAL simulated seconds through the harness while
+  // the meter is open.
+  //
+  // Three separate properties, because they fail in three different ways:
+  //   (a) the live backdrop makes no sound and starts no sounds;
+  //   (b) hand-emitted gameplay events — every one the game can raise — are
+  //       silent on a menu even though the same events are audible in a race;
+  //   (c) THE STRUCTURAL ONE: a sound id that did not exist when audio.js was
+  //       written is silent too if it is registered in a gameplay GROUP, and
+  //       audible if it is registered in the UI group. A hardcoded list of known
+  //       gameplay ids passes (a) and (b) and fails exactly here — which is what
+  //       a future maintainer would actually write, and the same proof D34 used
+  //       for the modal duck.
+  // And the counter-assertion, on the same screen in the same state: music and a
+  // UI click MUST still be heard, or "silent menus" would just be a mute.
+  //
+  // `race:wrongway` is deliberately NOT in the list below, and the reason is the
+  // one thing a categorical gate cannot do: audio.js wires it to `ui.error`, a UI
+  // sound, so on a menu it is allowed BY DESIGN — a menu may blip. It is covered
+  // by (a) instead, because race.js is where it is stopped: the backdrop never
+  // emits it in the first place. Left in the list it added rms 0.004 of legal UI
+  // audio to a silence window and made this assertion sit on its own threshold.
+  // Liveness thresholds. Measured on the shipped build: 14 of the backdrop's
+  // nodes move in 3 seconds, the furthest by 72.9m (a pack of karts at racing
+  // speed). The procedural stand-in menus.js falls back to moves NOTHING in
+  // world space. Set well under the real figure and far above the fallback's
+  // zero, so this fails on a missing backdrop and never on a slow machine.
+  const LIVE_NODES = 6;
+  const LIVE_METRES = 20;
+  const MENU_EVENTS = [
+    ['race:countdown', { n: 2 }], ['race:start', {}], ['race:lap', { lap: 2 }],
+    ['race:bestlap', { ms: 41000 }], ['race:finallap', {}],
+    ['race:position', { from: 4, to: 3 }], ['race:position', { from: 3, to: 4 }],
+    ['race:finish', { position: 1 }],
+    ['token:pickup', { tokens: 3, combo: 2 }],
+    ['kart:collide', { kind: 'wall', speed: 0.9 }], ['kart:collide', { kind: 'kart', speed: 0.7 }],
+    ['surface:change', { surface: 'grass' }], ['surface:change', { surface: 'sand' }],
+    ['drift:start', {}], ['drift:tier', { tier: 2 }], ['drift:boost', { tier: 2 }],
+    ['quiz:correct', {}], ['quiz:wrong', {}], ['quiz:timeout', {}],
+    ['quiz:softToken', { i: 0, x: 0, y: 0, z: 0 }], ['quiz:recharged', {}],
+  ];
+  await page.evaluate(() => window.__DEBUG.goto('menu'));
+  await sleep(500);
+  const menu = await page.evaluate(async evts => {
+    const a = window.__AUDIO, bus = a.bus;
+    const started = [];
+    const realPlay = a.play.bind(a);
+    a.play = (n, o) => {
+      const r = realPlay(n, o);
+      if (r) started.push({ name: n, group: (a.sounds.get(n) || {}).group });
+      return r;
+    };
+    const drain = () => { const out = started.slice(); started.length = 0; return out; };
+    try {
+      // Badge unlocks announce themselves with `garage.reveal` through
+      // `audio:play` (badges.js), and a badge unlocks exactly once per save —
+      // so the first pass over these events would otherwise measure a one-time
+      // congratulation and call it a leaking race. Burn the one-time unlocks off
+      // first, three passes, THEN open the meter. (That cue is UI-class audio and
+      // is allowed on menus by design; it is the screen's own answer to the
+      // child, not a race narrating itself.)
+      for (let pass = 0; pass < 3; pass++) {
+        for (const [name, payload] of evts) bus.emit(name, payload);
+        await new Promise(r => setTimeout(r, 60));
+      }
+      await window.__hush();
+      // 3s, not 0.7s: `results.sting` is 2.6s long and `__hush()` only stops the
+      // PERSISTENT voices, so a one-shot scheduled by the burn-in above is still
+      // ringing after a short wait. Under one mutant the "backdrop is silent"
+      // window read 0.034 of a decaying podium sting — the assertion was
+      // measuring the previous section rather than the backdrop.
+      await new Promise(r => setTimeout(r, 3000));
+      drain();
+      // …and PROVE the isolation rather than assume it: the room must already be
+      // quiet before the window that claims the backdrop is quiet opens.
+      const control = await window.__measure(600);
+
+      // (a) the live backdrop, stepped for 90 simulated seconds.
+      //
+      // FIRST, PROVE THERE IS A BACKDROP. Everything below is an assertion about
+      // a live race behind the logo, and menus.js falls back to a procedural
+      // stand-in — silently, no console error — if `setBackdrop()` was never
+      // called. A build with that one call removed passed all three silence
+      // assertions, printing "90s of simulated racing behind the logo, silent"
+      // over a screen with no race on it at all. An assertion over an empty
+      // sample set is not an assertion. So: snapshot the world positions of the
+      // backdrop scene's nodes, step 3 seconds, and require that a pack of them
+      // actually moved.
+      const scene3d = window.__DEBUG.engine.active?.scene;
+      const snap = [];
+      scene3d?.updateMatrixWorld?.(true);
+      scene3d?.traverse?.(o => {
+        const p = o.getWorldPosition ? o.getWorldPosition(new window.__THREE__.Vector3()) : null;
+        if (p) snap.push({ o, x: p.x, y: p.y, z: p.z });
+      });
+      window.__DEBUG.advance(3);
+      scene3d?.updateMatrixWorld?.(true);
+      let moved = 0, maxMove = 0;
+      for (const s of snap) {
+        const p = s.o.getWorldPosition(new window.__THREE__.Vector3());
+        const d = Math.hypot(p.x - s.x, p.y - s.y, p.z - s.z);
+        if (d > 1) moved++;
+        if (d > maxMove) maxMove = d;
+      }
+      const liveness = { nodes: snap.length, moved, maxMove };
+      // Both layers are checked separately here, because either one alone would
+      // hide a break in the other: the EVENTS the backdrop emits (race.js's
+      // guard) and the SOUND that reaches the bus (audio.js's). With only the
+      // audio-side assertion, a backdrop that emits the whole race again still
+      // measures silent — and the next thing to subscribe to those events, a
+      // crowd, a banner, a save write, would get them.
+      const GAMEPLAY_EVENT = /^(race:|token:|drift:|surface:change|kart:collide|kart:engine)/;
+      const emitted = new Set();
+      const realEmit = bus.emit.bind(bus);
+      bus.emit = (evt, p) => { if (GAMEPLAY_EVENT.test(evt)) emitted.add(evt); return realEmit(evt, p); };
+      const backdropMeter = window.__measure(2500);
+      for (let i = 0; i < 90; i++) { window.__DEBUG.advance(1); await new Promise(r => setTimeout(r, 0)); }
+      const backdrop = await backdropMeter;
+      bus.emit = realEmit;
+      const backdropEvents = [...emitted];
+      const backdropStarted = drain();
+
+      // (b) every gameplay event the game can raise, by hand
+      await window.__hush();
+      const handMeter = window.__measure(1800);
+      for (const [name, payload] of evts) {
+        bus.emit(name, payload);
+        await new Promise(r => setTimeout(r, 45));
+      }
+      // the persistent voices have no `play()` to refuse them — check them too
+      for (let i = 0; i < 30; i++) {
+        bus.emit('kart:engine', { rpm01: 0.9, load: 1, boosting: false, surface: 'asphalt' });
+        bus.emit('drift:charge', { charge: 0.8 });
+        await new Promise(r => setTimeout(r, 16));
+      }
+      const hand = await handMeter;
+      const handStarted = drain();
+      const engineLive = a.engine.enabled;
+
+      // (c) sounds invented right now: same synthesis, different GROUP.
+      //
+      // The version of this probe that only invented a new ID in the KNOWN group
+      // `race` was not the decisive one, and a critic proved it: with the gate
+      // written as a denylist of five gameplay groups, ids registered in `crowd`,
+      // `weather`, `world`, `ambience` and `hazard` all played on the title
+      // screen at ~0.040 rms, and this probe saw none of it. So the probe now
+      // invents a GROUP as well — the exact shape of the next world system
+      // (props.js already has a crowd) — and that is what an allowlist passes
+      // and a denylist cannot.
+      const voice = function (t) {
+        this._tone(t, { type: 'triangle', f: 660, dur: 0.45, peak: 0.30, attack: 0.004 });
+        this._tone(t, { type: 'sine', f: 990, dur: 0.35, peak: 0.18, attack: 0.004 });
+      };
+      a._snd('futureRace.sting', 'race', 0.6, 'probe (known gameplay group)', voice);
+      a._snd('futureCrowd.roar', 'crowd', 0.6, 'probe (group invented at test time)', voice);
+      a._snd('futureWeather.gust', 'weather', 0.6, 'probe (group invented at test time)', voice);
+      a._snd('futureUi.sting', 'ui', 0.6, 'probe (ui group)', voice);
+      await window.__hush();
+      const gm = window.__measure(900);
+      const gameAccepted = a.play('futureRace.sting');
+      const unknownGame = await gm;
+      await window.__hush();
+      const cgm = window.__measure(900);
+      const crowdAccepted = a.play('futureCrowd.roar');
+      const weatherAccepted = a.play('futureWeather.gust');
+      const unknownGroup = await cgm;
+      const um = window.__measure(900);
+      const uiAccepted = a.play('futureUi.sting');
+      const unknownUi = await um;
+
+      // the counter-assertion: this screen is not simply muted
+      await window.__hush();
+      a.playMusic('menu');
+      await new Promise(r => setTimeout(r, 900));
+      const music = await window.__measure(1200);
+      a.stopMusic(0.1);
+      await new Promise(r => setTimeout(r, 600));
+      const cm = window.__measure(900);
+      bus.emit('ui:confirm');
+      const click = await cm;
+      // The RESULTS/PODIUM screen's own flourish. It is a menu screen, so this is
+      // the one gameplay-shaped cue that must still be heard here — and before
+      // `podium.sting` existed it could not be: `podium:show` was wired to a
+      // sound in the `race` group, i.e. to silence, with no error to notice.
+      await window.__hush();
+      await new Promise(r => setTimeout(r, 400));
+      const pm = window.__measure(1400);
+      bus.emit('podium:show');
+      const podium = await pm;
+
+      return {
+        control, liveness,
+        backdrop, backdropStarted, backdropEvents, hand, handStarted, engineLive,
+        gameAccepted, uiAccepted, unknownGame, unknownUi, music, click,
+        crowdAccepted, weatherAccepted, unknownGroup, podium,
+        scene: window.__DEBUG.state().scene,
+      };
+    } finally { a.play = realPlay; }
+  }, MENU_EVENTS);
+
+  // Anything NOT menu-safe leaked. Written as the allowlist's complement on
+  // purpose: a copy of the gameplay list here would go stale the moment a world
+  // group is added, and this gate would stop seeing exactly what it is for.
+  const MENU_SAFE = ['ui', 'garage', 'screen', 'music'];
+  const leaked = list => list.filter(s => !MENU_SAFE.includes(s.group)).map(s => s.name);
+  ok('the silent-menu probe really sat on the title screen', menu.scene === 'menu', menu.scene);
+  // The two assertions that make every silence claim below falsifiable: there IS
+  // a race behind the logo, and the room was already quiet when the meter opened.
+  ok('…and the title backdrop is a LIVE race (not the procedural stand-in)',
+    menu.liveness.moved >= LIVE_NODES && menu.liveness.maxMove > LIVE_METRES,
+    `${menu.liveness.moved}/${menu.liveness.nodes} nodes moved in 3s, max ${menu.liveness.maxMove.toFixed(1)}m `
+    + `(need ${LIVE_NODES} nodes / ${LIVE_METRES}m)`);
+  ok('…and nothing from the previous section is still ringing',
+    menu.control.rms < RMS_FLOOR, `rms ${menu.control.rms.toFixed(5)} before the silence windows open`);
+  ok('the LIVE menu backdrop emits no gameplay EVENTS (race.js)',
+    menu.backdropEvents.length === 0,
+    menu.backdropEvents.length ? 'EMITTED: ' + menu.backdropEvents.join(', ')
+      : '90s of simulated racing behind the logo, not a word');
+  ok('the LIVE menu backdrop starts no gameplay sound',
+    leaked(menu.backdropStarted).length === 0,
+    leaked(menu.backdropStarted).length
+      ? 'SOUNDED: ' + [...new Set(leaked(menu.backdropStarted))].join(', ')
+      : '90s of simulated racing behind the logo, silent');
+  ok('the LIVE menu backdrop is inaudible on the master bus',
+    menu.backdrop.rms < RMS_FLOOR, `rms ${menu.backdrop.rms.toFixed(5)} < ${RMS_FLOOR}`);
+  ok('every gameplay EVENT is silent on a menu screen',
+    leaked(menu.handStarted).length === 0 && menu.hand.rms < RMS_FLOOR,
+    leaked(menu.handStarted).length
+      ? 'SOUNDED: ' + [...new Set(leaked(menu.handStarted))].join(', ')
+      : `${MENU_EVENTS.length} events, rms ${menu.hand.rms.toFixed(5)}`);
+  ok('the engine voice cannot be armed from a menu', menu.engineLive === false);
+  ok('an UNKNOWN gameplay sound id is silent too (group-driven, not a list)',
+    menu.gameAccepted === false && menu.unknownGame.rms < RMS_FLOOR,
+    `accepted=${menu.gameAccepted} rms ${menu.unknownGame.rms.toFixed(5)}`);
+  ok('an UNKNOWN GROUP is silent too (allowlist, not a denylist of five names)',
+    menu.crowdAccepted === false && menu.weatherAccepted === false
+    && menu.unknownGroup.rms < RMS_FLOOR,
+    `crowd=${menu.crowdAccepted} weather=${menu.weatherAccepted} rms ${menu.unknownGroup.rms.toFixed(5)}`);
+  ok('a UI sound invented at the same moment still plays',
+    menu.uiAccepted === true && menu.unknownUi.rms > RMS_FLOOR,
+    `accepted=${menu.uiAccepted} rms ${menu.unknownUi.rms.toFixed(4)}`);
+  ok('menu MUSIC still plays on that same screen',
+    menu.music.rms > RMS_FLOOR, `rms ${menu.music.rms.toFixed(4)}`);
+  ok('a UI click still sounds on that same screen',
+    menu.click.rms > RMS_FLOOR, `rms ${menu.click.rms.toFixed(4)}`);
+  ok('the PODIUM screen can still announce itself (podium:show)',
+    menu.podium.rms > RMS_FLOOR, `rms ${menu.podium.rms.toFixed(4)}`);
+
+  // ── 2a-i. A MODULE PREVIEW IS NOT A MENU ──────────────────────────────────
+  // core/harness.js `bootPreview()` boots every module preview as the scene
+  // `preview`, so the first version of the menu gate muted gameplay audio in the
+  // one place whose entire job is auditioning gameplay audio: a critic running
+  // `tools/preview.mjs --mod src/race/race.js` would measure silence and report a
+  // bug that is not in the module. Asserted here on the same signal the harness
+  // raises — `scene:entered('preview')` — in the real built game.
+  const preview = await page.evaluate(async () => {
+    const a = window.__AUDIO, bus = a.bus;
+    bus.emit('scene:entered', 'preview');
+    await window.__hush();
+    await new Promise(r => setTimeout(r, 300));
+    const m = window.__measure(900);
+    const accepted = a.play('collide.wall', { speed: 1 });
+    return { screen: a._screen, accepted, ...(await m) };
+  });
+  ok('a module PREVIEW is not gated (harness boots it as scene "preview")',
+    preview.screen === null && preview.accepted === true && preview.rms > RMS_FLOOR,
+    `screen=${preview.screen} accepted=${preview.accepted} rms ${preview.rms.toFixed(4)}`);
+
+  // Back to racer select, and onto the screen KIND where world audio is allowed —
+  // everything from here to the real race below measures the sounds themselves,
+  // and `scene:entered('race')` is what puts the game in this state for real.
+  await page.evaluate(() => window.__DEBUG.goto('select'));
+  await sleep(300);
+  await page.evaluate(() => window.__AUDIO.setScreenKind('race'));
+  await page.evaluate(() => window.__hush());
 
   // ── 3. per-source: each family must measurably reach the destination ───────
   const measureSource = async (label, setup, ms = 900) => {
@@ -391,6 +712,138 @@ try {
     + `(must stay above ${RMS_FLOOR} and drop below 75%)`);
   await page.evaluate(() => window.__hush());
 
+  // ── 2c-ii. A HIDDEN TAB PARKS THE AUDIO THREAD (Wave 5, item 7) ───────────
+  // engine.js emits `audio:suspend` / `audio:resume` on visibility change; the
+  // requirement is a REAL suspend, because the symptom being fixed is CPU burn
+  // in a background tab and a graph ramped to zero still renders every voice.
+  //
+  // SILENCE IS NOT MEASURED WITH THE ANALYSER HERE, and that is not a shortcut.
+  // A suspended context processes nothing, so `getFloatTimeDomainData` keeps
+  // handing back the LAST buffer it filled — the meter would read the pre-suspend
+  // audio forever and this assertion would fail on a correct fix and pass on a
+  // ramp. The honest instrument is the context clock: if `currentTime` does not
+  // advance, not one sample was produced. That is silence, and it is also the
+  // exact property "the audio thread stopped" means.
+  const SUSPEND_WINDOW = 700;      // ms of wall time to watch the clock over
+  const susp = await page.evaluate(async ms => {
+    const a = window.__AUDIO, bus = a.bus;
+    const clockRate = async () => {
+      const t0 = a.ctx.currentTime, w0 = performance.now();
+      await new Promise(r => setTimeout(r, ms));
+      return (a.ctx.currentTime - t0) / ((performance.now() - w0) / 1000);
+    };
+    const mixState = () => ({
+      muted: a.muted, master: a.master.gain.value, volume: a.getMasterVolume(),
+      engineBus: a.engineBus.gain.value, musicBus: a.musicBus.gain.value,
+      modalDucked: a._modalDucked, track: a.music.track, theme: a.music.themeId,
+      step: a.music._step,
+    });
+    const out = {};
+    const volumeWas = a.getMasterVolume();
+    try {
+      // ---- 1. plain: music playing, tab hidden, tab back -------------------
+      a.playMusic('race', { theme: 'oasis' });
+      await new Promise(r => setTimeout(r, 900));
+      out.runningRate = await clockRate();
+      out.before = mixState();
+      out.beforeRms = await window.__measure(700);
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 250));
+      out.state = a.ctx.state;
+      out.suspendedRate = await clockRate();
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 300));
+      out.stateAfter = a.ctx.state;
+      out.resumedRate = await clockRate();
+      out.after = mixState();
+      out.afterRms = await window.__measure(700);
+
+      // ---- 2. muted across the round trip ----------------------------------
+      a.setMuted(true, false);
+      a.setMasterVolume(0.62, false);
+      const mutedBefore = mixState();
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 250));
+      // the trap: an unmute or an unlock() while parked would restart the thread
+      a.unlock();
+      const mutedMid = { state: a.ctx.state, muted: a.muted };
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 350));
+      out.muted = { before: mutedBefore, mid: mutedMid, after: mixState() };
+      a.setMuted(false, false);
+
+      // ---- 3. a modal is open across the round trip (D34's duck) -----------
+      a.modal.push('quiz');
+      await new Promise(r => setTimeout(r, 300));
+      const duckBefore = mixState();
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 250));
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 350));
+      out.duck = { before: duckBefore, after: mixState() };
+      a.modal.pop('quiz');
+      await new Promise(r => setTimeout(r, 400));
+
+      // ---- 4. suspend TWICE, then resume once ------------------------------
+      // The bug this pins was real and total: `suspend()` recomputed "was there
+      // anything running" on every call, so a second `audio:suspend` while
+      // already parked recorded FALSE, and the following `audio:resume` then
+      // declined to resume anything. The game went silent for the rest of the
+      // session with no way back. `audio:suspend` is a public bus event, so
+      // "the visibility transition upstream only fires once" is not a defence.
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 200));
+      bus.emit('audio:suspend');
+      await new Promise(r => setTimeout(r, 200));
+      bus.emit('audio:resume');
+      await new Promise(r => setTimeout(r, 400));
+      out.doubled = { state: a.ctx.state, rate: await clockRate(), rms: (await window.__measure(700)).rms };
+      return out;
+    } finally {
+      try { a.modal.pop('quiz'); } catch { /* */ }
+      a.setMuted(false, false);
+      bus.emit('audio:resume');
+      // Put the mix back EXACTLY as found: this probe moves the master volume,
+      // and every level measured after it would otherwise be measured through
+      // 0.62 instead of the shipped 0.75 — a silent 17% shift across the rest of
+      // the gate, which is precisely the kind of hidden common-mode bias D34 is
+      // about. (`persist:false` throughout, so the save is never touched.)
+      a.setMasterVolume(volumeWas, false);
+      a.stopMusic(0.1);
+    }
+  }, SUSPEND_WINDOW);
+
+  const near = (x, y, tol) => Math.abs(x - y) <= tol;
+  ok('audio:suspend really suspends the AudioContext',
+    susp.state === 'suspended', `ctx.state=${susp.state}`);
+  ok('a suspended context produces no samples at all (clock frozen)',
+    susp.suspendedRate < 0.02 && susp.runningRate > 0.8,
+    `clock ran at x${susp.runningRate.toFixed(2)} → x${susp.suspendedRate.toFixed(3)} of real time`);
+  ok('audio:resume restarts the thread', susp.stateAfter === 'running' && susp.resumedRate > 0.8,
+    `ctx.state=${susp.stateAfter}, clock x${susp.resumedRate.toFixed(2)}`);
+  ok('the mix comes back where it was, and music does not restart',
+    susp.afterRms.rms > RMS_FLOOR && susp.after.track === susp.before.track
+    && susp.after.theme === susp.before.theme && susp.after.step >= susp.before.step,
+    `rms ${susp.beforeRms.rms.toFixed(4)} → ${susp.afterRms.rms.toFixed(4)}, `
+    + `${susp.before.track}/${susp.before.theme} step ${susp.before.step} → ${susp.after.step}`);
+  // The two states a maintainer's "resume everything" reflex would clobber.
+  ok('MUTE survives hide/show (and a parked tab cannot be unlocked)',
+    susp.muted.after.muted === true && susp.muted.after.master === 0
+    && susp.muted.mid.state === 'suspended'
+    && near(susp.muted.after.volume, susp.muted.before.volume, 0.001),
+    `muted ${susp.muted.before.muted}→${susp.muted.after.muted}, master ${susp.muted.after.master}, `
+    + `volume ${susp.muted.before.volume}→${susp.muted.after.volume}, mid-state ${susp.muted.mid.state}`);
+  ok('the MODAL DUCK survives hide/show (D34 stays applied)',
+    susp.duck.after.modalDucked === true && susp.duck.after.engineBus < 0.001
+    && near(susp.duck.after.musicBus, susp.duck.before.musicBus, 0.02),
+    `ducked=${susp.duck.after.modalDucked} engineBus ${susp.duck.after.engineBus.toFixed(4)} `
+    + `musicBus ${susp.duck.before.musicBus.toFixed(3)}→${susp.duck.after.musicBus.toFixed(3)}`);
+  ok('suspend is IDEMPOTENT (a second hide cannot strand the game silent)',
+    susp.doubled.state === 'running' && susp.doubled.rate > 0.8 && susp.doubled.rms > RMS_FLOOR,
+    `after suspend,suspend,resume: state=${susp.doubled.state} clock x${susp.doubled.rate.toFixed(2)} `
+    + `rms ${susp.doubled.rms.toFixed(4)}`);
+  await page.evaluate(() => window.__hush());
+
   // ── 2d. master volume API (used by the settings screen) ───────────────────
   const mv = await page.evaluate(() => {
     const a = window.__AUDIO, was = a.getMasterVolume();
@@ -436,6 +889,219 @@ try {
     setTimeout(() => bus.emit('quiz:wrong'), 700);
   `, 1500);
 
+  // ── 3b. THE QUIZ STING'S PLACE IN THE MIX (Wave 5) ────────────────────────
+  // The sting fires 7–10 times a race (D28) over a bed that never rests, so where
+  // it sits relative to the MUSIC is the whole question — an absolute ceiling
+  // would be meaningless the moment the music moves. Pinned as a ratio, measured.
+  //
+  // ONE sweep on ONE long meter (D34): every number below comes from the same
+  // 2.5s / fftSize-32768 windows, run back to back. Taking each on its own short
+  // window is how three parties got three answers out of one build in Wave 4.
+  //
+  // Two traps this measurement has already fallen into, both documented so the
+  // next person does not re-fall into them:
+  //  * THE FIRST SOUND OF A PAGE LOAD IS NOT THE SOUND. The first `quiz:correct`
+  //    of a save unlocks the `quiz-first` badge, and badges.js announces every
+  //    unlock with `garage.reveal` — peak 0.489 on its own. Measured together
+  //    they read peak 0.524, which is the "0.52 quiz stinger" GAPS recorded; the
+  //    sting alone was 0.272. Section 2a above burns the one-time unlocks off
+  //    before anything is measured, which is why this section is honest.
+  //  * BOTH ENDS OR NEITHER. A ratio alone is satisfied by a sting that has been
+  //    turned off, so the floor and the right/wrong contrast are pinned too.
+  const STING_VS_MUSIC = 0.55;    // sting peak as a fraction of music peak
+  // …AND an absolute ceiling, because a ratio alone is satisfied by moving the
+  // OTHER side. Demonstrated: a build with the sting back at its Wave-4 level
+  // (gain 1.0) and the music bus pushed 0.85 → 1.06 printed
+  // "sting 0.272 … music 0.522 … = 0.52 (need < 0.55)" and passed the whole
+  // gate green — the exact level this wave exists to fix, with every sound in
+  // the game 25% louder as the price. Two independent pins, so neither side can
+  // be satisfied by moving the other. 0.26 sits ~20% above the measured 0.216
+  // and ~5% under the 0.272 it must never return to.
+  const STING_PEAK_CEIL = 0.26;
+  const STING_RMS_FLOOR = 0.008;  // it must still be a moment, not a whisper
+  const mix = await page.evaluate(async () => {
+    const a = window.__AUDIO, bus = a.bus;
+    const one = async src => {
+      await window.__hush();
+      await new Promise(r => setTimeout(r, 900));   // let any tail leave the window
+      // eslint-disable-next-line no-new-func
+      await new Function('a', 'bus', src)(a, bus);
+      return window.__measureLF(2500);
+    };
+    return {
+      silence: await one(';'),
+      correct: await one(`bus.emit('quiz:correct');`),
+      wrong: await one(`bus.emit('quiz:wrong');`),
+      music: await one(`a.playMusic('race', { theme: 'oasis' });`),
+      wall: await one(`bus.emit('kart:collide', { kind: 'wall', speed: 1 });`),
+      token: await one(`bus.emit('token:pickup', { combo: 1 });`),
+    };
+  });
+  await page.evaluate(() => window.__hush());
+  console.log(`  \x1b[2mmix sweep (one long meter): sting ${mix.correct.peak.toFixed(3)}/${mix.correct.rms.toFixed(4)}  `
+    + `wrong ${mix.wrong.peak.toFixed(3)}/${mix.wrong.rms.toFixed(4)}  music ${mix.music.peak.toFixed(3)}/${mix.music.rms.toFixed(4)}  `
+    + `wall ${mix.wall.peak.toFixed(3)}  token ${mix.token.peak.toFixed(3)}\x1b[0m`);
+  ok('the mix meter is honest (silence between rows)', mix.silence.rms < RMS_FLOOR,
+    `rms ${mix.silence.rms.toFixed(5)}`);
+  ok('quiz sting sits BELOW the music it plays over',
+    mix.correct.peak < mix.music.peak * STING_VS_MUSIC,
+    `sting peak ${mix.correct.peak.toFixed(3)} vs music ${mix.music.peak.toFixed(3)} `
+    + `= ${(mix.correct.peak / Math.max(1e-9, mix.music.peak)).toFixed(2)} (need < ${STING_VS_MUSIC})`);
+  ok('…and below an ABSOLUTE ceiling (so turning the music up cannot pass it)',
+    mix.correct.peak < STING_PEAK_CEIL,
+    `sting peak ${mix.correct.peak.toFixed(3)} < ${STING_PEAK_CEIL}`);
+  ok('quiz sting is not the loudest event in the game',
+    mix.correct.peak < mix.wall.peak && mix.correct.rms < mix.music.rms,
+    `sting ${mix.correct.peak.toFixed(3)} < wall ${mix.wall.peak.toFixed(3)}, `
+    + `rms ${mix.correct.rms.toFixed(4)} < music ${mix.music.rms.toFixed(4)}`);
+  ok('quiz sting was not "fixed" by silencing it',
+    mix.correct.rms > STING_RMS_FLOOR && mix.correct.peak > mix.token.peak,
+    `rms ${mix.correct.rms.toFixed(4)} > ${STING_RMS_FLOOR}, peak ${mix.correct.peak.toFixed(3)} > token ${mix.token.peak.toFixed(3)}`);
+  ok('right still reads brighter than wrong (the only contrast it carries)',
+    mix.correct.peak > mix.wrong.peak && mix.correct.rms > mix.wrong.rms * 1.2,
+    `correct ${mix.correct.peak.toFixed(3)}/${mix.correct.rms.toFixed(4)} vs `
+    + `wrong ${mix.wrong.peak.toFixed(3)}/${mix.wrong.rms.toFixed(4)}`);
+
+  // ── 3c. THE QUESTION-BOX CUES (Wave 5.1) ──────────────────────────────────
+  // Wave 5.1 redesigned the pickup rules and created two player-facing moments
+  // that had NO sound at all:
+  //   quiz:softToken — drove through a box that was still recharging. It pays no
+  //                    token; it shaves the recharge and sparkles. It used to
+  //                    re-emit `token:pickup` and BORROW that sound, so the
+  //                    regression this section exists to catch is not only
+  //                    "silent" but "sounds like the reward it did not pay".
+  //   quiz:recharged — every box popped back to live. The invitation to go and
+  //                    get one.
+  // Three independent properties, because they fail three different ways:
+  //   (a) the event reaches a sound at all, and it is that cue's OWN sound id —
+  //       asserted on the id `play()` is called with, so wiring either of these
+  //       back to `token.pickup` fails here even though it would meter fine;
+  //   (b) the SIGNAL is real: non-silent, non-clipping, over in well under a
+  //       second, and — for the soft touch — measurably darker and quieter than
+  //       the token pickup, which is the confusion the cue exists to avoid;
+  //   (c) it cannot STACK: the soft touch can fire on consecutive beacons, and
+  //       six copies inside 70ms must not pile into a buzz.
+  // Both cues must be fully gone in the 400ms window that opens once their own
+  // measurement window closes — they are moments, not pads.
+  const SOFT_VS_TOKEN_PEAK = 0.8;  // the nudge must sit clearly under the reward
+  const SOFT_VS_TOKEN_SPEC = 0.8;  // …and clearly darker than it
+  const boxes = await page.evaluate(async () => {
+    const a = window.__AUDIO, bus = a.bus;
+    const reg = n => { const s = a.sounds.get(n); return s ? { group: s.group, dur: s.dur } : null; };
+    // Fire `evt` and report BOTH the sound ids it started and what it measured.
+    //
+    // The measurement window is sized to the CUE, not fixed, and that is not a
+    // thumb on the scale: `rms` here is a mean over the whole window, so a 0.25s
+    // cue measured over 1.1s reads 4x quieter than the same cue measured over
+    // its own length — the soft touch metered 0.0027 that way, under the file's
+    // silence floor, while its peak was 0.069 and the idle bus reads 0.00000.
+    // A floor lowered to accommodate that would stop distinguishing "quiet" from
+    // "gone", which is the one thing this assertion is for. Peak and centroid,
+    // which every cross-cue comparison below uses, are window-length invariant.
+    const fire = async (evt, payload, ms) => {
+      await window.__hush();
+      await new Promise(r => setTimeout(r, 700));
+      const names = [];
+      const realPlay = a.play.bind(a);
+      a.play = (n, o) => { const r = realPlay(n, o); if (r) names.push(n); return r; };
+      try {
+        const m = window.__measureSpec(ms);
+        bus.emit(evt, payload);
+        const out = await m;
+        const tail = await window.__measureSpec(400);   // starts ~ms after the fire
+        return { names, ...out, tailRms: tail.rms };
+      } finally { a.play = realPlay; }
+    };
+    const soft = await fire('quiz:softToken', { i: 1, x: 0, y: 0, z: 0, shaved: 1.2, charge: 0.4 }, 450);
+    const recharged = await fire('quiz:recharged', {}, 750);
+    const token = await fire('token:pickup', { combo: 1 }, 600);
+
+    // (c) six soft touches inside 70ms — the worst case two ghosted beacons on
+    // consecutive frames can produce, exaggerated.
+    await window.__hush();
+    await new Promise(r => setTimeout(r, 700));
+    const burstNames = [];
+    const realPlay = a.play.bind(a);
+    a.play = (n, o) => { const r = realPlay(n, o); if (r) burstNames.push(n); return r; };
+    let burst;
+    try {
+      const m = window.__measureSpec(1100);
+      for (let i = 0; i < 6; i++) {
+        bus.emit('quiz:softToken', { i, x: 0, y: 0, z: 0 });
+        await new Promise(r => setTimeout(r, 12));
+      }
+      burst = await m;
+    } finally { a.play = realPlay; }
+    return {
+      soft, recharged, token, burst, burstPlays: burstNames.length,
+      regSoft: reg('quiz.soft'), regRecharged: reg('quiz.recharged'),
+    };
+  });
+  await page.evaluate(() => window.__hush());
+  console.log(`  \x1b[2mbox cues: soft ${boxes.soft.peak.toFixed(3)}/${boxes.soft.rms.toFixed(4)}/`
+    + `${Math.round(boxes.soft.centroid)}Hz  recharged ${boxes.recharged.peak.toFixed(3)}/`
+    + `${boxes.recharged.rms.toFixed(4)}/${Math.round(boxes.recharged.centroid)}Hz  `
+    + `token ${boxes.token.peak.toFixed(3)}/${boxes.token.rms.toFixed(4)}/`
+    + `${Math.round(boxes.token.centroid)}Hz\x1b[0m`);
+
+  ok('quiz.soft is registered as a gameplay-group sound of sane length',
+    !!boxes.regSoft && boxes.regSoft.group === 'quiz'
+    && boxes.regSoft.dur > 0.05 && boxes.regSoft.dur < 0.8,
+    boxes.regSoft ? `group=${boxes.regSoft.group} dur=${boxes.regSoft.dur}` : 'NOT REGISTERED');
+  ok('quiz.recharged is registered as a gameplay-group sound of sane length',
+    !!boxes.regRecharged && boxes.regRecharged.group === 'quiz'
+    && boxes.regRecharged.dur > 0.1 && boxes.regRecharged.dur < 1.2,
+    boxes.regRecharged ? `group=${boxes.regRecharged.group} dur=${boxes.regRecharged.dur}` : 'NOT REGISTERED');
+
+  ok('quiz:softToken plays its OWN cue (not the token reward, not silence)',
+    boxes.soft.names.length > 0 && boxes.soft.names.includes('quiz.soft')
+    && !boxes.soft.names.includes('token.pickup'),
+    boxes.soft.names.length ? boxes.soft.names.join(', ') : 'SILENT — no sound started');
+  ok('quiz:recharged plays its OWN cue (not the token reward, not silence)',
+    boxes.recharged.names.length > 0 && boxes.recharged.names.includes('quiz.recharged')
+    && !boxes.recharged.names.includes('token.pickup'),
+    boxes.recharged.names.length ? boxes.recharged.names.join(', ') : 'SILENT — no sound started');
+
+  ok('the soft-touch cue is a real, bounded signal',
+    boxes.soft.rms > RMS_FLOOR && boxes.soft.peak < PEAK_CEIL && boxes.soft.tailRms < RMS_FLOOR,
+    `rms ${boxes.soft.rms.toFixed(4)} peak ${boxes.soft.peak.toFixed(3)}, `
+    + `and gone in the next window (tail rms ${boxes.soft.tailRms.toFixed(5)})`);
+  ok('the recharged cue is a real, bounded signal',
+    boxes.recharged.rms > RMS_FLOOR && boxes.recharged.peak < PEAK_CEIL
+    && boxes.recharged.tailRms < RMS_FLOOR,
+    `rms ${boxes.recharged.rms.toFixed(4)} peak ${boxes.recharged.peak.toFixed(3)}, `
+    + `and gone in the next window (tail rms ${boxes.recharged.tailRms.toFixed(5)})`);
+
+  // The signal-level version of "it must not over-promise the currency": quieter
+  // AND darker than the pickup it used to borrow. A copy of token.pickup under a
+  // new id passes every wiring assertion above and fails right here.
+  ok('the soft touch does not sound like the token reward (quieter and darker)',
+    boxes.soft.peak < boxes.token.peak * SOFT_VS_TOKEN_PEAK
+    && boxes.soft.centroid < boxes.token.centroid * SOFT_VS_TOKEN_SPEC,
+    `peak ${boxes.soft.peak.toFixed(3)} vs token ${boxes.token.peak.toFixed(3)} `
+    + `(need < ${SOFT_VS_TOKEN_PEAK}x), centroid ${Math.round(boxes.soft.centroid)}Hz vs `
+    + `${Math.round(boxes.token.centroid)}Hz (need < ${SOFT_VS_TOKEN_SPEC}x)`);
+  // …and the recharged cue is its own sound too, not the pickup re-voiced: a
+  // duplicate would land within a few percent on both axes at once.
+  const rDiff = Math.max(
+    Math.abs(boxes.recharged.peak / Math.max(1e-9, boxes.token.peak) - 1),
+    Math.abs(boxes.recharged.centroid / Math.max(1e-9, boxes.token.centroid) - 1));
+  ok('the recharged cue is distinguishable from the token pickup', rDiff > 0.15,
+    `differs by ${(rDiff * 100).toFixed(0)}% on peak/centroid (need > 15%)`);
+
+  // The soft touch and the recharge are two different answers, so they must not
+  // be the same sound as each other either.
+  const sDiff = Math.max(
+    Math.abs(boxes.soft.peak / Math.max(1e-9, boxes.recharged.peak) - 1),
+    Math.abs(boxes.soft.centroid / Math.max(1e-9, boxes.recharged.centroid) - 1));
+  ok('the two box cues are distinguishable from each other', sDiff > 0.15,
+    `differs by ${(sDiff * 100).toFixed(0)}%`);
+
+  ok('six soft touches in 70ms cannot stack into a buzz',
+    boxes.burstPlays <= 2 && boxes.burst.peak < boxes.soft.peak * 1.8,
+    `${boxes.burstPlays} voice(s) for 6 events, burst peak ${boxes.burst.peak.toFixed(3)} `
+    + `vs single ${boxes.soft.peak.toFixed(3)}`);
+
   for (const theme of ['oasis', 'circuit', 'cloud']) {
     await measureSource(`music — ${theme}`, `a.playMusic('race', { theme: ${JSON.stringify(theme)} });`, 1600);
   }
@@ -454,6 +1120,10 @@ try {
     ['surface:change', { surface: 'grass' }], ['surface:change', { surface: 'sand' }],
     ['drift:start', {}], ['drift:tier', { tier: 2 }], ['drift:boost', { tier: 2 }],
     ['quiz:correct', {}], ['quiz:wrong', {}], ['quiz:timeout', {}],
+    // Wave 5.1's question-box moments — the pickup rules emit these and nothing
+    // else does, so a rename on either side is silence that looks like nothing
+    // happened. See section 3c.
+    ['quiz:softToken', { i: 0, x: 0, y: 0, z: 0 }], ['quiz:recharged', {}],
     ['ui:hover', {}], ['ui:select', {}], ['ui:confirm', {}], ['ui:back', {}],
     ['garage:build', {}], ['garage:reveal', { tier: 3 }],
   ];

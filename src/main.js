@@ -23,6 +23,11 @@ export function boot(mountEl, opts = {}) {
   audio.init();
   applyDir();
   engine.init(mountEl);
+  // The measured quality probe is armed HERE and nowhere else: this is the only
+  // entry point a child ever comes through, so gates and previews get the fixed
+  // AUTO_TIER by construction rather than by sniffing for a test harness (see
+  // the note above AUTO_TIER in engine.js, and D35).
+  engine.enableQualityProbe();
   for (const [name, factory] of Object.entries(SCENES)) engine.register(name, factory);
   engine.start();
   engine.goto(opts.scene || 'menu', opts.sceneOpts || {});

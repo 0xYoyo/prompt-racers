@@ -10,7 +10,18 @@ import { existsSync, mkdirSync } from 'fs';
 // The economy gate compares against the garage's OWN prices rather than a copy of
 // them, so a price change shows up here as a failing band instead of a stale
 // comment. prompts.js is pure data + i18n registration, so it imports in node.
-import { MAX_COST, MIN_COMPLETE_COST } from '../src/garage/prompts.js';
+import { MAX_COST, MIN_COMPLETE_COST, KART_SLOTS, optionsFor, costOf } from '../src/garage/prompts.js';
+// The carryover half of the economy gate (Wave 5) needs the garage's own scorer
+// and its own rebate, for the same reason the line above imports its prices: a
+// copy of them here would pass while the game had moved.
+import { scorePrompt, tokenReward, REBATE_CAP } from '../src/garage/scoring.js';
+// Wave 6 — the pickup economy is now TWO numbers that must be pinned together:
+// how many rows the lap shows a child, and what those rows pay. Imported, not
+// typed, for the same reason the prices are: a copy here would pass while the
+// game moved. race.js is pure enough to import in node (tests/economy.test.mjs
+// has done it since Wave 4).
+import { TOKEN_CLUSTERS_PER_LAP, FINISH_TOKENS } from '../src/race/race.js';
+import { REWARD_TOKENS } from '../src/race/quiz.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -830,7 +841,43 @@ try {
   // ═══════════════════════════════════════════════════════════════════════
   async function seamGates() {
     console.log('  ' + '─'.repeat(70));
-    console.log('  CROSS-MODULE SEAMS (crowd clock · quiz memory)');
+    console.log('  CROSS-MODULE SEAMS (crowd clock · quiz memory · finale scaling)');
+
+    // ── S#0 the finale's field scales with the child's own garage ──────────
+    // Wave 6 made race 3's opponents run a tier above the player's engine/turbo
+    // so an upgrade raises the stage instead of trivialising it (D58). The whole
+    // feature hangs on ONE argument at ONE call site in race.js —
+    // `playerParts: toPhysicsParts(parts)` — and `tests/ai.test.mjs` cannot see
+    // it, because that file builds its own `createAIField` and passes the option
+    // itself. So the entire feature can be inert in the built game with every
+    // balance assertion in the project still green.
+    //
+    // THAT IS NOT HYPOTHETICAL: the line was lost once during Wave 6 to a stale
+    // `.tmp/` restore in a shared tree (D45), and nothing went red. This block
+    // is the only thing in the repo that would have noticed.
+    //
+    // The `wing` case is the D24 seam in its own right. The garage saves
+    // {engine, tires, wing, chassis}; the physics wants {engine, tyres, frame,
+    // turbo}. Handing `createAIField` the RAW save shape resolves `turbo` to
+    // undefined -> tier 0, so a child who spent everything on the turbo would
+    // meet the stock field and the bug would be invisible on the engine case.
+    const partTierFor = (track, difficulty, parts) => page.evaluate(async (t, d, p) => {
+      await window.__DEBUG.goto('race', { track: t, difficulty: d, parts: p, seed: 4242 });
+      return window.__DEBUG.engine.active?.field?.partTier ?? null;
+    }, track, difficulty, parts);
+
+    const finaleStock = await partTierFor(2, 3, {});
+    step('S#0 the finale field is tier 2 for a stock kart (Wave 5.1, unchanged)',
+      finaleStock === 2, `partTier ${finaleStock}`);
+    const finaleEngine = await partTierFor(2, 3, { engine: 2 });
+    step('S#0 …and tier 3 once the child arrives with a tier-2 engine',
+      finaleEngine === 3, `partTier ${finaleEngine} (the scaling is wired through race.js)`);
+    const finaleWing = await partTierFor(2, 3, { wing: 2 });
+    step('S#0 …and for a tier-2 WING too — the save/physics slot names are translated',
+      finaleWing === 3, `partTier ${finaleWing} (garage "wing" -> physics "turbo")`);
+    const race1Upgraded = await partTierFor(0, 1, { engine: 3, wing: 3 });
+    step('S#0 …and race 1 is untouched by the garage, as the blast radius requires',
+      race1Upgraded === 0, `partTier ${race1Upgraded}`);
 
     // ── S#1 the crowd's clock runs backwards at every race start ───────────
     // race.js feeds the crowd `S.clock` during the countdown and `S.raceTime`
@@ -1360,9 +1407,38 @@ try {
   // that wins — and answers every question box it meets, correctly, through the
   // real answer buttons. The result is the whole wallet, by source, for exactly
   // the child the economy is aimed at.
-  async function economyGate() {
-    const SAVE_KEY = 'promptracers.v1';
-    console.log('\n  TOKEN ECONOMY — a winning, fully engaged race\n  ' + '─'.repeat(70));
+  // The best ask a given wallet can buy, enumerated over the garage's REAL price
+  // list and scored by the garage's REAL scorer. `ceiling` lets the caller ask
+  // "the best ask costing no more than N", which is how a child who means to save
+  // something for next time shops.
+  const askTable = [];
+  for (let b = 0; b <= 30; b++) {
+    let best = { score: 0, cost: 0 };
+    for (const part of KART_SLOTS)
+      for (const g of optionsFor('goal', part))
+        for (const l of optionsFor('constraint', part))
+          for (const s of optionsFor('style', part)) {
+            const sel = { part, goal: g.id, constraint: l.id, style: s.id };
+            const cost = costOf(sel);
+            if (cost > b) continue;
+            const score = scorePrompt(sel).score;
+            if (score > best.score || (score === best.score && cost < best.cost)) best = { score, cost };
+          }
+    askTable[b] = best;
+  }
+  const bestAskUpTo = n => askTable[Math.max(0, Math.min(30, n))];
+  // The wallet a child arrives at the SECOND garage with, exactly as scenes.js
+  // computes it: race 1, spend, rebate, race 2.
+  const walletAtSecondGarage = (r1, buy, r2) => r1 - buy.cost + tokenReward(buy.score, false, buy.cost) + r2;
+
+  const SAVE_KEY = 'promptracers.v1';
+  /**
+   * Drive one real race to the flag on the game's own autopilot and return the
+   * result object the results screen reads. `answer` is the child:
+   *   'all'  — answers every question box, correctly (an engaged child)
+   *   'none' — never touches a box (a disengaged one; they time out)
+   */
+  async function driveRace({ track, difficulty, seed, answer }) {
     await page.evaluate(k => localStorage.setItem(k, JSON.stringify({
       racerId: 'nitzotz', results: [], championshipRace: 0,
       // The one-time explainers own their own dismissal and are gated elsewhere;
@@ -1371,24 +1447,26 @@ try {
     })), SAVE_KEY);
     await page.reload({ waitUntil: 'load', timeout: 60000 });
     await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
-    await page.evaluate(() => window.__DEBUG.goto('race', {
-      track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: false,
-    }));
+    await page.evaluate(o => window.__DEBUG.goto('race', o),
+      { track, difficulty, seed, autopilot: true, introCard: false });
 
-    const run = await page.evaluate(async () => {
+    return page.evaluate(async (answer) => {
       const D = window.__DEBUG;
       const sc = D.engine.active;
       const q = sc.quiz;
       const STEP = 1 / 60;
       let answered = 0, correct = 0, opened = 0;
       const off = D.bus.on('quiz:open', () => { opened++; });
-      for (let i = 0; i < 60 * 600 && !window.__LAST_RESULT__; i++) {
+      // The disengaged run lets every box time out, and a timeout costs a 24s
+      // cooldown of slow motion — so it needs a much longer sim budget than the
+      // engaged one, or it "fails to reach the flag" for a pacing reason.
+      for (let i = 0; i < 60 * 1800 && !window.__LAST_RESULT__; i++) {
         D.engine.time += STEP;
         sc.update(STEP);
         // A child dismisses things; so does this.
         const scrim = document.querySelector('.grgtok-scrim, .qzint-scrim, .ic-scrim');
         if (scrim && scrim.offsetParent !== null) { scrim.querySelector('button')?.click(); continue; }
-        if (q && q.phase === 'question') {
+        if (q && q.phase === 'question' && answer === 'all') {
           // `correctSlot` is the panel's own answer: the three options are
           // shuffled per showing, so nothing outside it can know which is right,
           // which is why no automated driver had ever answered one.
@@ -1402,7 +1480,17 @@ try {
       off();
       const r = window.__LAST_RESULT__;
       return { r, opened, answered, correct, beacons: q?.beaconCount ?? 0 };
-    });
+    }, answer);
+  }
+
+  // The engagement envelope tests/economy.test.mjs is written against, restated
+  // here so the two gates cannot disagree about what "a fully engaged race"
+  // means. Measured on the built game; see that file's header for the runs.
+  const MAX_QUESTIONS_PER_RACE = 9;
+
+  async function economyGate() {
+    console.log('\n  TOKEN ECONOMY — a winning, fully engaged race\n  ' + '─'.repeat(70));
+    const run = await driveRace({ track: 0, difficulty: 1, seed: 3, answer: 'all' });
 
     const r = run.r;
     if (!r) { step('E: the engaged race reached the flag', false, `${run.opened} questions opened`); return; }
@@ -1432,11 +1520,458 @@ try {
     step('E: every source still pays something (pickups / quiz / finish)',
       r.tokensFromPickups > 0 && r.tokensFromQuiz > 0 && r.tokensFinishBonus > 0,
       `${r.tokensFromPickups} / ${r.tokensFromQuiz} / ${r.tokensFinishBonus}`);
+
+    // ── WAVE 6: THE ROW COUNT AND THE ROW INCOME, PINNED TOGETHER ───────────
+    // Until Wave 6 these were the same number — a taken row came back inside a
+    // lap, so "rows on the lap" × "laps" WAS the income, and the only way to
+    // hold the wallet down was to author one row and give the child one pickup
+    // moment a lap. They are separate levers now (TOKEN_CLUSTERS_PER_LAP for
+    // what the child sees, TOKEN_RESPAWN_S / TOKEN_ROW_CLEAR_S for what it
+    // pays), and BOTH halves need a gate or the change undoes itself:
+    //   • drop the count back to one row and the lap goes quiet again;
+    //   • leave the count up but let the rows pay per lap again and the wallet
+    //     drifts up behind an invariant that still happens to hold.
+    step('E: the lap still shows a child three or more pickup rows',
+      TOKEN_CLUSTERS_PER_LAP >= 3, `${TOKEN_CLUSTERS_PER_LAP} rows a lap`);
+    // The ceiling is DERIVED, not typed: it is whatever is left under the top
+    // ask once the richest possible quiz and the best finish are paid. Retune
+    // anything upstream and this moves with it — D40's rule for badge
+    // thresholds, applied to the one term that has no other guard.
+    const maxReward = Math.max(...[1, 2, 3].map(t2 => REWARD_TOKENS[t2]));
+    const PICKUP_CEIL = MAX_COST - 1 - MAX_QUESTIONS_PER_RACE * maxReward - FINISH_TOKENS[0];
+    // Floor 2, not 3: measured across three tracks × three seeds, the racing
+    // line misses two of the three rows outright on `oasis` on some seeds. It is
+    // the ceiling that is doing the work here — the floor is only there so a
+    // change that empties the track cannot pass as "income held".
+    // STRICTLY under the ceiling (round 2). `<= PICKUP_CEIL` had no margin at
+    // all: circuit measured exactly 6 against a ceiling of 6, so the gate was
+    // one token from green-and-broken and could not distinguish "held" from
+    // "just made it". The ceiling cannot be raised — it is what is LEFT under
+    // the top ask once the richest quiz and the best finish are paid — so the
+    // headroom has to be taken out of the measurement instead. Measured after
+    // the round-2 beacon clamp: oasis 4, circuit 5, cloud 4 (engaged, winning).
+    step('E: …and the extra rows did NOT raise what pickups pay',
+      r.tokensFromPickups >= 2 && r.tokensFromPickups < PICKUP_CEIL,
+      `${r.tokensFromPickups} pickups; floor 2, ceiling ${PICKUP_CEIL}`
+      + ` (${PICKUP_CEIL - r.tokensFromPickups} of margin)`
+      + ` = ${MAX_COST} − 1 − ${MAX_QUESTIONS_PER_RACE}×${maxReward} quiz − ${FINISH_TOKENS[0]} win`);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CARRYOVER — the Wave-5 target: the top tier must be REACHABLE.
+    //
+    // Everything above measures ONE race, and one race is deliberately not
+    // enough to buy the 21-token ask (that is invariant A, and it is what stops
+    // the garage becoming a shop where everything is affordable). But the wallet
+    // CARRIES, so what a child can actually buy is decided at the second garage,
+    // by `race1 − spend + rebate + race2` — and until Wave 5 nothing in this file
+    // looked at that number. It was possible for the top tier of the teaching
+    // screen to be unreachable in real play with every assertion above green.
+    //
+    // So: drive race 2 as well (it is a DIFFERENT track at a DIFFERENT pace —
+    // the reason this must be measured rather than doubled), drive one race as a
+    // child who never touches a question box, and run the real prices, the real
+    // scorer and the real rebate over both.
+    const run2 = await driveRace({ track: 1, difficulty: 2, seed: 3, answer: 'all' });
+    const idle = await driveRace({ track: 0, difficulty: 1, seed: 3, answer: 'none' });
+    if (!run2.r || !idle.r) {
+      step('E2: the carryover races reached the flag', false,
+        `engaged race 2 ${run2.r ? 'ok' : 'MISSING'}, disengaged race ${idle.r ? 'ok' : 'MISSING'}`);
+    } else {
+      const R1 = r.tokens, R2 = run2.r.tokens, RI = idle.r.tokens;
+      // A child who ignores the boxes must still be recognisable AS that child in
+      // the numbers — if the two profiles bank the same, the assertions below are
+      // measuring nothing.
+      // The row economy on the OTHER track too. This matters more than it looks:
+      // the pickup ceiling above is measured on `oasis`, whose racing line is
+      // the LEANEST of the three, so a change that makes rows pay per lap again
+      // barely moves it — measured, per-token retirement (the mutant this gate
+      // was checked against) paid 4 on oasis and 7 on circuit. A ceiling gate
+      // that only ever looks at the poorest track is not a ceiling gate.
+      step('E2: race 2 pays for its rows the same way race 1 does',
+        run2.r.tokensFromPickups >= 2 && run2.r.tokensFromPickups < PICKUP_CEIL,
+        `${run2.r.tokensFromPickups} pickups on race 2; floor 2, ceiling ${PICKUP_CEIL}`
+        + ` (${PICKUP_CEIL - run2.r.tokensFromPickups} of margin)`);
+      step('E2: the disengaged run really is disengaged (no quiz income)',
+        idle.r.tokensFromQuiz === 0 && idle.opened >= 3 && RI < R1,
+        `${idle.opened} boxes met, ${idle.correct} answered → ${RI} banked vs the engaged ${R1}`);
+
+      // THE TARGET, asserted against the policy a CHILD ACTUALLY FOLLOWS.
+      //
+      // The first version of this searched for ANY first-garage spend that left
+      // the top tier in reach, and passed as soon as one existed — i.e. it proved
+      // a perfectly-chosen reserve exists, which is not a thing an eight-year-old
+      // computes. Nobody plays a garage by solving for the optimal reserve; they
+      // buy the best thing they can afford. So the assertion is that policy, and
+      // the search result is kept only as the printed margin beside it.
+      const intuitive = bestAskUpTo(R1);                     // "buy the best I can afford"
+      const intuitiveWallet = walletAtSecondGarage(R1, intuitive, R2);
+      // The best a child could do WITH restraint, for the margin line: the most
+      // expensive real ask (at least twice the cheapest complete one) that still
+      // leaves the top tier affordable.
+      const REAL_ASK = MIN_COMPLETE_COST * 2;
+      let reserved = null, reservedWallet = 0;
+      for (let cap = R1; cap >= REAL_ASK; cap--) {
+        const ask = bestAskUpTo(cap);
+        if (ask.cost < REAL_ASK) continue;
+        const w = walletAtSecondGarage(R1, ask, R2);
+        if (w >= MAX_COST) { reserved = ask; reservedWallet = w; break; }
+      }
+      console.log(`        \x1b[2mcarryover: race1 ${R1} + race2 ${R2}`
+        + `  ·  buy-the-best-affordable: spend ${intuitive.cost} (score ${intuitive.score},`
+        + ` rebate ${tokenReward(intuitive.score, false, intuitive.cost)}) → ${intuitiveWallet}`
+        + (reserved ? `  ·  with restraint: spend ${reserved.cost} → ${reservedWallet}` : '  ·  no reserve reaches it')
+        + `  ·  disengaged ${RI}+${RI}  ·  top ask ${MAX_COST}\x1b[0m`);
+      // THE TARGET: reachable by spending REAL money at the first garage. This is
+      // an existence claim over the child's actual choice set — "there is a real
+      // ask you can buy and still get there" — and it is computed from THIS
+      // engaged run's own R1 and R2, so a lucky disengaged race cannot satisfy it.
+      step('E2: an engaged child reaches a top-tier ask by the second garage',
+        !!reserved && reservedWallet >= MAX_COST,
+        reserved
+          ? `${R1} − ${reserved.cost} + ${tokenReward(reserved.score, false, reserved.cost)} + ${R2}`
+            + ` = ${reservedWallet} vs the ${MAX_COST} top ask`
+          : `nothing costing ${REAL_ASK}+ leaves ${MAX_COST} in reach`);
+      step('E2: …and the ask it takes is a real one, not the cheapest on the screen',
+        !!reserved && reserved.cost >= REAL_ASK,
+        reserved ? `spent ${reserved.cost} at the first garage, cheapest complete ask is ${MIN_COMPLETE_COST}` : '—');
+      // …AND HOW FAR THE UNRESERVED CHILD FALLS SHORT, pinned rather than left to
+      // the printout. Nobody plays a garage by solving for the optimal reserve —
+      // they buy the best thing they can afford — and on the poorest engaged pair
+      // that policy lands SHORT. That is a real trade and not a punishment (the
+      // spender wins 12 more championship points across the two parted races than
+      // the hoarder; measured in .tmp/placecost.mjs), but it must not be allowed
+      // to grow: at more than half a rebate short, the top tier stops being one
+      // good prompt away and becomes a different order of magnitude, which is the
+      // state Wave 5 was opened to fix. Reverting the rebate to its Wave-4 value
+      // makes this 5 short and turns it red.
+      const short = MAX_COST - intuitiveWallet;
+      step('E2: …and the child who just buys the best they can afford is at most half a rebate short',
+        short <= REBATE_CAP / 2,
+        short <= 0
+          ? `reaches it outright (${intuitiveWallet} vs ${MAX_COST})`
+          : `${short} short of ${MAX_COST} (spent ${intuitive.cost}), bar is ${REBATE_CAP / 2}`);
+
+      // The other half, and the half that is easy to lose: making the top tier
+      // reachable must not make it reachable for a child who engaged with
+      // nothing. Measured against the most GENEROUS thing that child can do —
+      // buy the cheapest complete ask and bank everything else, twice.
+      const idleWallet = walletAtSecondGarage(RI, bestAskUpTo(MIN_COMPLETE_COST), RI);
+      step('E2: a child who ignores every box still cannot, however they hoard',
+        idleWallet < MAX_COST,
+        `${RI} − ${MIN_COMPLETE_COST} + ${tokenReward(bestAskUpTo(MIN_COMPLETE_COST).score, false, MIN_COMPLETE_COST)} + ${RI}`
+        + ` = ${idleWallet} vs the ${MAX_COST} top ask`);
+    }
+    await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE RACE OPENING, ON THE BUILT GAME (Wave 6, items 3 and 4).
+  //
+  // Two things are measured on ONE fresh-save race, because both are about what
+  // the first minute of a child's first race feels like and neither is worth a
+  // second forty-second run:
+  //
+  //   • THE CARD ORDER. On a fresh save three teaching cards can land in the
+  //     first race: the pre-race welcome card, the first-token explainer, and
+  //     the first-question-box explainer. They must arrive in that order —
+  //     "here is a token, and here is what tokens are" before "here is a
+  //     question box" — and the ONLY thing that makes that true is where the
+  //     track puts the first pickup row relative to the first beacon
+  //     (tests/beacons.test.mjs holds the geometry; this holds the consequence
+  //     on the real build). Measured before the layout rule, `oasis` put a
+  //     beacon 25 m from the back of the grid and the first token row at 94 m,
+  //     so the question-box card came FIRST on the game's first track.
+  //
+  //     Asserted with the state proved reached, not merely "not out of order":
+  //     GAPS records modaltest printing `0 quiz samples` every run for a wave
+  //     because a check whose state is never reached passes vacuously.
+  //
+  //   • THE POSITION TOASTS. `race:position` used to fire the instant the
+  //     spline-progress order flipped, so "נעקפת!" arrived while the rival was
+  //     still visibly beside the child, several times a corner. The unit gate is
+  //     tests/positiontoast.test.mjs; what THIS one adds is the built game's own
+  //     numbers — the live order really does flip more often than the child is
+  //     told, and no two toasts land inside the hold.
+  async function raceOpeningGates() {
+    console.log('\n  RACE OPENING — teaching cards in track order, toasts the eyes agree with\n  ' + '─'.repeat(70));
+    // A genuinely fresh save: none of the three one-time cards seen.
+    await page.evaluate(k => localStorage.setItem(k, JSON.stringify({
+      racerId: 'nitzotz', results: [], championshipRace: 0,
+    })), SAVE_KEY);
+    await page.reload({ waitUntil: 'load', timeout: 60000 });
+    await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+    // introCard: true because a fresh save is the one case where a child DOES
+    // see it; the harness default turns it off for autopilot races.
+    await page.evaluate(o => window.__DEBUG.goto('race', o),
+      { track: 0, difficulty: 2, seed: 3, autopilot: true, introCard: true });
+
+    const run = await page.evaluate(async (holdS) => {
+      const D = window.__DEBUG, sc = D.engine.active, q = sc.quiz, STEP = 1 / 60;
+      // The three one-time teaching cards, by the selector each one ships with.
+      const CARDS = [['intro', '.ic-scrim'], ['first-token', '.grgtok-scrim'], ['first-quiz-box', '.qzint-scrim']];
+      const order = [], clicks = new Map();
+
+      /* ── THE TARMAC'S OWN ANSWER, computed here and never read off progress ──
+         Wave 6.1's whole lesson is that the number the game sorts on can lie
+         about where the karts physically are, so a gate that cross-checks the
+         toasts against `progress` (or against `state.position`, which is
+         `field.order()` by another name) would be grading the instrument with
+         itself. This walks each kart's own `body.lapT` — the raw centreline
+         projection — and counts laps by watching the fraction wrap, which is
+         tools/spatialtest.mjs's ArcTruth in miniature and shares no code and no
+         accumulator with the game.
+
+         The origin is put HALF A LAP from the grid rather than at the start
+         line: the eight grid slots straddle t=0 (the pole sitter is just past
+         it, row 4 is 22 m behind it), so an origin at the line hands a phantom
+         lap to five of the eight karts on their first crossing. Nothing is
+         within 300 m of the far side when the flag drops. Only ORDER is read
+         off these numbers, so the choice of origin cannot flatter anyone. */
+      const bodies = [sc.player, ...sc.aiKarts.map(k => k.body)];
+      const LAPLEN = sc.player.spline.length;
+      const ORIGIN = (sc.player.lapT + 0.5) % 1;
+      const frac = b => { const u = (b.lapT - ORIGIN) % 1; return u < 0 ? u + 1 : u; };
+      const lapsDone = bodies.map(() => 0);
+      let prevU = bodies.map(frac);
+      const arcAll = () => bodies.map((b, i) => {
+        const u = frac(b);
+        if (u - prevU[i] < -0.5) lapsDone[i]++; else if (u - prevU[i] > 0.5) lapsDone[i]--;
+        prevU[i] = u;
+        return lapsDone[i] + u;
+      });
+      // The player's place on the tarmac this instant, and the arc gap to the
+      // kart immediately ahead of and behind them — the daylight a child's eyes
+      // would have to see before believing "you have been passed".
+      // (NO_RIVAL rather than Infinity: this crosses the page boundary as JSON,
+      // where Infinity becomes null and the report line below throws on it.)
+      const NO_RIVAL = 1e9;
+      const physOf = tv => {
+        const idx = tv.map((v, i) => i).sort((a, b) => tv[b] - tv[a]);
+        const me = idx.indexOf(0);
+        return {
+          rank: me + 1,
+          aheadM: me > 0 ? (tv[idx[me - 1]] - tv[0]) * LAPLEN : NO_RIVAL,
+          behindM: me < idx.length - 1 ? (tv[0] - tv[idx[me + 1]]) * LAPLEN : NO_RIVAL,
+        };
+      };
+
+      // Toast bookkeeping: what the child was TOLD, against what the order did.
+      const toasts = [];
+      const offPos = D.bus.on('race:position', p => toasts.push({ ...p, at: sc.state.raceTime }));
+      let flips = 0, lastPos = sc.state.position;
+      let physFlips = 0, lastPhys = null, startPhys = null, finishPhys = null;
+      for (let i = 0; i < 60 * 1800 && !window.__LAST_RESULT__; i++) {
+        D.engine.time += STEP; sc.update(STEP);
+        if (sc.state.position !== lastPos) { flips++; lastPos = sc.state.position; }
+        const ph = physOf(arcAll());
+        if (startPhys == null) startPhys = ph.rank;
+        if (lastPhys != null && ph.rank !== lastPhys) physFlips++;
+        lastPhys = ph.rank;
+        // Any toast raised by THIS step gets the tarmac's answer for this step:
+        // the emit happens inside sc.update(), so the bodies have not moved
+        // since. Anything later would compare a claim against a different
+        // instant, which is the phase skew this wave existed to remove.
+        for (const t of toasts) if (t.physRank === undefined) {
+          t.physRank = ph.rank;
+          // The daylight across the swap: a gained place is measured back to the
+          // kart just passed, a lost one forward to the kart that just went by.
+          t.physGapM = t.to < t.from ? ph.behindM : ph.aheadM;
+        }
+        // The flag: the physical order at the instant finishPlayer() froze the
+        // standings, so the results screen can be held to it below.
+        if (sc.state.finished && finishPhys == null) finishPhys = ph.rank;
+        let handled = false;
+        for (const [name, sel] of CARDS) {
+          const el = document.querySelector(sel);
+          if (!el || el.offsetParent === null) continue;
+          // A card mid-fade can survive its own dismissal for a frame or two;
+          // give up on one that will not close rather than spinning forever.
+          const n = (clicks.get(sel) || 0) + 1;
+          clicks.set(sel, n);
+          if (n > 240) continue;
+          if (!order.some(o => o.sel === sel)) order.push({ name, sel, at: sc.state.raceTime, tokens: sc.state.tokens });
+          el.querySelector('button')?.click();
+          handled = true;
+          break;
+        }
+        if (handled) continue;
+        if (q && q.phase === 'question') {
+          const b = document.querySelectorAll('.quiz-root.show .quiz-opt');
+          if (b[q.correctSlot]) b[q.correctSlot].click();
+        } else if (q && q.phase === 'feedback') q.dismiss('key');
+      }
+      offPos();
+      // Chain each toast to the physical place the child was last TOLD about, so
+      // the direction claim below has something to compare against.
+      let told = startPhys;
+      for (const t of toasts) { t.physPrev = told; told = t.physRank; }
+      // The whole race was driven, so let the flag's own 2.2 s timer land before
+      // anything else is measured — otherwise race:complete arrives in the
+      // middle of the backdrop check (or of the next section) and moves the
+      // scene out from under it.
+      await new Promise(r => setTimeout(r, 2600));
+      // The backdrop guarantee, checked where it is cheapest to check: a scoped
+      // bus that emits nothing must still emit nothing now that the emit site
+      // has a gate in front of it.
+      // Driven through the REAL backdrop path — the title screen, which runs a
+      // live autopilot race behind its UI — rather than by constructing a scene
+      // with `backdrop: true` here. A guarantee tested on a scene the game never
+      // builds is the Wave-3 lesson about gates that exercise a path no player
+      // can take.
+      await D.goto('menu');
+      let backdropToasts = 0;
+      const offB = D.bus.on('race:position', () => { backdropToasts++; });
+      D.advance(25);
+      offB();
+      const bd = D.state().scene === 'menu';
+      let minGap = Infinity;
+      for (let i = 1; i < toasts.length; i++) minGap = Math.min(minGap, toasts[i].at - toasts[i - 1].at);
+      return {
+        order: order.map(o => o.name), firstTokenAt: order.find(o => o.name === 'first-token')?.at ?? null,
+        toasts: toasts.length, toastRows: toasts, flips, physFlips, startPhys, finishPhys,
+        minGap, holdS, backdropRan: bd, backdropToasts,
+        result: window.__LAST_RESULT__ || null,
+      };
+    }, 0.6);
+
+    const seq = run.order.join(' → ');
+    // STATE REACHED, first. An order assertion over two cards, or none, is the
+    // vacuous pass GAPS names.
+    step('O: all three opening teaching cards actually appeared',
+      run.order.length === 3, `saw ${run.order.length}: ${seq || '(none)'}`);
+    step('O: intro card → first-token card → first-quiz card',
+      seq === 'intro → first-token → first-quiz-box', seq || '(none)');
+
+    // …and the toasts, from the same race.
+    //
+    // THE CELL. difficulty 2 rather than the gentlest setting, because Wave 6.1
+    // took the bias out of `progress` and most of what this section used to
+    // count WAS the bias. Measured on the old cell (track 0 / d1 / seed 3):
+    // 36 order changes and a P2 finish before the fix, 2 changes and a P1
+    // finish after it — the missing 34 were the phase skew chattering a
+    // near-tie back and forth, and on race-1 pace this autopilot simply drives
+    // away from the field, so there is nothing left to measure. Lowering the
+    // bar to fit that would gate nothing: a race with no passes in it cannot
+    // show that passes are reported honestly. d2 / seed 3 keeps the same
+    // fresh save, the same track and the same three teaching cards (the card
+    // order is a property of the TRACK, not of the AI), and produces genuine
+    // side-by-side dicing: measured 40 raw order changes across the three laps,
+    // of which the child is told 4.
+    step('O: the live order really does flip often enough to measure',
+      run.flips >= 20 && run.toasts >= 3, `${run.flips} order flips, ${run.physFlips} on the tarmac, ${run.toasts} toasts`);
+    // STRICTLY fewer, not `<=`. Round 2: the `<=` form could not fail — the
+    // naive "emit on every change" emitter this replaced produces exactly one
+    // toast per flip (measured: 40 toasts vs 40 flips) and sailed through it. A
+    // gate that cannot go red is a claim of coverage, not coverage. The point of
+    // the hysteresis is that the child is told about FEWER changes than the sort
+    // makes, so that is what is asserted — and by a real margin, not by one.
+    step('O: the child is told about strictly fewer changes than the sort makes',
+      run.toasts < run.flips / 2,
+      `${run.toasts} toasts vs ${run.flips} flips — ${run.flips - run.toasts} suppressed`);
+    // `run.toasts >= 3` is the state-reached half: a race that said nothing at
+    // all satisfies "no two toasts inside the hold" vacuously, and GAPS records
+    // what vacuous passes cost this project.
+    step('O: …and no two toasts land inside the hold',
+      run.toasts >= 3 && !(run.minGap < run.holdS),
+      run.toasts < 2 ? `only ${run.toasts} toast` : `closest pair ${run.minGap.toFixed(2)}s apart, hold ${run.holdS}s`);
+
+    /* ── THE TOASTS AGAINST THE TARMAC (Wave 6.1) ───────────────────────────
+       Everything above counts toasts against `state.position`, which is
+       `field.order()` by another name — the very instrument that was lying
+       until this wave. These three hold the toasts against the karts' own
+       centreline projections, walked independently in the page (see the ORIGIN
+       note there). tools/spatialtest.mjs owns the contract that makes that the
+       right reference: while a kart is on the road its progress IS its
+       projection, so "the child was told they are third" is a checkable claim
+       about the tarmac and not about a number. */
+    const wrongPlace = run.toastRows.filter(t => t.physRank !== t.to);
+    step('O: every toast names the place the child ACTUALLY holds',
+      run.toastRows.length >= 3 && wrongPlace.length === 0,
+      wrongPlace.length
+        ? `${wrongPlace.length}/${run.toastRows.length} lied: ` +
+          wrongPlace.slice(0, 3).map(t => `told P${t.to} at ${t.at.toFixed(1)}s, tarmac says P${t.physRank}`).join('; ')
+        : `${run.toastRows.length} toasts, all matched the tarmac`);
+    // ▲ or ▼ is decided by `to < from`, so the arrow is a claim about which way
+    // the child moved SINCE THEY WERE LAST TOLD. A suppressed flicker in between
+    // must not turn a real pass into an arrow pointing the wrong way.
+    const wrongWay = run.toastRows.filter(t => Math.sign(t.to - t.from) !== Math.sign(t.physRank - t.physPrev));
+    step('O: …and the arrow points the way the tarmac moved',
+      run.toastRows.length >= 3 && wrongWay.length === 0,
+      wrongWay.length
+        ? wrongWay.slice(0, 3).map(t => `told ${t.from}→${t.to}, tarmac ${t.physPrev}→${t.physRank}`).join('; ')
+        : run.toastRows.map(t => `${t.from}→${t.to}`).join(' '));
+    // And there was real daylight when it was said — measured on the bodies, not
+    // on the accumulator the margin is actually computed from. A pass announced
+    // while the two karts are still overlapping is the Wave-6 complaint that
+    // TOAST_MARGIN_M exists to answer. The bar is 2.5 m: half a metre under the
+    // shipped 3.0 m margin, which is forty times the 0.06 m the independent
+    // projection can differ from the accumulator on the road (spatialtest's
+    // TIE_M), so the slack is noise and nothing else. Measured green at 3.08 m.
+    // It is COUPLED to TOAST_MARGIN_M by hand — race.js does not export it, and
+    // tests/positiontoast.test.mjs pins the constant itself — so a deliberate
+    // change to the margin has to change this number too.
+    const tooClose = run.toastRows.filter(t => !(t.physGapM >= 2.5));
+    step('O: …and there was real daylight on the tarmac when it was said',
+      run.toastRows.length >= 3 && tooClose.length === 0,
+      tooClose.length
+        ? tooClose.slice(0, 3).map(t => `${t.from}→${t.to} at ${t.at.toFixed(1)}s: ${(t.physGapM ?? 0).toFixed(2)} m`).join('; ')
+        : `closest ${Math.min(...run.toastRows.map(t => t.physGapM ?? 0)).toFixed(2)} m, bar 2.5 m`);
+
+    /* ── AND THE NUMBER THE CHILD IS LEFT WITH ──────────────────────────────
+       finishPlayer() settles the standings from `field.order()` at the flag and
+       the results screen prints the player's row. If that sort is off by one
+       the child is told they came fourth after watching themselves cross third,
+       and no gate above would notice: they all stop at the toasts. */
+    step('O: the race actually ran to the flag',
+      !!run.result && run.finishPhys != null,
+      run.result ? `finished P${run.result.place} in ${(run.result.timeMs / 1000).toFixed(1)}s` : 'never finished');
+    step('O: the placement the results screen reports IS the finishing order',
+      !!run.result && run.result.place === run.finishPhys,
+      run.result ? `results say P${run.result.place}, tarmac says P${run.finishPhys}` : 'no result');
+
+    step('O: a backdrop race still emits no position toast at all',
+      run.backdropRan && run.backdropToasts === 0,
+      run.backdropRan ? `${run.backdropToasts} emitted behind the menu` : 'no backdrop race was run');
+
+    /* ── ONE POSITION NOTE ON SCREEN, EVER (Wave 6 round 2) ─────────────────
+       The emit-site hysteresis holds a change for 0.6 s; the HUD note it
+       produces lives 1.5 s plus a 0.26 s fade. Those two numbers do not have to
+       agree, and they did not: measured on oasis seed 3 the toasts landed at
+       1.78 / 3.25 / 4.05 / 4.78 s, so from 4.05 s two notes were on screen at
+       once and from 4.78 s the HUD position read 1 while a live note under it
+       still said "now in second place". A position note is an ABSOLUTE claim,
+       so the only safe number of them on screen is one.
+
+       Driven through the real bus into the real HUD rather than by racing to a
+       lucky pair: the property is "two changes inside one note's life", and
+       waiting for the AI to produce one is how a gate ends up vacuous. */
+    await page.evaluate(o => window.__DEBUG.goto('race', o),
+      { track: 0, difficulty: 1, seed: 3, autopilot: true, introCard: false });
+    const notes = await page.evaluate(async () => {
+      const D = window.__DEBUG;
+      const SEL = '.hud-notes .hud-note.on.up, .hud-notes .hud-note.on.down';
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const shown = () => [...document.querySelectorAll(SEL)].map(n => n.textContent.trim());
+      D.bus.emit('race:position', { from: 5, to: 4 });
+      await sleep(400);
+      const first = shown();
+      // 0.7 s apart — the real 4.05→4.78 s pair, and well inside the note's life.
+      D.bus.emit('race:position', { from: 4, to: 2 });
+      await sleep(300);
+      const both = shown();
+      return { first, both };
+    });
+    step('O: one position change puts exactly one note up',
+      notes.first.length === 1, `${notes.first.length} on screen: ${notes.first.join(' | ') || '—'}`);
+    step('O: …and a second change inside its life REPLACES it, never stacks',
+      notes.both.length === 1 && notes.both[0] !== notes.first[0],
+      `${notes.both.length} on screen: ${notes.both.join(' | ') || '—'}`);
     await page.evaluate(k => localStorage.removeItem(k), SAVE_KEY);
   }
 
   if (runs('play')) await mainFlowGates();
   if (runs('play') || runs('econ')) await economyGate();
+  if (runs('play') || runs('opening')) await raceOpeningGates();
   if (runs('champ')) await championshipEndGates();
   if (runs('seam')) await seamGates();
   if (runs('nav')) await navigationWalkGates();

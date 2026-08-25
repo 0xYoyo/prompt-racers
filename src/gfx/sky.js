@@ -23,6 +23,24 @@ import {
   disposeTextureCache, TEXTURE_CATALOG,
 } from './textures.js';
 
+/**
+ * BAKE COUNTERS — the one thing tools/transitiontest.mjs can assert without
+ * asking the rasteriser's opinion: how many times the expensive one-off work
+ * actually ran. A warm walk of screens already visited must bake nothing.
+ *
+ * EVERY INCREMENT LIVES AT THE WORK, NEVER AT THE CACHE. Counting inside a
+ * cache-miss branch means the counter is deleted by the same edit that deletes
+ * the cache, `globalThis.__PERFSTATS__` keeps publishing a cheerful zero, and
+ * the gate goes green on precisely the regression it exists to catch. So
+ * `paintSky` counts itself, the signage occlusion search counts itself, and
+ * `auditTrackClearance` counts itself — remove any cache and the number climbs
+ * on the warm lap immediately.
+ *
+ * Declared here, above every call site, because `paintSky` is defined long
+ * before the cache that calls it.
+ */
+export const PERF_STATS = (globalThis.__PERFSTATS__ ||= { skyPaints: 0, signSearches: 0, trackAudits: 0 });
+
 const DEG = Math.PI / 180;
 const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -227,6 +245,11 @@ function puff(ctx, cx, cy, rx, ry, colTop, colBot, colLit, a, litness) {
  * @returns {HTMLCanvasElement}
  */
 function paintSky(theme, W, H) {
+  // COUNTED HERE, at the work, and not at the cache that avoids it. A counter
+  // that lives inside `skyTexture`'s miss branch disappears along with the cache
+  // if the cache is ever reverted, and tools/transitiontest.mjs would then read
+  // a cheerful zero on exactly the regression it exists to catch.
+  PERF_STATS.skyPaints++;
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d');
@@ -469,6 +492,104 @@ function paintSky(theme, W, H) {
 }
 
 // ---------------------------------------------------------------------------
+// SKY TEXTURE CACHE  (Wave 5.1 — scene-transition freezes)
+// ---------------------------------------------------------------------------
+//
+// MEASURED: `paintSky` is the single most expensive thing on any scene change.
+// It paints a 2048x1024 equirectangular canvas and then runs the dither pass in
+// section 9, which is one `getImageData` of 2.1 M pixels, a per-pixel fbm loop
+// over all of them, and a `putImageData` back. Under the transition profiler
+// that one `getImageData` alone measured 280-1800 ms, and it ran on EVERY scene
+// entry: the title backdrop, racer select, the collection screen, every race and
+// the podium all call `applyTheme`, and nothing cached the result.
+//
+// The sky for a theme at a resolution is a pure function of (theme, W) — the
+// paint is fully seeded (makeRng/makeNoise2D off `theme.seed`) — so it is baked
+// once and shared. The texture is marked `userData.shared` and `rig.dispose()`
+// deliberately leaves it alone; the cache is what owns it.
+//
+// BOUNDED, on purpose: three themes at one resolution is the steady state of a
+// real session (~11 MB of canvas + 11 MB of GPU texture at 2048x1024 RGBA). The
+// cap is 4 so a mid-session quality change can add one entry before the oldest
+// is evicted, disposed, and its canvas backing store released.
+const SKY_TEX = new Map();
+// 10, and the number is the KEY SPACE, not the steady state. The key is
+// (theme, res) and `applyTheme` picks the res from `q.texSize` — 2048 / 1536 /
+// 1024 for the three tiers — so the game can legitimately ask for
+// 3 themes x 3 tiers = 9 distinct skies in one session, plus the one the boot
+// preview paints before a tier is chosen.
+//
+// Sizing this at the steady state of a single-tier session (four) was wrong, and
+// wrong in the worst way: at a cap below the key space a player who nudges the
+// quality toggle and keeps racing walks the cache round-robin, evicts the entry
+// they are about to need next, and pays a full `paintSky` on every transition
+// this fix promises is free. Measured on a nine-variant walk at a cap of six:
+// nine repaints out of nine, 128-1045 ms each, reproducible. Bélády's worst
+// case, and it is only reachable through the settings dialog, which is why a
+// single-tier gate could not see it.
+//
+// A cap ABOVE the key space cannot thrash at all. The cost of the two spare
+// slots is zero unless something fills them.
+const SKY_TEX_MAX = 10;
+
+function skyTexture(theme, W, H) {
+  const key = theme.name + '|' + W;
+  const hit = SKY_TEX.get(key);
+  if (hit) { SKY_TEX.delete(key); SKY_TEX.set(key, hit); return hit; }   // LRU touch
+
+  // No counter here — `paintSky` counts itself. See PERF_STATS.
+  const tex = new THREE.CanvasTexture(paintSky(theme, W, H));
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.anisotropy = 4;
+  tex.name = 'sky:' + key;
+  tex.userData.shared = true;
+  tex.needsUpdate = true;
+
+  while (SKY_TEX.size >= SKY_TEX_MAX) evictOldestSky();
+  SKY_TEX.set(key, tex);
+  return tex;
+}
+
+function releaseSky(tex) {
+  // UNCONDITIONAL, and that is only safe because eviction is unreachable: the
+  // cap is above the key space (see SKY_TEX_MAX) and the LRU keeps whatever is
+  // on screen hot. If either of those ever stops being true, a sky still mapped
+  // by a live mesh could be blanked here and that scene's dome would go white —
+  // the fix then is a refcount, not a bigger cap.
+  //
+  // Zeroing the canvas first is what actually frees the 8 MB backing store;
+  // Texture.dispose() only drops the GPU side.
+  try { if (tex.image) { tex.image.width = 0; tex.image.height = 0; } } catch (e) { /* ignore */ }
+  tex.dispose();
+}
+
+function evictOldestSky() {
+  const k = SKY_TEX.keys().next().value;
+  if (k === undefined) return;
+  const t = SKY_TEX.get(k);
+  SKY_TEX.delete(k);
+  releaseSky(t);
+}
+
+/** Entries currently held by the sky cache — for gates and perf overlays. */
+export function skyTextureCacheSize() { return SKY_TEX.size; }
+
+/**
+ * Drop every baked sky. EXPLICIT, and called from nothing the game runs: the
+ * module previews below want a clean slate on teardown, the game does not, and
+ * making every scene change pay for a preview's tidiness is the bug this whole
+ * cache exists to fix.
+ */
+export function disposeSkyTextureCache() {
+  for (const t of SKY_TEX.values()) releaseSky(t);
+  SKY_TEX.clear();
+}
+
+// ---------------------------------------------------------------------------
 // PUBLIC: SKY MESH
 // ---------------------------------------------------------------------------
 
@@ -484,15 +605,10 @@ function paintSky(theme, W, H) {
 export function createSky(themeName, opts = {}) {
   const theme = getTheme(themeName);
   const W = opts.res || 2048, H = W / 2;
-  const canvas = paintSky(theme, W, H);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.minFilter = THREE.LinearMipmapLinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.anisotropy = 4;
-  tex.needsUpdate = true;
+  // Baked once per (theme, resolution) and shared across every scene that shows
+  // this sky — see the SKY TEXTURE CACHE note above. The mesh, its geometry and
+  // its material are still per-scene; only the painted pixels are shared.
+  const tex = skyTexture(theme, W, H);
 
   const geo = new THREE.SphereGeometry(opts.radius || 500, 48, 32);
   const mat = new THREE.MeshBasicMaterial({
@@ -603,7 +719,16 @@ export function createLightingRig(themeName, engine) {
     },
     dispose() {
       sun.shadow?.map?.dispose();
-      if (rig.sky) { rig.sky.geometry.dispose(); rig.sky.material.map?.dispose(); rig.sky.material.dispose(); }
+      if (rig.sky) {
+        rig.sky.geometry.dispose();
+        // The painted sky belongs to SKY_TEX, not to this rig — disposing it
+        // here is exactly what made every scene entry repaint 2.1 M pixels.
+        // Anything NOT from the cache (a caller who built its own) is still
+        // this rig's to free.
+        const map = rig.sky.material.map;
+        if (map && !map.userData?.shared) map.dispose();
+        rig.sky.material.dispose();
+      }
       rig.env?.dispose();
     },
   };
@@ -927,6 +1052,7 @@ function buildPreview(engine, themeName) {
         curbTopMat, curbSideMat, ...farMats]) m.dispose();
       disposables.forEach(d => d.dispose?.());
       disposeTextureCache();
+      disposeSkyTextureCache();
     },
   };
 }
@@ -1024,6 +1150,7 @@ export function previewTextures(engine) {
       mats.forEach(m => { m.map?.dispose?.(); m.dispose(); });
       labels.forEach(t => t.dispose());
       disposeTextureCache();
+      disposeSkyTextureCache();
     },
   };
 }

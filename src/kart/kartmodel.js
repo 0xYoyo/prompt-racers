@@ -31,6 +31,10 @@ const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _down = new THREE.Vector3(0, -1, 0);
+// scratch for the raked contact shadow (see rakeBlob) — never allocate per frame
+const _bx = new THREE.Vector3(), _bz = new THREE.Vector3();
+const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4();
+const _m3 = new THREE.Matrix4(), _m4 = new THREE.Matrix4();
 const lerp = (a, b, t) => a + (b - a) * t;
 // frame-rate independent smoothing
 const approach = (cur, target, k, dt) => cur + (target - cur) * (1 - Math.exp(-k * dt));
@@ -157,18 +161,149 @@ function roundRectPath(g, x, y, w, h, r) {
   g.closePath();
 }
 
-function contactShadowTexture() {
-  const S = 64;
-  const c = document.createElement('canvas');
-  c.width = c.height = S;
-  const g = c.getContext('2d');
-  const grd = g.createRadialGradient(S / 2, S / 2, 2, S / 2, S / 2, S / 2);
-  grd.addColorStop(0, 'rgba(0,0,0,0.55)');
-  grd.addColorStop(0.55, 'rgba(0,0,0,0.28)');
-  grd.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = grd; g.fillRect(0, 0, S, S);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
+/* ------------------------------------------------------------------ */
+/* fake contact shadow ("blob") — the only ground shadow at נמוך        */
+/* ------------------------------------------------------------------ */
+
+// At נמוך the renderer casts no shadows at all (TIERS.low.shadows === false),
+// and a rival kart casts none at ANY tier (createKartLOD forces shadows off), so
+// on the two daylight tracks those karts were pasted onto the road rather than
+// sitting on it. This is the standard cheap fix: one alpha-mapped plane lying on
+// the road under each kart, dark in the middle, feathered to nothing at the edge.
+//
+// WHY THE RETIRED CARD FAILED — and it is NOT what round 1 of this fix claimed.
+// The old card was a canvas createRadialGradient wrapped in a CanvasTexture, and
+// round 1 recorded it as never drawing a pixel under ANGLE/SwiftShader. Measured:
+// false. Toggling the old card's `visible` on the real build and diffing the two
+// framebuffers moves 20,715 px (1.44% of a 1600x900 frame) on oasis at נמוך and
+// 26,911 px on cloud. It rasterised every frame, on every tier, since Wave 1.
+// Canvas gradients render fine here (gfx/props.js glowTexture() is one, in every
+// race frame). The card was simply BELOW THE PERCEPTUAL FLOOR: peak alpha 0.55 x
+// material opacity 0.85 = 0.47 of black laid over near-black asphalt, a mean
+// delta of ~2.5/channel. An authoring bug, not a driver bug.
+//
+// Two rules fall out of that, and they are the point of this comment:
+//   * Ground-shadow work is judged as a RENDERED-PIXEL DELTA, never as "the mesh
+//     is in the scene graph with the right transform". The old card passed every
+//     structural check there is. tests/kartshadow.test.mjs now A/Bs real frames.
+//   * An opaque debug material is NOT a valid visibility probe for a card that
+//     relies on renderOrder/depthWrite. Force this mesh opaque while leaving
+//     renderOrder:-1 and depthWrite:false and it moves into the opaque pass,
+//     draws BEFORE the road, and the road paints over it — you see nothing and
+//     conclude the texture is broken. Clear all three or the probe lies.
+//
+// The falloff is computed per texel into a DataTexture — for determinism (no
+// canvas rasteriser in the loop, so screenshots are byte-stable) and because one
+// DataTexture is shared by all eight karts. NOT because canvas is broken.
+//
+// One texture for the whole process, built on first use and shared by all eight
+// karts (the material is per-kart and kart-owned, so dispose() still frees
+// everything the kart draws with — a shared material would leak past the first
+// kart to be disposed).
+const BLOB_S = 96;
+const BLOB_HALF_X = 1.70, BLOB_HALF_Z = 2.30;   // plane half-extents, metres
+const BLOB_Y = 0.022;                            // metres above the road (see the mesh below)
+const BLOB_OPACITY = 0.68;
+let _blobTex = null;
+
+/* ---- the rake ---------------------------------------------------------- */
+//
+// ROUND 3. With the blob at the alpha above, cloud at נמוך reads solved and oasis
+// does NOT — and the reason is measurable rather than arguable. Masked A/B (kart
+// bodies masked out, only ground pixels counted, t=25, seed 12345):
+//
+//                          px changed   mean Δ   road base   Δ as % of base
+//   real cast shadow גבוה    64,158      53.3       103          51.7%
+//   blob נמוך  (oasis)       25,305      25.1        78.5        31.9%
+//   blob נמוך  (cloud)       28,772      51.5       169.4        30.4%
+//
+// The blob darkens its own footprint by the SAME ~31% on both tracks. So depth is
+// not the difference — AREA AND SHAPE is. Oasis' key light sits at 15° of
+// elevation, which rakes a real cast shadow into a long offset smear covering 2.5x
+// the blob's pixels, while the blob is a symmetric 3.4 x 4.6 m rectangle centred
+// under the kart, where the bodywork hides most of it from the chase camera.
+//
+// So: skew and offset the footprint along the sun's ground-projected direction, at
+// UNCHANGED alpha. NOT more black — the road is already near-black and the retired
+// pre-Wave-1 card died of exactly that misjudgement. This is free area.
+//
+// The transform is the affine approximation of the real thing: the shadow of a
+// solid of height H under a light at elevation `el` is the Minkowski sum of its
+// footprint with a ground segment of length H*cot(el) pointing away from the light.
+// A Minkowski sum is not affine, but stretching the footprint by that length along
+// the segment and sliding it half the length forward gives the same near edge (the
+// contact patch stays put), the same far end, and the same swept area. One matrix,
+// no extra geometry, no extra draw call, no extra alpha.
+//
+// Driven from the REAL elevation, never a hardcoded rake, because the three themes
+// differ enormously: oasis 15°, cloud 13°, night circuit 38° (a moon). A low light
+// gets a long smear, a high one stays nearly symmetric — which is the honest cue.
+// Height of the mass whose shadow is being faked. Between the tub top (0.63 m)
+// and the helmet (~1.25 m), and then TUNED AGAINST THE REAL THING rather than
+// argued: at 0.70 the masked ground A/B on oasis moves 68,910 px against the real
+// cast shadow's 64,158 at גבוה — the same order, a touch over. 0.85 overshot to
+// 78,121, which is a fake shadow bigger than the true one.
+const BLOB_CAST_H = 0.70;
+const BLOB_SKEW_MAX = 4.0;     // metres; past this the smear leaves the road
+/**
+ * Ground-projected shadow rake for a sun/moon direction.
+ * @param {{x:number,y:number,z:number}} sunDir  unit vector pointing AT the light
+ * @returns {{x:number, z:number, len:number}}  unit ground direction the shadow
+ *   points (away from the light) and the smear length in metres. len === 0 means
+ *   "no usable direction" — the caller keeps today's symmetric blob.
+ */
+export function blobRake(sunDir) {
+  if (!sunDir) return { x: 0, z: 1, len: 0 };
+  const hx = sunDir.x || 0, hz = sunDir.z || 0, hy = sunDir.y || 0;
+  const hl = Math.hypot(hx, hz);
+  // Straight overhead (or below the horizon): no rake, symmetric blob.
+  if (!(hl > 1e-4) || hy <= 1e-3) return { x: 0, z: 1, len: 0 };
+  const len = clamp(BLOB_CAST_H * (hl / hy), 0, BLOB_SKEW_MAX);
+  return { x: -hx / hl, z: -hz / hl, len };
+}
+
+export function blobShadowTexture() {
+  if (_blobTex) return _blobTex;
+  const S = BLOB_S;
+  const data = new Uint8Array(S * S * 4);
+  const smooth = t => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+  // A dark PLATEAU with a feathered rim, not a peak: a pure radial falloff has
+  // its darkest value at a single texel, so the shadow that survives from the
+  // chase camera — the part that pokes out past the bodywork — is its palest
+  // part, and the kart still floats. Solid to 40% of the radius, feathered from
+  // there out.
+  const pool = d => smooth((1 - d) / 0.60);
+  // Four pools at the tyre contact patches over one soft body pool: a plain
+  // ellipse reads as a sticker, four pools under the wheels read as a kart
+  // standing on its tyres. Positions are the real axle coordinates.
+  const patches = [
+    [-FRONT_X, FRONT_Z, 0.64], [FRONT_X, FRONT_Z, 0.64],
+    [-REAR_X, REAR_Z, 0.82], [REAR_X, REAR_Z, 0.82],
+  ];
+  for (let j = 0; j < S; j++) {
+    const v = (j + 0.5) / S;
+    // the plane is rotated -90° about X, so its +Y (v = 1) points at -Z, the nose
+    const z = -(v * 2 - 1) * BLOB_HALF_Z;
+    for (let i = 0; i < S; i++) {
+      const u = (i + 0.5) / S;
+      const x = (u * 2 - 1) * BLOB_HALF_X;
+      let a = pool(Math.hypot(x / 1.05, z / 1.60)) * 0.80;
+      for (const [px, pz, pr] of patches) {
+        a = Math.max(a, pool(Math.hypot(x - px, z - pz) / pr));
+      }
+      const o = (j * S + i) * 4;
+      data[o] = data[o + 1] = data[o + 2] = 0;
+      data[o + 3] = Math.round(255 * clamp(a, 0, 1));
+    }
+  }
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
+  // DataTexture defaults to NearestFilter — left alone the blob is a 96-texel
+  // staircase at chase distance, which is the "hard disc" failure mode.
+  t.minFilter = t.magFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  _blobTex = t;
   return t;
 }
 
@@ -186,6 +321,24 @@ export const PART_SLOTS = ['engine', 'tires', 'wing', 'chassis', 'exhaust'];
 export const PART_TIERS = 4;     // 0 = junk, 3 = glowing hero part
 
 /* ------------------------------------------------------------------ */
+/* level of detail                                                      */
+/* ------------------------------------------------------------------ */
+
+// THE bug this normaliser exists for: race.js asks for a cheap opponent with
+// `lod: 1` — a NUMBER — and every test inside createKart is a STRING compare
+// (`lod === 'low'`). `1 === 'low'` is false, so the "cheap" AI kart was built at
+// MID detail: 235 meshes against the player's own 144 at the low tier. The LOD
+// path was wired, called, and reduced nothing at all.
+//
+// Numbers are the renderer's usual LOD vocabulary (0 = nearest), so accept them:
+// 0 means "no override, use the tier", anything >= 1 means the cheap build.
+export const LOD_LEVELS = ['low', 'mid', 'high'];
+export function normalizeLod(v) {
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 1 ? 'low' : null;
+  return LOD_LEVELS.includes(v) ? v : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* createKart                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -193,10 +346,21 @@ export function createKart(opts = {}) {
   const racer = opts.racer || ROSTER[0];
   const eng = opts.engine || null;
   const q = eng?.q || null;
-  const lod = opts.lod || (q ? (q.name === 'low' ? 'low' : q.name === 'medium' ? 'mid' : 'high') : 'high');
+  const lod = normalizeLod(opts.lod) || (q ? (q.name === 'low' ? 'low' : q.name === 'medium' ? 'mid' : 'high') : 'high');
   const LOW = lod === 'low';
   const HIGH = lod === 'high';
   const shadows = opts.shadows ?? (q ? !!q.shadows : true);
+  // Weld the parts of the kart that never move relative to each other into one
+  // geometry per material. Opt-in, and only createKartLOD (the distant-AI build)
+  // turns it on: the player's kart and every garage/menu kart stay unwelded.
+  const MERGE = !!opts.merge;
+  // Overridable only so the LOD preview rigs can build the welded kart's exact
+  // unwelded twin; the game never passes it. Every kart carries plates, including
+  // the player's own at נמוך: round 1 dropped them there on the argument that
+  // nobody reads the number on the kart they are sitting in, which left the player
+  // as the ONLY kart on track with blank plate mounts — and the chase camera looks
+  // straight at the rear one all race. Three planes, one geometry, one material.
+  const PLATES = opts.plates ?? true;
 
   const geos = [];   // owned geometries (disposed with the kart)
   const mats = [];   // owned materials
@@ -292,15 +456,80 @@ export function createKart(opts = {}) {
   driverPivot.position.set(0, 0.62, 0.26);
   bodyPivot.add(driverPivot);
 
-  /* ---------------- contact shadow ------------------------------- */
-  const csTex = contactShadowTexture(); texs.push(csTex);
-  const csMat = new THREE.MeshBasicMaterial({ map: csTex, transparent: true, depthWrite: false, opacity: 0.85 });
-  mats.push(csMat);
-  const contact = new THREE.Mesh(G(new THREE.PlaneGeometry(2.9, 3.4)), csMat);
-  contact.rotation.x = -Math.PI / 2;
-  contact.position.y = 0.012;
-  contact.renderOrder = -1;
-  group.add(contact);
+  /* ---------------- fake contact shadow -------------------------- */
+  // ONLY when this kart casts no real shadow — otherwise the kart would carry a
+  // blob AND its shadow-map shadow, which reads as two shadows in one frame.
+  // It hangs off the ROOT group, never off bodyPivot: race.js aligns the root to
+  // the road surface, while bodyPivot carries the lean/pitch/squat. A blob under
+  // bodyPivot would tip up on its edge in every corner. The weld never traverses
+  // the root, and `blob` is in weldStatics' stop set as well.
+  let blob = null, blobMat = null;
+  // The rake, in WORLD ground space, from the composition point (race.js) — the
+  // only place that owns both the sky rig and the karts. kartmodel is a leaf and
+  // must never import gfx/sky.js. No option => len 0 => today's symmetric blob,
+  // so every preview, the garage, racer select and the menus are untouched.
+  const rake = blobRake(opts.sunDir);
+  const RAKED = rake.len > 1e-3;
+  if (!shadows) {
+    blobMat = new THREE.MeshBasicMaterial({
+      map: blobShadowTexture(), transparent: true, depthWrite: false,
+      opacity: BLOB_OPACITY, toneMapped: false,
+    });
+    mats.push(blobMat);
+    blob = new THREE.Mesh(G(new THREE.PlaneGeometry(BLOB_HALF_X * 2, BLOB_HALF_Z * 2)), blobMat);
+    blob.name = 'blobShadow';
+    blob.rotation.x = -Math.PI / 2;
+    // 2.2 cm of clearance: enough that the road never punches through it on a
+    // banked or crowned surface, small enough that it still reads as contact
+    // rather than a card floating under the kart. depthWrite stays off so the
+    // kart's own wheels are not clipped by it.
+    blob.position.y = BLOB_Y;
+    blob.renderOrder = -1;   // first of the transparents: under smoke, flames, dust
+    blob.castShadow = blob.receiveShadow = false;
+    group.add(blob);
+    if (RAKED) {
+      // The rake is a shear+stretch, which position/quaternion/scale cannot
+      // express, so the card drives its own local matrix. position/scale are still
+      // written every frame (the airborne shrink reads blob.scale) — they are just
+      // consumed by rakeBlob() instead of by three's compose step.
+      blob.matrixAutoUpdate = false;
+      rakeBlob(1);
+    }
+  }
+
+  // Rebuild the card's local matrix for the current kart heading and a uniform
+  // scale `s` (the airborne shrink). Allocation-free: every temporary is module
+  // scope. The rake is fixed in WORLD space while the card's parent yaws with the
+  // kart, so the direction has to be re-expressed in kart space each frame.
+  function rakeBlob(s) {
+    // kart's own axes, flattened to the ground plane
+    _bx.set(1, 0, 0).applyQuaternion(group.quaternion); _bx.y = 0;
+    _bz.set(0, 0, -1).applyQuaternion(group.quaternion); _bz.y = 0;
+    const lx = Math.hypot(_bx.x, _bx.z) || 1, lz = Math.hypot(_bz.x, _bz.z) || 1;
+    // the rake direction in the card's own 2D frame (+X = kart right, +Y = nose)
+    const a = (rake.x * _bx.x + rake.z * _bx.z) / lx;
+    const b = (rake.x * _bz.x + rake.z * _bz.z) / lz;
+    // Half-extent of the CARD along that direction — the rectangle's support
+    // function, |a|·halfX + |b|·halfZ, not an ellipse radius. Using the right one
+    // matters: it is what makes the stretch add exactly rake.len of length at
+    // every heading, so the shadow does not grow and shrink as the kart turns.
+    const rAlong = Math.max(0.5, Math.abs(a) * BLOB_HALF_X + Math.abs(b) * BLOB_HALF_Z);
+    const k = 1 + rake.len / (2 * rAlong);
+    // Rz(phi) maps the card's +Y onto (a, b), so a plain Y scale inside that frame
+    // stretches along the rake and leaves the perpendicular width alone.
+    const phi = Math.atan2(-a, b);
+    _m1.makeRotationX(-Math.PI / 2);
+    _m2.makeRotationZ(phi);
+    _m3.makeScale(s, s * k, 1);
+    _m4.makeRotationZ(-phi);
+    blob.matrix.copy(_m1).multiply(_m2).multiply(_m3).multiply(_m4);
+    // …then slide half the added length forward, so the contact patch under the
+    // tyres stays where it was and the whole gain is smear pointing away from the
+    // sun. Card +Y is the kart's nose, which is -Z in the parent group.
+    const h = rake.len * 0.5 * s;
+    blob.matrix.setPosition(a * h, BLOB_Y, -b * h);
+    blob.matrixWorldNeedsUpdate = true;
+  }
 
   /* ---------------- chassis -------------------------------------- */
   // floor pan
@@ -383,7 +612,11 @@ export function createKart(opts = {}) {
   mesh(G(new THREE.CylinderGeometry(0.06, 0.06, 0.05, LOW ? 6 : 12)), M.accent, steerPivot, [0, 0, 0.02], [Math.PI / 2, 0, 0]);
 
   /* ---------------- number plates -------------------------------- */
-  if (!LOW) {
+  // Kept on every build including the 'low' one: the three plates share a geometry
+  // and a material, so they are one draw call unwelded and none of their own after
+  // the weld, and the rear number is the only thing that tells a child WHICH rival
+  // is in front of them — or which kart is theirs on a replay/results still.
+  if (PLATES) {
     const numTex = numberPlateTexture(racerNumber(racer), col, col2);
     texs.push(numTex);
     const plateMat = mat(0xffffff, { map: numTex, roughness: 0.55, transparent: true, alphaTest: 0.4 });
@@ -437,7 +670,14 @@ export function createKart(opts = {}) {
     const odd = tier === 0 && w.sx < 0 ? 0.88 : 1;
     const r = w.r * grow * odd, width = w.w * fat * (tier === 0 && w.sx > 0 ? 1.18 : 1);
     w.scaleR = r;
-    const seg = LOW ? 8 : 16;
+    // The tyre is the largest curved silhouette on the kart and the thing a child
+    // is closest to: at the standing start of EVERY race a rival's rear wheel sits
+    // ~3.5 m from the chase camera and fills ~150 px. An 8-gon at that size reads
+    // as a flat black octagon, not a tyre — the round-1 LOD's one real art
+    // regression. On a WELDED rival more segments cost triangles and ZERO extra
+    // draw calls, which is the whole point of the weld, so the low build buys the
+    // silhouette back and keeps the draw-call saving.
+    const seg = LOW ? 14 : 16;
     const tyreMat = tier === 0 ? (w.sx < 0 ? M.rust : M.frame) : M.tyre;
     const carc = new THREE.Mesh(G(new THREE.CylinderGeometry(r, r, width, seg)), tyreMat);
     carc.rotation.z = Math.PI / 2;
@@ -482,11 +722,15 @@ export function createKart(opts = {}) {
     const rimR = r * (tier === 3 ? 0.66 : tier === 2 ? 0.62 : 0.56);
     const rimMat = tier === 0 ? M.dark : tier === 3 ? M.chromeHi : M.rim;
     for (const s of [-1, 1]) {
-      const rim = new THREE.Mesh(G(new THREE.CylinderGeometry(rimR, rimR, width * 0.62, LOW ? 8 : 14)), rimMat);
+      // The rim face is a bright cream (or chrome) disc on a black tyre — the
+      // highest-contrast circle on the kart, so it shows facets sooner than the
+      // tyre does. 12 was still visibly polygonal at 3.5 m; the low build gets the
+      // full 14 and pays for it in triangles alone.
+      const rim = new THREE.Mesh(G(new THREE.CylinderGeometry(rimR, rimR, width * 0.62, 14)), rimMat);
       rim.rotation.z = Math.PI / 2;
       rim.position.x = s * width * 0.22;
       meshOpts(rim); g.add(rim);
-      const hub = new THREE.Mesh(G(new THREE.SphereGeometry(rimR * 0.42, LOW ? 6 : 10, LOW ? 4 : 8)),
+      const hub = new THREE.Mesh(G(new THREE.SphereGeometry(rimR * 0.42, LOW ? 8 : 10, LOW ? 6 : 8)),
         tier === 0 ? M.cardboard : tier === 3 ? M.gold : M.hub);
       hub.position.x = s * (width * 0.5 + 0.005);
       meshOpts(hub); g.add(hub);
@@ -837,10 +1081,17 @@ export function createKart(opts = {}) {
     const trumpet = (x, y, zz, rTop, rBot, len, tilt = 0.1, lean = 0) => {
       // the tip of a raked+splayed stack moves; place the tip ring where it lands
       const ux = -Math.sin(lean), uy = Math.cos(lean) * Math.cos(tilt), uz = Math.cos(lean) * Math.sin(tilt);
-      const t = mesh(G(new THREE.CylinderGeometry(rTop, rBot, len, LOW ? 6 : 12, 1, true)), M.chromeOpen, g,
+      // A 6-sided trumpet with no tip ring is what the round-1 low build shipped,
+      // and at the 5 m a rival sits at on the starting grid the four stacks read as
+      // flat black hexagonal stubs — unfinished rather than simpler. The bore and
+      // the chrome lip ARE the trumpet, so the low build keeps both. Measured cost
+      // of the lip on a welded rival: +1 draw call at part tiers 1 and 2 (where
+      // M.chromeHi is not otherwise in the engine slot's weld) and +0 at tiers 0
+      // and 3. The extra sides cost triangles only, at every tier.
+      const t = mesh(G(new THREE.CylinderGeometry(rTop, rBot, len, LOW ? 10 : 12, 1, true)), M.chromeOpen, g,
         [x + ux * len / 2, y + uy * len / 2, zz + uz * len / 2], [tilt, 0, lean]);
       t.castShadow = shadows;
-      if (!LOW) mesh(G(new THREE.TorusGeometry(rTop, rTop * 0.16, 4, LOW ? 6 : 12)), M.chromeHi, g,
+      mesh(G(new THREE.TorusGeometry(rTop, rTop * 0.16, 4, LOW ? 8 : 12)), M.chromeHi, g,
         [x + ux * len, y + uy * len, zz + uz * len], [Math.PI / 2 + tilt, 0, lean]);
       return t;
     };
@@ -981,12 +1232,12 @@ export function createKart(opts = {}) {
     // open-ended cones must be double-sided or the mouth renders as a hole
     const openOf = m => (m === M.gold ? M.goldOpen : M.chromeOpen);
     const megaphone = (x, y, z, rIn, rOut, len, tilt, m, ringMat, ringR) => {
-      const c = mesh(G(new THREE.CylinderGeometry(rOut, rIn, len, LOW ? 8 : 14, 1, true)), openOf(m), g, [x, y, z], [Math.PI / 2 + tilt, 0, 0]);
+      const c = mesh(G(new THREE.CylinderGeometry(rOut, rIn, len, LOW ? 12 : 14, 1, true)), openOf(m), g, [x, y, z], [Math.PI / 2 + tilt, 0, 0]);
       c.castShadow = shadows;
       // The mouth needs a dark bore or the lit backfaces make the pipe read as a
       // pale ring — a doughnut stuck to the side of the kart rather than a pipe.
       const ax = [0, -Math.sin(tilt), Math.cos(tilt)];
-      const bore = mesh(G(new THREE.CircleGeometry(rOut * 0.9, LOW ? 8 : 14)), M.dark, g,
+      const bore = mesh(G(new THREE.CircleGeometry(rOut * 0.9, LOW ? 12 : 14)), M.dark, g,
         [x + ax[0] * len * 0.36, y + ax[1] * len * 0.36, z + ax[2] * len * 0.36], [tilt, 0, 0]);
       bore.castShadow = false;
       if (ringMat && !LOW) mesh(G(new THREE.TorusGeometry(ringR ?? rOut, rOut * 0.16, 4, LOW ? 8 : 14)), ringMat, g,
@@ -1213,6 +1464,186 @@ export function createKart(opts = {}) {
     }
   }
 
+  /* ---------------- static weld (cheap AI karts only) ------------- */
+  //
+  // Draw calls, not triangles, are what an integrated-GPU school laptop runs out
+  // of first, and a measured frame of this game spends 95% of its calls on the
+  // eight karts (847 total, of which 805 are karts and 31 the entire world —
+  // props.js already instances and merges). A kart is ~200 tiny meshes that
+  // never move relative to one another, which is exactly the shape of thing a
+  // renderer should be given as ONE mesh.
+  //
+  // The weld is lossless by construction: same vertices, same normals, same
+  // materials, same world transforms, same shadow flags — the only thing that
+  // changes is how many buffers get bound. Anything that animates is a FRAME
+  // boundary and is welded only within itself:
+  //   bodyPivot   roll/pitch/squat      driverPivot  leans into corners
+  //   headPivot   turns                 steerPivot   turns with the wheel
+  //   arm shoulders (aimed at the grips), each wheel's spin group,
+  //   and the wobblers / coreGlow / flames registries, which are moved,
+  //   pulsed, scaled or toggled per frame by update().
+  // Concatenate a bucket of {geo, matrix} into one indexed BufferGeometry.
+  function weldGeometries(items) {
+    let vCount = 0, iCount = 0;
+    const prepped = [];
+    for (const it of items) {
+      const g = it.geo.clone();
+      g.applyMatrix4(it.matrix);                 // transforms normals correctly
+      if (!g.attributes.normal) g.computeVertexNormals();
+      const n = g.attributes.position.count;
+      vCount += n;
+      iCount += g.index ? g.index.count : n;
+      prepped.push(g);
+    }
+    const pos = new Float32Array(vCount * 3);
+    const nor = new Float32Array(vCount * 3);
+    const uvs = new Float32Array(vCount * 2);
+    const idx = vCount > 65535 ? new Uint32Array(iCount) : new Uint16Array(iCount);
+    let vo = 0, io = 0;
+    for (const g of prepped) {
+      const p = g.attributes.position, nm = g.attributes.normal, uv = g.attributes.uv;
+      for (let i = 0; i < p.count; i++) {
+        const o3 = (vo + i) * 3, o2 = (vo + i) * 2;
+        pos[o3] = p.getX(i); pos[o3 + 1] = p.getY(i); pos[o3 + 2] = p.getZ(i);
+        if (nm) { nor[o3] = nm.getX(i); nor[o3 + 1] = nm.getY(i); nor[o3 + 2] = nm.getZ(i); }
+        if (uv) { uvs[o2] = uv.getX(i); uvs[o2 + 1] = uv.getY(i); }
+      }
+      if (g.index) for (let i = 0; i < g.index.count; i++) idx[io + i] = g.index.getX(i) + vo;
+      else for (let i = 0; i < p.count; i++) idx[io + i] = vo + i;
+      vo += p.count;
+      io += g.index ? g.index.count : p.count;
+      g.dispose();
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    out.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    out.setIndex(new THREE.BufferAttribute(idx, 1));
+    out.computeBoundingSphere();
+    out.computeBoundingBox();
+    return out;
+  }
+
+  // Weld every static mesh under `roots` into one mesh per material, parented to
+  // `frame`. `roots` must all sit in `frame`'s own coordinate space. `stop` is
+  // the set of nodes that must keep their own transform (see the note above);
+  // recursion never enters one, and a mesh with a stopped descendant is left
+  // exactly where it is.
+  function weldFrame(frame, stop, roots = [frame]) {
+    const buckets = new Map();
+    const dead = [];
+    const _m = () => new THREE.Matrix4();
+    // A hidden mesh is never welded. `visible` used to be part of the bucket key,
+    // which quietly baked anything hidden at build time into its own permanently
+    // invisible weld — and detached the ORIGINAL, so an update() that flips
+    // `visible` back on would toggle an orphan and change nothing on screen. The
+    // only such mesh today is the exhaust flame (also in `stop`), but the next one
+    // would be a silent art bug, so hidden is treated exactly like animated: left
+    // alone, still reachable, costing nothing to draw while it stays hidden.
+    const untouchable = o => stop.has(o) || o.isInstancedMesh || o.visible === false;
+    const holdsDynamic = obj => {
+      let f = false;
+      obj.traverse(o => { if (o !== obj && untouchable(o)) f = true; });
+      return f;
+    };
+    const collect = (obj, m) => {
+      if (obj.isMesh && obj.geometry && obj.material) {
+        const mm = obj.material;
+        const key = `${mm.uuid}|${obj.castShadow ? 1 : 0}|${obj.receiveShadow ? 1 : 0}|${obj.renderOrder}`;
+        let b = buckets.get(key);
+        if (!b) {
+          b = { material: mm, castShadow: obj.castShadow, receiveShadow: obj.receiveShadow,
+            renderOrder: obj.renderOrder, items: [] };
+          buckets.set(key, b);
+        }
+        b.items.push({ geo: obj.geometry, matrix: m });
+      }
+      for (const c of obj.children) { c.updateMatrix(); collect(c, _m().multiplyMatrices(m, c.matrix)); }
+    };
+    const visit = (obj, m) => {
+      for (const c of obj.children) {
+        if (untouchable(c)) continue;
+        c.updateMatrix();
+        const cm = _m().multiplyMatrices(m, c.matrix);
+        if (c.isMesh && !holdsDynamic(c)) { collect(c, cm); dead.push(c); }
+        else visit(c, cm);
+      }
+    };
+    for (const r of roots) visit(r, _m());
+    if (!dead.length) return;
+    for (const d of dead) d.removeFromParent();
+    for (const b of buckets.values()) {
+      const mesh2 = new THREE.Mesh(G(weldGeometries(b.items)), b.material);
+      mesh2.castShadow = b.castShadow;
+      mesh2.receiveShadow = b.receiveShadow;
+      mesh2.renderOrder = b.renderOrder;
+      mesh2.name = 'weld';
+      frame.add(mesh2);
+    }
+  }
+
+  // Drop the source geometries the weld orphaned. They were never uploaded to
+  // the GPU (the kart is welded before its first frame), so this is CPU arrays
+  // only — but it is ~200 of them per kart, times seven opponents.
+  function pruneGeos() {
+    const live = new Set();
+    group.traverse(o => { if (o.geometry) live.add(o.geometry); });
+    for (let i = geos.length - 1; i >= 0; i--) {
+      if (!live.has(geos[i])) { geos[i].dispose(); geos.splice(i, 1); }
+    }
+  }
+
+  // The five upgrade slots and the chassis are all identity-transform siblings
+  // under bodyPivot, i.e. ONE rigid frame — so they weld together, and a body
+  // that shares a material with a wing costs one draw call, not two. They cannot
+  // weld into chassisGrp itself, because clearSlot() has to be able to throw the
+  // slot half away again when the garage changes a part: see setParts.
+  const slotWeld = MERGE ? new THREE.Group() : null;
+  if (slotWeld) { slotWeld.name = 'weld:slots'; bodyPivot.add(slotWeld); }
+  let chassisWelded = false;
+
+  function weldStatics() {
+    // Load-bearing: each of these is reachable from a frame that gets welded, and
+    // dropping it from the set changes what you see or what moves.
+    //   driverPivot/headPivot/steerPivot  animated frames under bodyPivot
+    //   slotWeld                          the rebuildable half (see setParts)
+    //   arm shoulders, wheel axle/steer/spin   animated frames
+    //   wobblers, coreGlow                update() rotates/pulses/scales them; a
+    //                                     welded one is detached, so it freezes —
+    //                                     invisible in a still frame, wrong in motion
+    // Belt-and-braces, honestly narrow (D42): `blob` hangs off the ROOT group,
+    // which no weldFrame call ever traverses, and `flames` start hidden and are
+    // already protected by the hidden-mesh rule in weldFrame. Both are listed so
+    // that a future weld of the root, or a flame that starts visible, still cannot
+    // swallow them — neither is what protects them today. A welded blob would be
+    // baked into the chassis bucket and would then lean with the body.
+    const stop = new Set([driverPivot, headPivot, steerPivot, slotWeld]);
+    if (blob) stop.add(blob);
+    for (const a of arms) stop.add(a.shoulder);
+    for (const w of wheels) { stop.add(w.axle); stop.add(w.steer); stop.add(w.spin); }
+    for (const arr of [wobblers, coreGlow, flames]) for (const o of arr) stop.add(o);
+
+    if (!chassisWelded) {
+      // The knees hang off bodyPivot directly; in the welded build they belong
+      // to the same rigid frame as the chassis, so move them there first.
+      for (const c of [...bodyPivot.children]) if (c.isMesh && !stop.has(c)) chassisGrp.add(c);
+      weldFrame(chassisGrp, stop);
+      weldFrame(driverPivot, stop);
+      weldFrame(headPivot, stop);
+      weldFrame(steerPivot, stop);
+      for (const a of arms) weldFrame(a.shoulder, stop);
+      // A wobbler is a frame of its own (update() rotates it), but whatever
+      // hangs off it — the spark racer's three prongs — is static within it.
+      for (const o of wobblers) weldFrame(o, stop);
+      chassisWelded = true;
+    }
+    // The slot half is rebuilt from scratch on every parts change.
+    for (const c of [...slotWeld.children]) { c.removeFromParent(); }
+    weldFrame(slotWeld, stop, PART_SLOTS.map(s => slotGrp[s]).filter(Boolean));
+    for (const w of wheels) if (w.visual) weldFrame(w.visual, stop);
+    pruneGeos();
+  }
+
   let api = null;
 
   let built = false;
@@ -1225,7 +1656,13 @@ export function createKart(opts = {}) {
       if (t !== parts[s]) { parts[s] = t; changed.push(s); }
     }
     if (built && !changed.length) return api;
-    const todo = built ? changed : PART_SLOTS;   // first call builds every slot
+    // First call builds every slot. On a welded kart every LATER call does too:
+    // the five slots share one welded mesh per material, so a single slot can no
+    // longer be replaced on its own — the welded half is thrown away and rebuilt
+    // whole. Slower than the unwelded path and never taken in the game (only the
+    // garage's preview kart changes parts after construction, and it is never
+    // welded), but it keeps setParts honest instead of silently stale.
+    const todo = (built && !MERGE) ? changed : PART_SLOTS;
     built = true;
     for (const s of todo) {
       if (s === 'tires') { for (const w of wheels) buildTyreVisual(w, parts.tires); continue; }
@@ -1237,6 +1674,7 @@ export function createKart(opts = {}) {
       else if (s === 'exhaust') buildExhaust(parts.exhaust);
       else if (s === 'chassis') buildChassisKit(parts.chassis);
     }
+    if (MERGE) weldStatics();
     return api;
   }
 
@@ -1349,7 +1787,15 @@ export function createKart(opts = {}) {
       if (c.userData.spin) { c.rotation.y += dt * (0.8 + heat * 2.5); c.rotation.x += dt * 0.4; }
       if (c.userData.pulse) c.scale.setScalar(1 + 0.07 * Math.sin(st.t * (7 + heat * 7)) + heat * 0.05);
     }
-    contact.material.opacity = 0.85 * (1 - st.air * 0.85);
+    // Airborne: the blob fades AND shrinks. Both, because a shadow that only
+    // fades reads as the light going out, while one that only shrinks reads as
+    // the kart driving away from its own shadow. Nothing is allocated here.
+    if (blob) {
+      blobMat.opacity = BLOB_OPACITY * (1 - st.air * 0.9);
+      const s = 1 - st.air * 0.30;
+      blob.scale.set(s, s, 1);
+      if (RAKED) rakeBlob(s);
+    }
   }
 
   /* ---------------- disposal ------------------------------------- */
@@ -1368,8 +1814,13 @@ export function createKart(opts = {}) {
   }
 
   api = {
-    group, racer, parts, wheels, lod,
+    group, racer, parts, wheels, lod, shadows,
     bodyPivot, driverPivot, headPivot, steerPivot,
+    // null whenever the kart casts a real shadow — the gate reads this
+    blobShadow: blob,
+    // the rake actually in force, or null for the symmetric default — the gate
+    // reads this alongside the card's real world footprint
+    blobRake: blob && RAKED ? rake : null,
     update, setParts, dispose,
     // handy for the race camera / HUD
     get width() { return 1.55; },
@@ -1379,8 +1830,28 @@ export function createKart(opts = {}) {
 }
 
 // Cheaper variant for distant AI karts. Respects engine.q if given.
+//
+// Two things make it cheap, and until Wave 5 neither of them fired:
+//   * 'low' detail — the same reduction the player's kart already takes at the
+//     נמוך tier. `opts.lod` used to be passed through raw, so race.js's `lod: 1`
+//     lost the string compare and bought mid detail (see normalizeLod).
+//   * the static weld — one draw call per material per animated frame instead
+//     of one per mesh. Lossless; see weldFrame.
+//
+// The two are INDEPENDENT, and that is the point: `{ lod: 'high', merge: true }`
+// is a supported, gated combination — the full-detail kart, welded. The weld is
+// proven lossless (same triangles, same vertices, same materials, same world
+// positions and normals as the unwelded build), so at בינוני and גבוה, where
+// there are draw calls to spare but no art to spare, a rival can take the whole
+// draw-call saving at zero cost to how it looks. Only the נמוך default also
+// drops detail. `shadows` defaults off for a rival at any detail level, and is
+// overridable for the same reason.
 export function createKartLOD(opts = {}) {
-  return createKart(Object.assign({}, opts, { lod: opts.lod || 'low', shadows: false }));
+  return createKart(Object.assign({}, opts, {
+    lod: normalizeLod(opts.lod) || 'low',
+    shadows: opts.shadows ?? false,
+    merge: opts.merge ?? true,
+  }));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1600,6 +2071,67 @@ export function previewTierLadder(engine) {
     dispose() { disposeWorld(ground, env, karts); },
   };
 }
+
+// ── LOD comparison rigs (Wave 5) ─────────────────────────────────────────────
+// Three builds of the same opponent, framed identically, so the two questions a
+// LOD change has to answer can be answered by looking:
+//   *Old   — what race.js used to get from `lod: 1`: MID detail, unwelded.
+//   *Plain — the LOD fix alone: LOW detail, unwelded.
+//   *Weld  — what it gets now: LOW detail, welded. Must be pixel-identical to
+//            *Plain, because the weld only changes how many buffers are bound.
+// Both rigs hold a constant pose, so `--t 1.5` is reproducible.
+const LOD_ROW = [[10, -3.0], [25, 3.2], [50, 13.0]];
+const LOD_POSE = { steer: 0.10, speed01: 0.62, drifting: false, driftCharge01: 0, airborne: false, boosting: false };
+const LOD_PARTS = { engine: 2, tires: 2, wing: 2, chassis: 2, exhaust: 2 };
+
+function lodRow(engine, make) {
+  const { scene, ground, env } = baseScene(engine, 260);
+  // The race's own fog would have dissolved the 50 m kart into the ground before
+  // it could be judged — which is an argument for the LOD, not a way to test it.
+  scene.fog = new THREE.Fog(0xb9a68d, 120, 400);
+  const camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.1, 400);
+  camera.position.set(0, 1.62, 1.2);
+  camera.lookAt(0, 1.0, -24);
+  const karts = LOD_ROW.map(([d, x], i) => {
+    const k = make(engine, ROSTER[i % ROSTER.length]);
+    k.group.position.set(x, 0, -d);
+    scene.add(k.group);
+    return k;
+  });
+  return {
+    scene, camera,
+    update(dt) { for (const k of karts) k.update(dt, LOD_POSE); },
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); },
+    dispose() { disposeWorld(ground, env, karts); },
+  };
+}
+
+function lodHero(engine, make) {
+  const { scene, ground, env } = baseScene(engine, 90);
+  const camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.1, 400);
+  camera.position.set(3.6, 2.15, 4.6);
+  camera.lookAt(0, 0.60, -0.05);
+  const kart = make(engine, ROSTER[0]);
+  kart.group.rotation.y = 3.30;
+  scene.add(kart.group);
+  return {
+    scene, camera,
+    update(dt) { kart.update(dt, LOD_POSE); },
+    resize(w, h) { camera.aspect = w / h; camera.updateProjectionMatrix(); },
+    dispose() { disposeWorld(ground, env, [kart]); },
+  };
+}
+
+const mkOld = (engine, racer) => createKart({ racer, engine, parts: LOD_PARTS, lod: 'mid', shadows: false });
+const mkPlain = (engine, racer) => createKart({ racer, engine, parts: LOD_PARTS, lod: 'low', shadows: false, plates: true });
+const mkWeld = (engine, racer) => createKartLOD({ racer, engine, parts: LOD_PARTS, lod: 1 });
+
+export const previewLodOld = engine => lodRow(engine, mkOld);
+export const previewLodPlain = engine => lodRow(engine, mkPlain);
+export const previewLodWeld = engine => lodRow(engine, mkWeld);
+export const previewLodHeroOld = engine => lodHero(engine, mkOld);
+export const previewLodHeroPlain = engine => lodHero(engine, mkPlain);
+export const previewLodHeroWeld = engine => lodHero(engine, mkWeld);
 
 export function previewParts(engine) {
   const { scene, ground, env } = baseScene(engine, 140);

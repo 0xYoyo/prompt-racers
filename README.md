@@ -20,15 +20,32 @@ npm run build -- --dev
 ## Quality gates
 
 ```bash
-npm run gate         # build + tests + compliance + playability. Run before shipping.
+npm run gate         # everything below, in order. Run before shipping.
 
-npm test             # spline maths, garage→physics wiring, driving-feel telemetry,
-                     # and a clean-bundle check across every module
+npm test             # 17 node suites: spline maths, garage→physics wiring,
+                     # driving-feel telemetry, the AI balance + pack-feel matrix,
+                     # the token economy, beacon geometry, position-toast
+                     # hysteresis, badges, signage, the certificate, and a
+                     # clean-bundle check across every module
 npm run verify       # contest compliance: zero network, no assets, no personal data
 npm run flow         # drives the real build end to end with synthetic input
+npm run transition   # scene transitions: no freeze past budget, caches still warm,
+                     # and the first-visit build stays masked by the intro card
+npm run modal        # modal-registry policy (quiz freeze, pause, one-time popups)
+npm run quizbox      # the question box: cadence, recharge, legibility
+npm run home         # the title screen and the way back to it
+npm run idle         # a 25-second real-time soak: no per-frame leak
+npm run garage       # garage wizard behaviour + economy
+npm run select       # racer select: per-racer karts, no auto-start
 npm run layout       # every screen at 6 resolutions; fails on clipped controls
 npm run progress     # regenerate progress.html
 ```
+
+Two rules this project learned the hard way and enforces on itself: **a gate only
+counts if it fails against the broken code** (verify a new assertion bites before
+trusting it), and **an assertion over a state that was never reached is not an
+assertion** (assert the state was reached first). Both failure modes have shipped
+here and are written up in GAPS.md.
 
 Per-module visual iteration — any subsystem renders and screenshots on its own:
 
@@ -36,6 +53,9 @@ Per-module visual iteration — any subsystem renders and screenshots on its own
 node tools/preview.mjs --mod src/track/trackbuild.js --fn preview --t 2 --out shots/x.png
 node tools/shot.mjs --scene race --track 0 --t 25 --out shots/race.png
 ```
+
+`shot.mjs` is byte-exact between runs and `preview.mjs` is not — use `shot.mjs` for
+any claim that rests on counting pixels. See GAPS.md.
 
 ## Contest constraints, and how each is enforced
 

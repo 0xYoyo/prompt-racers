@@ -22,7 +22,15 @@ import puppeteer from 'puppeteer-core';
 // direction is least useful — so import it. quiz.js touches no DOM at import
 // time, which is why this works in plain Node.
 import { REWARD_TOKENS } from '../src/race/quiz.js';
-const dist = '/Users/yoyopc/repos/kart-project/dist/index.html';
+// `--dist <path>` points the whole file at a different build, exactly as
+// tests/introcard.test.mjs does and for the same reason: proving a gate bites.
+// Rebuilding dist/ from a mutant would leave a deliberately broken
+// dist/index.html in a tree several agents are sharing for as long as the run
+// takes; a mutant bundled to .tmp/ costs nobody anything.
+const distArg = process.argv.indexOf('--dist');
+const dist = distArg > 0 && process.argv[distArg + 1]
+  ? process.argv[distArg + 1]
+  : '/Users/yoyopc/repos/kart-project/dist/index.html';
 const b = await puppeteer.launch({ headless: 'new', executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', args: ['--no-sandbox','--use-gl=swiftshader','--enable-unsafe-swiftshader'] });
 const page = await b.newPage();
 const errs=[]; page.on('pageerror',e=>errs.push(''+e.message));
@@ -405,6 +413,133 @@ const ran = await page.evaluate(()=>{ const a=window.__DEBUG.engine.active, t0=a
   window.__DEBUG.advance(1); return a.state.raceTime-t0; });
 ok('the race is running again afterwards', ran > 0.5, `+${ran.toFixed(2)}s`);
 
+// ── 8b. …and so does SPACE, the key every other card takes ───────────────
+// Every other in-game modal goes on with Space; the token explainer used to
+// take only Escape, so the one key a child has already been taught ("space goes
+// on", printed on the question-box card's own button) did nothing here — and
+// worse, fell through to input.js. With the D20 guard: Space is also the DRIFT
+// key, so a HELD Space — the child was drifting when the token was collected —
+// must not snatch the card away with a key they never released.
+console.log('\n  8b. Space dismisses the token explainer (and a held Space does not)');
+// Drives a fresh race until the explainer owns the screen. Same shape as the
+// loop above; the quiz panels on the way have to be cleared or the kart never
+// reaches a token.
+async function driveToTokenExplainer() {
+  await boot(false, { autopilot:true });
+  for (let s=0;s<140;s+=2) {
+    await page.evaluate(()=>window.__DEBUG.advance(2));
+    if (await vis('.grgtok-scrim')) return true;
+    if (await vis('.qzint-scrim')) { await tap('Escape'); await wait(120); }
+    else if (await vis('.quiz-root.show')) {
+      await tap('Digit1'); await wait(60); await evalp(()=>window.__DEBUG.advance(1)); await tap('Space'); await wait(60);
+    }
+  }
+  return false;
+}
+// A repeating keydown is what an OS sends while a key is HELD; puppeteer's
+// keyboard never sets `repeat`, so it is dispatched directly. Capture phase on
+// window is where the popup listens, so this reaches exactly the real handler.
+const repeatSpace = () => evalp(()=>{ dispatchEvent(new KeyboardEvent('keydown',
+  { code:'Space', key:' ', repeat:true, bubbles:true, cancelable:true })); });
+// The registry is not exported to the page, but the audio duck IS driven by it
+// (D31/D34: onModalChange → setModalDuck), so a leaked 'token' id shows up here
+// as a game that stays muted with nothing on screen to explain why.
+const modalDucked = () => evalp(()=>!!(window.__AUDIO__ && window.__AUDIO__._modalDucked));
+{
+  ok('the token explainer is up', await driveToTokenExplainer());
+  ok('…and its button names the key it takes', await evalp(()=>{
+    const b=document.querySelector('.grgtok-scrim .btn');
+    return !!b && /רווח|space/i.test(b.textContent); }),
+     await evalp(()=>document.querySelector('.grgtok-scrim .btn')?.textContent||'—'));
+  const duckedUp = await modalDucked();
+  ok('…and the modal registry knows it owns the screen', duckedUp, 'audio modal-ducked');
+  // (a) held Space is ignored — the card survives a key the child never released
+  await repeatSpace(); await repeatSpace(); await wait(150);
+  ok('a HELD (repeating) Space does NOT dismiss it', await vis('.grgtok-scrim'));
+  {
+    const a = await simSnap();
+    await evalp(()=>window.__DEBUG.advance(2));
+    const d = simDelta(a, await simSnap());
+    ok('…and the world is still frozen behind it', d.race===0 && d.move===0,
+       `race +${d.race.toFixed(3)}s, moved ${d.move.toFixed(3)}m`);
+  }
+  // (b) a real press goes on, exactly like Escape and exactly like the button
+  await tap('Space'); await wait(200);
+  ok('a real Space press closes the token explainer', !(await vis('.grgtok-scrim')));
+  ok('…and does not fall through to the pause menu', !(await vis('.mn-dialog.pause')));
+  ok('…and the \'token\' modal id is released, not leaked',
+     duckedUp && (await modalDucked())===false);
+  const ranS = await page.evaluate(()=>{ const a=window.__DEBUG.engine.active, t0=a.state.raceTime;
+    window.__DEBUG.advance(1); return a.state.raceTime-t0; });
+  ok('…and the race is running again, input handed back', ranS > 0.5
+     && await evalp(()=>window.__DEBUG.engine.active.input.enabled===true), `+${ranS.toFixed(2)}s`);
+}
+
+// ── 8c. …and so does BOREG'S CARD, the third one-time teaching card ──────
+// D65 gave the game's one-time teaching cards ONE key contract: the button, plus
+// Space / Enter / Escape, on a capture-phase listener that stops the event
+// (Escape must close the card, never fall through and open something behind it),
+// with `e.repeat` swallowed because Space is also the DRIFT key (D20).
+//
+// The token explainer and the question-box explainer were brought onto it; the
+// garage's "meet Boreg" card was missed and still took Escape/Enter only, with a
+// button ("מתחילים!") that named no key at all. Three cards, three contracts, is
+// exactly how "space goes on" stops being something a child can rely on.
+//
+// Reached through the real door: a save with nothing in it, then the garage —
+// `shouldShowBoregIntro()` is what puts the card up, not a test flag.
+console.log('\n  8c. Space dismisses Boreg\'s card (and a held Space does not)');
+async function bootMeetCard() {
+  await page.goto('file://' + dist, { waitUntil: 'load' });
+  await page.evaluate(()=>{ localStorage.setItem('promptracers.v1', JSON.stringify({})); });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  await page.evaluate(()=>window.__DEBUG.goto('freeplay', {}));
+  await wait(300);
+  return vis('.grg-meet-scrim');
+}
+// The one-time flag itself. A card that is dismissed has BURNED it — so a held
+// Space that leaks through does not merely close the card early, it spends the
+// only time this child is ever introduced to Boreg. Read from the save, which is
+// the thing that outlives the scene.
+const metBoreg = () => evalp(()=>{
+  try { return !!JSON.parse(localStorage.getItem('promptracers.v1')||'{}').garageMetBoreg; }
+  catch { return false; } });
+{
+  ok('Boreg\'s card is up on a fresh save', await bootMeetCard());
+  ok('…and its button names the key it takes', await evalp(()=>{
+    const b=document.querySelector('.grg-meet-scrim .btn');
+    return !!b && /רווח|space/i.test(b.textContent); }),
+     await evalp(()=>document.querySelector('.grg-meet-scrim .btn')?.textContent||'—'));
+  const duckedUp = await modalDucked();
+  ok('…and the modal registry knows it owns the screen', duckedUp, 'audio modal-ducked');
+  // (a) held Space is ignored — the card survives a key the child never released
+  await repeatSpace(); await repeatSpace(); await wait(150);
+  ok('a HELD (repeating) Space does NOT dismiss it', await vis('.grg-meet-scrim'));
+  // …and the world behind it is still HELD. There is no race clock behind this
+  // card — the garage animates nothing on advance() — so the two things that do
+  // move when a card leaks away are asserted instead: the registry still owns the
+  // screen (the audio duck, D31/D34), and the one-time flag is still unspent, so
+  // the child can still be introduced to Boreg. Both flip the instant a repeating
+  // Space is allowed to close the card.
+  {
+    const held = await modalDucked(), burned = await metBoreg();
+    await evalp(()=>window.__DEBUG.advance(2));
+    ok('…and the world behind it is still frozen/held', held && !burned && !(await metBoreg()),
+       `ducked ${held}, flag burned ${burned}`);
+  }
+  // (b) a real press goes on, exactly like Escape and exactly like the button
+  await tap('Space'); await wait(200);
+  ok('a real Space press closes Boreg\'s card', !(await vis('.grg-meet-scrim')));
+  ok('…and does not fall through to the pause menu', !(await vis('.mn-dialog.pause')));
+  ok('…and the \'meet\' modal id is released, not leaked',
+     duckedUp && (await modalDucked())===false);
+  // The key path used to skip popModal('meet') entirely (only the BUTTON popped
+  // it), so the check above is the one that pins the leak — and the flag below
+  // pins that the real press did the same bookkeeping the button does.
+  ok('…and the card is marked seen, once, by the real press', await metBoreg());
+}
+
 // ── 9. mouse and touch are the KEYBOARD's code path, not a second one ────
 // The quiz is answered with 1/2/3 and continued with Space, and Wave 4 added
 // click/tap for both. The risk is not that the pointer does nothing — it is that
@@ -637,6 +772,352 @@ await wait(300);
 await evalp(()=>window.__DEBUG.advance(4));
 await openQuiz(); await wait(150);
 ok('…nor does the next RACE, on the same save', !(await vis('.qzint-scrim')) && await vis('.quiz-root.show'));
+
+/* ══════════════════ 11. ONBOARDING DENSITY (Wave 5, item 6) ════════════════
+   The first race used to be able to show four teaching cards inside ninety
+   seconds — the track intro card, the first-token explainer, the first-box
+   explainer and the quiz's own feedback — each one justified on its own and a
+   slideshow together. ui/style.js now holds a cadence: a card asks
+   teachingCardReady() before opening and calls noteTeachingCard() when it
+   closes, and anything not ready DEFERS to its next natural trigger.
+
+   This section drives a REAL first race — a save that has never seen an
+   explainer, the intro card on, real beacons and real token pickups — and
+   measures when each card owns the screen. It asserts the PROPERTY (a gap, a
+   count, a card that comes back) and never the wording: D42.
+   ────────────────────────────────────────────────────────────────────────── */
+/* WAVE 5.1 REWRITE. Round 2 of this section pinned a cadence gate that sat at
+   the BEACON: a question box that arrived inside another teaching card's shadow
+   was consumed and opened nothing. Measured on the built game that ate roughly
+   two boxes in three, and the first boxes of a championship fired nothing at
+   all — a child reads that as a broken pickup, and the assertions here were
+   pinning the breakage in place. So the contract this section holds has moved,
+   deliberately, in one direction:
+
+     • TEACHING CARDS still space themselves. The gap lives in ui/style.js and
+       the card that still consults it is race.js's first-token explainer; 11d
+       asserts its magnitude, where the constant actually is.
+     • QUESTION BOXES are never deferred by it. The only thing that can hold a
+       box back is quiz.js's VISIBLE cooldown — ghosted beacons, a filling
+       recharge ring, a soft token if you drive through one anyway — and the
+       first box of a race ignores even that. `quiz:deferred` is gone from the
+       bus; 11c asserts that a frozen teaching clock now costs the child NO
+       questions at all, which is the exact inverse of what it used to assert
+       and therefore goes red against the old code.
+     • The per-box detail (ghosting, the recharge ring, the soft token, the
+       fire rate) is tools/quizboxtest.mjs. This section stays what it is: the
+       ONBOARDING DENSITY gate.                                              */
+const TEACH_GAP_S = 15;      // ui/style.js — the nominal teaching-card gap
+const CARD_FLOOR_S = 6;      // race.js — the first-token card's escalated floor
+const BOX_COOLDOWN_S = 8;    // quiz.js — the visible box cooldown, i.e. box→box
+const WINDOW_S = 90;         // "the first ninety seconds"
+const DRIVE_S = 95;
+const READ_S = 1.2;          // the child looks at the card before dismissing it
+// 5 → 7 in Wave 5.1, and this is the one number this pass actually spends.
+// Round 2 bought its budget of five by DEFERRING question boxes at the beacon,
+// which is the mechanism 5.1 removed: the boxes it declined to open were the
+// game's whole teaching surface, and it declined silently. Seven is the intro
+// card + the first-token explainer + five question boxes, measured on a real
+// first race, and what stops it being a slideshow is the gap rather than the
+// count — asserted separately just below, and observed at 7.3–17.8s.
+// MAX_OPENERS is untouched at 2, because THAT is the onboarding number: two
+// one-time cards in the first ninety seconds. A question box is not onboarding,
+// it is the game.
+const MAX_CARDS = 7;
+const MAX_OPENERS = 2;       // …of which at most two are one-time/opening cards
+
+console.log('\n  11. onboarding density: teaching cards in the first 90s\n  ' + '─'.repeat(74));
+
+// THE SYNTHETIC CLOCK. The cadence is measured in WALL seconds — "a slideshow"
+// is a wall-clock feeling, and race time does not advance at all while a card
+// is up (D20) — so ninety of those seconds have to pass for this to mean
+// anything. style.js exposes setTeachingClock() for exactly this, but a built
+// bundle exports nothing to the page, so the injection point available from
+// here is the clock it reads: performance.now. (The engine's own RAF loop
+// returns early under _headless, so nothing else in the game reads it.)
+// Installed BEFORE goto('race'): clearModals(), which every scene change
+// fires, is what resets the cadence, so game and gate start the clock together.
+async function bootFresh(opts) {
+  await page.goto('file://' + dist, { waitUntil: 'load' });
+  await page.evaluate(()=>localStorage.setItem('promptracers.v1','{}'));
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction('window.__DEBUG && window.__DEBUG.ready === true', { timeout: 60000 });
+  await evalp(()=>{ window.__T = 0; performance.now = () => window.__T * 1000; });
+  await evalp(o=>window.__DEBUG.goto('race', o), { track:0, difficulty:1, autopilot:true, ...opts });
+  // The recorder runs INSIDE the page, sampled every fixed step, so an open and
+  // a close are timed to 1/60s instead of to a round-trip. A card episode is
+  // taken from the owner's own state where there is one: the quiz box episode
+  // is `quiz.phase !== 'idle'`, which starts at the explainer/question and ends
+  // at close() — the exact moment the cadence clock starts, and 2.16s after the
+  // panel itself disappeared behind the 3·2·1.
+  await evalp(()=>{
+    const D = window.__DEBUG, A = () => D.engine.active;
+    window.__EV = []; window.__DEF = []; window.__PICK = []; window.__PHASE = [];
+    window.__MET = []; window.__SOFT = [];
+    // `quiz:deferred` no longer exists (Wave 5.1). It is still SUBSCRIBED to, on
+    // purpose: if anything ever re-introduces a beacon-side deferral this array
+    // stops being empty and 11c goes red, instead of the gate quietly measuring
+    // a bus event nobody emits.
+    D.bus.on('quiz:deferred', e => window.__DEF.push({ t: window.__T, since: e.since, gap: e.gap }));
+    // Every beacon actually driven through, live or recharging — the number the
+    // fire-rate claim is made of.
+    D.bus.on('quiz:beacon', e => window.__MET.push({ t: window.__T, active: !!e.active }));
+    D.bus.on('quiz:softToken', () => window.__SOFT.push(window.__T));
+    D.bus.on('token:pickup', () => window.__PICK.push(window.__T));
+    const st = {};
+    window.__sample = () => {
+      const a = A();
+      const now = {
+        ic: !!document.querySelector('.ic-card'),
+        tok: !!document.querySelector('.grgtok-scrim'),
+        qint: !!document.querySelector('.qzint-scrim'),
+        box: a.quiz.phase !== 'idle',
+      };
+      for (const k of Object.keys(now)) {
+        if (now[k] === !!st[k]) continue;
+        if (now[k]) window.__EV.push({ kind:k, open:window.__T, close:null });
+        else { const e=[...window.__EV].reverse().find(x=>x.kind===k && x.close===null); if (e) e.close = window.__T; }
+        st[k] = now[k];
+      }
+      const ph = a.state.phase;
+      if (window.__PHASE[window.__PHASE.length-1]?.p !== ph) window.__PHASE.push({ p:ph, t:window.__T });
+    };
+    window.__drive = secs => { const F=1/60;
+      for (let i=0,n=Math.round(secs/F); i<n; i++) { window.__T += F; D.advance(F); window.__sample(); } };
+    window.__sample();
+  });
+  await wait(150);
+}
+const probe = () => evalp(()=>{
+  const a = window.__DEBUG.engine.active;
+  return { t:window.__T, ic:!!document.querySelector('.ic-card'), tok:!!document.querySelector('.grgtok-scrim'),
+    qint:!!document.querySelector('.qzint-scrim'), box:a.quiz.phase!=='idle',
+    phase:a.state.phase, raceTime:a.state.raceTime, picks:window.__PICK.length };
+});
+const drive = s => evalp(x=>window.__drive(x), s);
+const tokenFlag = () => evalp(()=>{
+  try { return !!JSON.parse(localStorage.getItem('promptracers.v1')||'{}').garageTokenIntroSeen; }
+  catch { return null; } });
+
+/* ── 11a. the real first race, driven for 90+ seconds ──────────────────────*/
+await bootFresh({ introCard: true });
+const first = await probe();
+let p = first, afterIntro = null, tokSeen = false, flagAtPickup = null;
+while (p.t < DRIVE_S) {
+  await drive(0.5);
+  p = await probe();
+  tokSeen = tokSeen || p.tok;
+  // The flag as it stands the moment the first token is in hand: a card that
+  // defers must leave it alone, or the explainer is not postponed but LOST.
+  if (flagAtPickup === null && p.picks > 0) flagAtPickup = await tokenFlag();
+  if (p.ic || p.tok || p.qint || p.box) {
+    await drive(READ_S);                                   // a beat to read it
+    // …then dismissed the way a child dismisses it, through the browser's own
+    // keyboard, so the capture-phase handlers are the ones being exercised.
+    if (p.ic) { await tap('Space'); await wait(60); await drive(1/60);
+                if (!afterIntro) afterIntro = await probe(); }
+    else if (p.tok) { await tap('Escape'); await wait(60); }
+    else if (p.qint) { await tap('Escape'); await wait(60); }
+    else if (p.box) {
+      await tap('Digit1'); await wait(60); await drive(1); await tap('Space'); await wait(60);
+    }
+  }
+  if (p.t > WINDOW_S && !p.box) break;   // finish the episode that straddles 90s
+}
+const evAll = await evalp(()=>window.__EV.map(e=>({ ...e, close: e.close ?? window.__T })));
+const defs  = await evalp(()=>window.__DEF);
+const picks = await evalp(()=>window.__PICK);
+// 'qint' (the first-box explainer) is a SUB-STATE of the box episode —
+// quiz.phase === 'intro' — so it is printed but never counted twice.
+const cards = evAll.filter(e=>e.kind!=='qint').sort((a,b)=>a.open-b.open);
+const inWin = cards.filter(c=>c.open < WINDOW_S);
+// 'qint' is excluded here for the same reason it is excluded from `cards`: it is
+// a SUB-STATE of the box episode (quiz.phase === 'intro'), not a panel of its
+// own, so counting it would charge the child twice for one interruption.
+const openers = evAll.filter(e=>e.kind!=='box' && e.kind!=='qint' && e.open < WINDOW_S);
+const NAME = { ic:'intro card', tok:'first-token explainer', qint:'  ↳ first-box explainer', box:'question box' };
+console.log('     TIMELINE — synthetic wall seconds from the race opening:');
+for (const e of [...evAll].sort((a,b)=>a.open-b.open))
+  console.log(`       ${e.open.toFixed(2).padStart(7)}s → ${e.close.toFixed(2).padStart(7)}s  ${NAME[e.kind]}`);
+const met = await evalp(()=>window.__MET);
+console.log(`     ${inWin.length} cards in the first ${WINDOW_S}s (${openers.length} of them one-time/opening cards)` +
+            ` · ${met.length} beacon(s) driven through, ${met.filter(m=>m.active).length} of them live` +
+            ` · ${defs.length} box(es) deferred on cadence`);
+console.log(`     token pickups (${picks.length}): ${picks.map(x=>x.toFixed(1)).join(' ') || 'none'}`);
+
+const icEv = evAll.find(e=>e.kind==='ic');
+ok('the intro card is the first thing on screen', first.ic===true && cards[0]?.kind==='ic', `first card: ${cards[0]?.kind}`);
+ok('…and it precedes the countdown (nothing has run yet)',
+   first.phase==='intro' && first.raceTime===0, `${first.phase}, raceTime ${first.raceTime}`);
+ok('…and the countdown follows it', afterIntro?.phase==='countdown', afterIntro?.phase);
+ok('the race really did run inside the window', p.raceTime > 40, `${p.raceTime.toFixed(1)}s of race`);
+
+// The intro card is the CURTAIN, not an in-race card: it closes before the
+// countdown, casts no shadow (introcard.js, round 2) and is therefore excluded
+// from the pair-gap rule — the countdown plus the drive to the first token is
+// what separates it from whatever comes first. Round 1 gave it the full 15s and
+// that DELETED the first-token explainer, which is what 11a now pins below.
+const inRace = cards.filter(c=>c.kind!=='ic');
+const gaps = inRace.slice(1).map((c,i)=>({ from:inRace[i].kind, to:c.kind, gap:c.open-inRace[i].close }));
+// The FLOOR, not the nominal gap. Two different rules meet here and the floor
+// is the lower of them: box → box is the visible cooldown (BOX_COOLDOWN_S,
+// quiz.js), and a first-token explainer that has already stood aside twice opens
+// on CARD_FLOOR_S rather than never (race.js). The nominal 15s is asserted
+// directly, at a provoked pickup, in 11d — asserting it here would only be
+// asserting track geometry, since track 0's beacons are ~22s apart and no pair
+// of them is ever closer than 15s whatever the constant says.
+const FLOOR_S = Math.min(CARD_FLOOR_S, BOX_COOLDOWN_S);
+const tooClose = gaps.filter(g=>g.gap < FLOOR_S-0.05);
+ok(`no in-race teaching card opens within the ${FLOOR_S}s floor of the previous one closing`,
+   inRace.length>1 && tooClose.length===0,
+   tooClose.length ? tooClose.map(g=>`${g.from}→${g.to} ${g.gap.toFixed(2)}s`).join(', ')
+                   : `min ${Math.min(...gaps.map(g=>g.gap)).toFixed(1)}s · ` + gaps.map(g=>g.gap.toFixed(1)+'s').join(' '));
+ok('…and the curtain is separated from the first in-race card by the countdown',
+   !!icEv && !!inRace[0] && inRace[0].open - icEv.close > 3,
+   inRace[0] ? `${(inRace[0].open-icEv.close).toFixed(1)}s to the ${NAME[inRace[0].kind]}` : 'no in-race card');
+ok(`at most ${MAX_CARDS} teaching cards in the first ${WINDOW_S}s`, inWin.length<=MAX_CARDS, `${inWin.length}`);
+ok(`…and at most ${MAX_OPENERS} of them are one-time/opening cards`, openers.length<=MAX_OPENERS,
+   openers.map(e=>NAME[e.kind].trim()).join(' + ') || 'none');
+
+ok('the first-box explainer was reached', !!evAll.find(e=>e.kind==='qint'),
+   evAll.find(e=>e.kind==='qint') ? `at ${evAll.find(e=>e.kind==='qint').open.toFixed(1)}s` : 'never appeared');
+
+// ── THE FIRST-TOKEN EXPLAINER MUST LAND (round 2) ──────────────────────────
+// Round 1's cadence did not postpone this card, it DELETED it: measured over a
+// complete first race, the intro card closed at 1.7s, the first token was
+// picked up 7.5s later — inside the curtain's 15s shadow — and every later
+// pickup fell inside a question box's shadow, because trackbuild lays the token
+// rows along the same racing line as the beacons. The child reached the flag
+// with `garageTokenIntroSeen` still unset, never having been told what a token
+// is. These four lines are the gate on that: the card lands on the first
+// pickup, and by the end of the window it is not still owed.
+const tokEv = evAll.find(e=>e.kind==='tok');
+const sincePick = picks.length ? picks[0]-icEv.close : NaN;
+ok('a token is picked up early in the first race', picks.length>0 && sincePick < TEACH_GAP_S,
+   `first pickup ${picks[0]?.toFixed(1)}s, ${sincePick.toFixed(1)}s after the curtain closed`);
+ok('…and the first-token explainer opens ON that pickup, not later or never',
+   !!tokEv && Math.abs(tokEv.open - picks[0]) < 1,
+   tokEv ? `pickup ${picks[0].toFixed(2)}s → card ${tokEv.open.toFixed(2)}s` : 'never appeared');
+ok('…and its one-time flag is written exactly then', flagAtPickup===true,
+   `flag at the first pickup: ${flagAtPickup}`);
+ok('…so the explainer is NOT still owed at the end of the window',
+   (await tokenFlag())===true, `garageTokenIntroSeen: ${await tokenFlag()}`);
+
+/* ── 11b. the paired positive: the SAME pickup fires it when nothing is due ──
+   A negative assertion alone would pass just as happily against a token
+   explainer that is broken and never opens at all. This is the identical race
+   with the one difference that clears the cadence — no intro card, so nothing
+   has closed — and the very first pickup must open the card.                */
+await bootFresh({ introCard: false });
+let q = await probe(), fired = false;
+while (q.t < 40 && !fired) { await drive(0.5); q = await probe(); fired = q.tok; }
+const picks2 = await evalp(()=>window.__PICK);
+ok('[control] a token is picked up with no card due', picks2.length>0, `first pickup ${picks2[0]?.toFixed(1)}s`);
+ok('[control] …and the very same pickup DOES open the explainer', fired, `at ${q.t.toFixed(1)}s`);
+ok('[control] …and only now is the one-time flag written', (await tokenFlag())===true);
+await tap('Escape'); await wait(120); await drive(0.5);   // …and the race carries on
+ok('[control] the race is running again after it', !(await probe()).tok);
+/* ── 11c. THE INVERSION: a card's shadow no longer eats a question box ──────
+   Round 2 of this file asserted the opposite of what follows, and it was right
+   about the mechanism and wrong about the game: with the teaching clock held
+   still (i.e. "no wall time has passed since the last card"), EVERY beacon was
+   consumed and NOT ONE opened a box. That is the state a child hits after any
+   question — and they cannot see it, so they read the boxes as broken.
+
+   So the same provocation is kept, exactly, and the expected answer is flipped.
+   Holding the clock is now supposed to cost the child nothing at all: cards
+   space themselves, boxes do not. This assertion goes red against the pre-5.1
+   code, which is the whole point of keeping the section.                     */
+// Warm-up: one COMPLETE box episode, so a teaching card has provably just
+// closed and the cadence clock is genuinely armed. (Without it the clock could
+// still be at its "no card this race" value, where nothing would be gated and
+// the whole check would pass for the wrong reason.)
+let boxesDone = 0;
+for (let i=0; i<140 && boxesDone===0; i++) {
+  await drive(0.5);
+  const st = await probe();
+  if (st.qint) { await drive(READ_S); await tap('Escape'); await wait(60); }
+  else if (st.box) { await drive(READ_S); await tap('Digit1'); await wait(60);
+                     await drive(1); await tap('Space'); await wait(60); await drive(3); }
+  boxesDone = await evalp(()=>window.__EV.filter(e=>e.kind==='box' && e.close!=null).length);
+}
+ok('[frozen clock] a question box opened and closed first', boxesDone>0, `${boxesDone} box episode(s)`);
+// Both candidate clocks are held: performance.now (style.js's default) and
+// engine.time (what harness.js should hand setTeachingClock, so that a gate
+// which steps the sim faster than real time still measures a truthful gap).
+// Freezing both means this check reads the same either way. The BOX cooldown is
+// deliberately NOT frozen — it drains on the real frame dt, which is what makes
+// it a rule about the road rather than a rule about a card.
+await evalp(()=>{ window.__DEF.length = 0; window.__EV.length = 0;
+  window.__MET.length = 0; window.__SOFT.length = 0;
+  window.__driveFrozen = secs => { const F=1/60, D=window.__DEBUG, t0=D.engine.time;
+    for (let i=0,n=Math.round(secs/F); i<n; i++) { D.advance(F); D.engine.time = t0; window.__sample();
+      // the child answers, so the run does not stall on one open panel
+      const q = D.engine.active.quiz;
+      if (q.phase==='question') document.querySelectorAll('.quiz-root.show .quiz-opt')[q.correctSlot]?.click();
+      else if (q.phase==='feedback') q.dismiss('key');
+      const scrim = document.querySelector('.qzint-scrim, .grgtok-scrim');
+      if (scrim && scrim.offsetParent!==null) scrim.querySelector('button')?.click();
+    } }; });
+await evalp(()=>window.__driveFrozen(60));            // 60s of racing, clock held
+const frozen = await evalp(()=>({ defs: window.__DEF.length,
+  met: window.__MET.length, live: window.__MET.filter(m=>m.active).length,
+  boxes: window.__EV.filter(e=>e.kind==='box').length, phase: window.__DEBUG.engine.active.quiz.phase }));
+ok('[frozen clock] beacons were driven through', frozen.met>0, `${frozen.met} beacon(s)`);
+ok('[frozen clock] …and the frozen card clock deferred NOT ONE of them',
+   frozen.defs===0, `${frozen.defs} quiz:deferred events (the event should not exist)`);
+ok('[frozen clock] …and boxes opened anyway — a card shadow costs no questions',
+   frozen.boxes>0 && frozen.live>0,
+   `${frozen.live}/${frozen.met} beacons live → ${frozen.boxes} box episode(s)`);
+
+/* ── 11d. THE MAGNITUDE, at the rule that survived ──────────────────────────
+   Round 2 asserted the magnitude of the BEACON-side teaching gap: a beacon at a
+   known `since` had to defer on 15s and not on 5s. That rule is gone, and a
+   magnitude assertion has to follow its constant rather than be deleted — the
+   thing 11c can be satisfied by is "some cooldown exists", and a cooldown of
+   zero would satisfy it just as happily as a cooldown of seven.
+
+   So the magnitude now lives where the pacing does: the VISIBLE cooldown. Right
+   after a box episode closes it must be a real gap (not 0, and not the old 24s
+   that took the boxes away for most of a lap), the beacons must actually LOOK
+   spent while it drains — asserted on the live material, not on a flag — and
+   the very next beacon inside it must pay the soft token instead of nothing. */
+console.log(`\n     11d. the magnitude of the visible cooldown (${BOX_COOLDOWN_S}s), read off the scene`);
+// One evaluate, because both halves have to be read off the SAME scene: the lit
+// baseline (whatever the art is worth, "ghosted" only means something against
+// it), then one provoked box episode, then the same material again.
+const mag = await evalp(async ()=>{
+  const D=window.__DEBUG, A=D.engine.active, q=A.quiz, F=1/60;
+  let core=null; A.scene.traverse(o=>{ if(o.name==='quiz:beacon-core') core=o; });
+  const read = () => core && ({ opacity:+core.material.opacity.toFixed(3),
+                                emissive:+core.material.emissiveIntensity.toFixed(3) });
+  const step = () => {
+    D.advance(F); window.__T+=F; window.__sample();
+    if (q.phase==='question') document.querySelectorAll('.quiz-root.show .quiz-opt')[q.correctSlot]?.click();
+    else if (q.phase==='feedback') q.dismiss('key');
+    const scrim = document.querySelector('.qzint-scrim, .grgtok-scrim');
+    if (scrim && scrim.offsetParent!==null) scrim.querySelector('button')?.click();
+  };
+  // 1. wait until the boxes are actually live and nothing is on screen
+  for (let i=0;i<60*60 && !(q.beaconsLive && q.phase==='idle');i++) step();
+  const lit = read();
+  // 2. drive into one, answer it, and let the whole episode close
+  for (let i=0;i<60*90 && q.phase==='idle';i++) step();
+  const opened = q.phase!=='idle';
+  for (let i=0;i<60*40 && q.phase!=='idle';i++) step();
+  return { lit, opened, spent: read(), left:+q.cooldownLeft.toFixed(2),
+           live:q.beaconsLive, charge:+q.charge.toFixed(3) };
+});
+ok('[magnitude] the beacon core is on the live scene graph and lit',
+   !!mag.lit && mag.lit.opacity>0.5 && mag.opened,
+   mag.lit ? `opacity ${mag.lit.opacity}, emissive ${mag.lit.emissive}` : 'quiz:beacon-core not found');
+ok(`[magnitude] a closed box leaves a real cooldown of about ${BOX_COOLDOWN_S}s`,
+   mag.left > BOX_COOLDOWN_S-2 && mag.left <= BOX_COOLDOWN_S+0.5 && mag.live===false,
+   `${mag.left}s left, beaconsLive ${mag.live}, charge ${mag.charge}`);
+ok('[magnitude] …and the beacons LOOK spent while it drains (live material, not a flag)',
+   !!mag.lit && mag.spent.opacity < mag.lit.opacity*0.5 && mag.spent.emissive < mag.lit.emissive*0.5,
+   `core opacity ${mag.lit?.opacity} → ${mag.spent?.opacity}, emissive ${mag.lit?.emissive} → ${mag.spent?.emissive}`);
+
 
 ok('no page errors', errs.length===0, errs[0]||'');
 console.log('  ' + '─'.repeat(74));

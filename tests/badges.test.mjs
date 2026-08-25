@@ -37,13 +37,16 @@ import { getTrack, gridSlots } from '../src/track/trackdef.js';
 import { KartBody, autopilotInput } from '../src/kart/kartphysics.js';
 import {
   BADGES, BADGE_IDS, GLOSSARY, GLOSSARY_IDS, ICONS, HARD_BADGE_IDS,
-  BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS, TOKEN_STEPS, DATA_TERM_TOKENS,
+  BADGE_STRINGS, GLOSSARY_STRINGS, DEFAULT_STATS, TOKEN_STEPS, DATA_TERM_TOKENS, PROMPT_STEPS,
   startBadgeTracker, getStats, evaluate, NEEDED_EVENTS, CONSUMED_EVENTS,
 } from '../src/core/badges.js';
 // THE ECONOMY, IMPORTED FROM ITS OWNERS. See the block below §"the measured
 // event stream" for why these are imports and not regexes any more.
 import { REWARD_TOKENS } from '../src/race/quiz.js';
 import { FINISH_TOKENS, TOKEN_CLUSTERS_PER_LAP } from '../src/race/race.js';
+// The prompt rungs are the GARAGE's tier cuts, so they are checked against the
+// garage's own function rather than against a second copy of the numbers.
+import { tierForScore } from '../src/garage/scoring.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = p => readFileSync(resolve(root, p), 'utf8');
@@ -89,13 +92,16 @@ const terms = () => save.read('glossary') || [];
 // error rather than a quiet zero. (The §6 pins still read the two files as TEXT,
 // because what they check is the SHAPE of an emit block, which has no export.)
 //
-// Two numbers still cannot be imported because no constant holds them:
-//   • questions per race 10 / 8 / 7 — DECISIONS.md D28, stopwatched on the built
-//     game. There is no constant; the quiz draws against beacons and cooldowns.
-//   • token pickups ~5 per race — a MEASUREMENT (3–6, mean 4.7 over a race),
-//     governed by race.js's TOKEN_CLUSTERS_PER_LAP. That constant IS pinned
-//     below, so if the row density is retuned this gate fails and says to
-//     re-measure, rather than quietly carrying a stale number.
+// Two numbers still cannot be imported because no constant holds them, and BOTH
+// were re-measured in Wave 6 — see the tables at QUESTIONS and PICKUPS_PER_RACE:
+//   • questions per race, now a flat 8 (pooled mean 7.9 over 26 real races).
+//     There is no constant; the quiz draws against beacons and cooldowns.
+//   • token pickups, now 4 (pooled mean 4.4), governed by race.js's
+//     TOKEN_CLUSTERS_PER_LAP and TOKEN_RESPAWN_S. The first IS pinned below, so
+//     a row-density retune fails this gate and says to re-measure rather than
+//     quietly carrying a stale number — which is exactly how it was caught.
+//     The lesson Wave 6 added: the pin fires on the constant that MOVED, but the
+//     number that was wrong was its NEIGHBOUR. Re-measure both terms of a sum.
 const quizSrc = read('src/race/quiz.js');
 const raceSrc = read('src/race/race.js');
 
@@ -118,12 +124,64 @@ function DRIFT_BOOST_PAYLOAD(peakTier, source = 'drift') {
   return { tier: source === 'drift' ? peakTier : 0, source };
 }
 
-const QUESTIONS = [10, 8, 7];
+// D28 stopwatched 10 / 8 / 7 question boxes a race. Wave 5 re-measured it on the
+// built game (36 real races, four player profiles × three races × three seeds)
+// and it is now 4–8, engaged 5–8: the teaching-card cadence defers roughly one
+// box a race. Updated rather than left alone, because the whole point of the
+// derivation below is that it describes the economy the game ACTUALLY has — a
+// calibration that happens to come out right off a stale input is the failure
+// this file exists to prevent, not a pass.
+//
+// WAVE 6: [7, 7, 6] had gone stale one wave earlier than anyone noticed. Wave
+// 5.1 restored the question cadence (D56: ~8.6 boxes opened per engaged race)
+// and this input was not re-measured with it, so this file has been modelling a
+// child who meets one to two fewer boxes a race than the game gives them. Wave
+// 6 measured it again on the built game — three tracks x three seeds x three
+// player profiles, 26 real races driven to the flag (.tmp/w6b-econ.mjs), counting
+// `quiz:open` rather than inferring it:
+//
+//     boxes OPENED per race     oasis      circuit    cloud     mean
+//     engaged, answers all      7  8  9    7  8  7    9  7  8   7.8
+//     answers ~half wrong       8  8  7    9 10  8    9  9      8.5
+//     ignores every box         7  9  8    7  5  7    8  8  7   7.4
+//     pooled                                                    7.9
+//
+// Hence a flat 8, and the flatness is a measurement rather than a convenience:
+// the per-track means are 7.9 / 7.6 / 8.1 once all three profiles are pooled.
+// The PROFILE spread is the real one, and it runs the way the design intends —
+// the child who answers correctly gets a boost, finishes sooner and therefore
+// meets FEWER boxes (7.8) than the child who is half-right and slower (8.5).
+// The child this section models is the half-right one, so 8 understates them.
+// Wave 5.1's D56 measured 8.6 opened for an engaged race across nine races,
+// which is the same number from the other end.
+//
+// It was found the way stale inputs always are: the Wave-6 pickup change moved
+// the OTHER term of the same sum, `tokens-200` fell 5 tokens short of landing
+// inside two championships, and re-measuring the neighbours rather than tuning
+// the one constant that had just moved is what found the real error. The rung
+// clears by a thin margin even so — see the note on that assertion.
+const QUESTIONS = [8, 8, 8];
 const TIER_OF_RACE = [1, 2, 3];
 // Measured on the built game after the Wave-4 source-level thinning: 3–6 pickups
 // a race, mean 4.7, on all three tracks (the point of counting whole rows rather
 // than a fraction of a spot list is that it no longer differs per track).
-const PICKUPS_PER_RACE = 5;
+// Wave 6 re-measured it on the same 26 races after the lap went from one pickup
+// row to three, with a taken row retired for the rest of the race:
+//
+//     pickups per race          oasis      circuit    cloud     mean
+//     engaged, answers all      3  2  3    5  3  3    5  5  4   3.7
+//     answers ~half wrong       4  5  6    3  5  5    5  6      4.9
+//     ignores every box         5  3  4    5  5  6    4  5  5   4.7
+//     pooled                                                    4.4
+//
+// so this constant is 4 — the pooled mean rounded DOWN, and a token under the
+// 4.9 the half-right child this section models actually collects. Deliberately
+// the conservative end: the calibration claims below are floors ("earned by
+// championship 2"), so the model must not be the optimistic reading of the
+// economy. The derivation was re-run by hand at 5 / 4 / 3.5 / 3 pickups and
+// every calibration assertion stays inside its bars at all four, so no
+// TOKEN_STEPS threshold needed re-deriving.
+const PICKUPS_PER_RACE = 4;
 const BOOSTS_PER_RACE = 12;
 const TOPICS = ['whatai', 'prompt', 'tokens', 'iterate', 'mistakes', 'vibe'];
 
@@ -395,8 +453,18 @@ console.log('\n  3. the collection survives a new championship, dies with a full
   // …and the season badge cannot be re-earned by a second season's first race.
   const n = badges().length;
   playRace({ race: 0, place: 1 });
-  ok('champ-podium3 is not re-awarded after the reset', badges().length === n
-    || !badges().filter(b => b === 'champ-podium3').length > 1);
+  // Asserted about champ-podium3 SPECIFICALLY. It used to read
+  // `badges().length === n || !badges().filter(…).length > 1`, whose second
+  // branch is `(!x) > 1` — always false — so the whole thing was really "no new
+  // badge of ANY kind lands on this race". That is a different claim, and a
+  // false one: this race is the 15th correct answer of the run for any
+  // calibration where a championship is ~14 questions, so `quiz-15` legitimately
+  // lands here and the season badge was never the thing being measured.
+  const fresh = badges().slice(n);
+  ok('champ-podium3 is not re-awarded after the reset',
+    !fresh.includes('champ-podium3')
+    && badges().filter(b => b === 'champ-podium3').length === 1,
+    fresh.length ? `also unlocked: ${fresh.join(', ')}` : 'nothing new unlocked');
 
   // Full wipe (settings screen: save.reset() then bus.emit('save:reset')).
   save.reset();
@@ -436,7 +504,7 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
   // just below), so re-measure the income and re-derive them — do not widen the
   // pin to make the red go away.
   ok('PINNED: the economy TOKEN_STEPS was derived from — if this moves, RE-MEASURE',
-    TOKEN_CLUSTERS_PER_LAP === 1
+    TOKEN_CLUSTERS_PER_LAP === 3
     && REWARD[1] === 1 && REWARD[2] === 1 && REWARD[3] === 1
     && FINISH_TOKENS.join(',') === '5,4,4,3,3,3,3,3',
     `clusters/lap ${TOKEN_CLUSTERS_PER_LAP}, quiz ${REWARD[1]}/${REWARD[2]}/${REWARD[3]},`
@@ -492,6 +560,39 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
     && says('glos.data.hint', DATA_TERM_TOKENS),
     `"${BADGE_STRINGS.en['badge.tokens-50.cond']}" / "${BADGE_STRINGS.en['badge.tokens-200.cond']}"`
     + ` / "${GLOSSARY_STRINGS.en['glos.data.hint']}"`);
+
+  // ── the PROMPT rungs, under exactly the same rule (Wave 5) ────────────────
+  // `prompt-80` was the last badge with its number typed in four places — test,
+  // progress and both condition strings — and GAPS names it as the FIRST thing
+  // to check after an economy change. Same two-layer pin as the token badges: a
+  // string check that the child reads the number the badge tests, and a
+  // DERIVATION that says what those numbers mean.
+  ok('the prompt rungs read from PROMPT_STEPS in both languages',
+    says('badge.prompt-good.cond', PROMPT_STEPS.good)
+    && says('badge.prompt-80.cond', PROMPT_STEPS.precise)
+    && says('badge.prompt-max.cond', PROMPT_STEPS.max),
+    `"${BADGE_STRINGS.en['badge.prompt-80.cond']}" / "${BADGE_STRINGS.he['badge.prompt-80.cond']}"`);
+  // …and the badge tests really use them, not a literal that happens to match.
+  const badgeById = id => BADGES.find(b => b.id === id);
+  ok('…and the badge tests move with the constants',
+    badgeById('prompt-80').test({ bestPromptScore: PROMPT_STEPS.precise })
+    && !badgeById('prompt-80').test({ bestPromptScore: PROMPT_STEPS.precise - 1 })
+    && badgeById('prompt-good').test({ bestPromptScore: PROMPT_STEPS.good })
+    && !badgeById('prompt-good').test({ bestPromptScore: PROMPT_STEPS.good - 1 }),
+    `precise ${PROMPT_STEPS.precise}, good ${PROMPT_STEPS.good}`);
+  // THE DERIVATION. These are not free numbers: they are the garage's own tier
+  // cuts, so "precise prompt" means "you built a tier-3 part" and cannot drift
+  // away from what the child watched happen on the stat bars.
+  ok('the prompt rungs ARE the garage tier cuts (tier 2 and tier 3)',
+    tierForScore(PROMPT_STEPS.good) === 2 && tierForScore(PROMPT_STEPS.good - 1) === 1
+    && tierForScore(PROMPT_STEPS.precise) === 3 && tierForScore(PROMPT_STEPS.precise - 1) === 2,
+    `good ${PROMPT_STEPS.good} → tier ${tierForScore(PROMPT_STEPS.good)},`
+    + ` precise ${PROMPT_STEPS.precise} → tier ${tierForScore(PROMPT_STEPS.precise)}`);
+  // `prompt-max` must stay above the top of the tier ladder, or "expert mode
+  // only" stops being true and the hard badge becomes a guided one.
+  ok('…and prompt-max sits ABOVE the top tier cut, so free text is really needed',
+    PROMPT_STEPS.max > PROMPT_STEPS.precise,
+    `max ${PROMPT_STEPS.max} vs the tier-3 cut ${PROMPT_STEPS.precise}`);
 }
 
 {
@@ -549,6 +650,16 @@ console.log('\n  4. calibration — 2–3 championships earns most badges, hard 
     afterC1.badges.includes('tokens-50'), `${afterC1.tokens} tokens after one championship`);
   ok(`…and the נתונים term (${DATA_TERM_TOKENS}) with it`,
     afterC1.terms.includes('data'), afterC1.terms.join(', '));
+  // THIS ONE IS THIN, AND THE THINNESS IS THE POINT (Wave 6). 82 banked against
+  // an 80 rung — two tokens. `tokens-200` was calibrated to land right AT the
+  // two-championship mark, so it has no headroom by design and any income change
+  // in either direction moves it: Wave 6's pickup retune alone took it to 75
+  // (red), and re-measuring the stale question cadence in the same sum put it
+  // back to 82. If you are reading this because it is red again, the fix is the
+  // same as it was here — re-measure BOTH terms of the sum on the built game
+  // before touching either constant, and do not touch TOKEN_STEPS: the badge
+  // board is player-approved, so the economy has to carry the rung. Logged in
+  // GAPS.md as a knife-edge rather than widened.
   ok(`both token milestones (${TOKEN_STEPS.low}/${TOKEN_STEPS.high}) land inside 2 championships`,
     afterC2.badges.includes('tokens-50') && afterC2.badges.includes('tokens-200'),
     `${afterC2.tokens} tokens after two championships`);

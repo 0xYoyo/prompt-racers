@@ -30,10 +30,11 @@
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { FINISH_TOKENS, TOKEN_CLUSTERS_PER_LAP, thinTokenSpots } from '../src/race/race.js';
+import { FINISH_TOKENS, TOKEN_CLUSTERS_PER_LAP, TOKEN_RESPAWN_S, TOKEN_ROW_CLEAR_S,
+  thinTokenSpots } from '../src/race/race.js';
 import { REWARD_TOKENS } from '../src/race/quiz.js';
 import { MAX_COST, MIN_COMPLETE_COST, DEFAULT_BUDGET, PART_COST } from '../src/garage/prompts.js';
-import { tokenReward } from '../src/garage/scoring.js';
+import { tokenReward, REBATE_CAP, REBATE_CAP_EXPERT } from '../src/garage/scoring.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = p => readFileSync(resolve(root, p), 'utf8');
@@ -55,8 +56,47 @@ console.log('\n  TOKEN ECONOMY — invariants over the shipped constants\n  ' + 
 // same pickups and no quiz tokens at all. The richest single race of the thirty
 // banked 18. These are the EXTREMES, not the means, because "a fully engaged
 // player" is the only version of the target worth gating.
+//
+// WAVE 5 RE-MEASURED IT (.tmp/econmeasure.mjs, four player profiles × three
+// races × three seeds, thirty-six real races driven to the flag). Two things had
+// moved underneath the Wave-4 numbers and both landed in the same wave: the
+// teaching-card cadence now defers roughly one question box per race, and race
+// 2's pace was retuned (`TRACK_PACE.circuit` 0.96 → 0.98), which moves finishing
+// positions and so the finish bonus. Measured again rather than extrapolated —
+// D33's lesson is that a balance measurement is only valid against the field it
+// was taken on:
+//
+//   engaged + winning   13–17 a race     engaged + mid-pack   13–16
+//   half-right          10–14            ignores every box     6–10
+//   boxes met 4–8 (engaged answers 5–8) · pickups 3–6 · finish bonus 3–5
+//
+// The maxima below are the extremes of that run, kept as extremes on purpose:
+// "a fully engaged player" is the only version of the target worth gating. The
+// question maximum stays at Wave 4's 9 rather than dropping to Wave 5's measured
+// 8: the cadence change that removed a box is a pacing decision that could be
+// tuned back tomorrow, and this envelope is the guard, so it keeps the larger of
+// the two real observations.
+//
+// WAVE 6 RE-MEASURED IT AGAIN (.tmp/w6b-econ.mjs, the same harness, winning +
+// fully engaged and ignores-every-box, three tracks × three seeds), because the
+// pickup half of the economy changed shape: the lap now shows THREE rows instead
+// of one and each row pays once for the race instead of once a lap. Measured, a
+// winning engaged race banks 14–19 with 2–5 from pickups (was 13–18 with 4–6) —
+// the same wallet, arriving as three pickup moments in three places rather than
+// one moment repeated three times. The child who ignores every box banks 7–9
+// with 3–6 pickups; they take MORE rows than the engaged child, because the
+// slow-motion cooldown a timed-out box costs them drags them across rows the
+// racing line skips. That 6 is where the ceiling below comes from.
+//
+// The pickup FLOOR moved 3 → 2 and is recorded honestly rather than rounded up:
+// on `oasis` the racing line misses two of the three rows outright on some
+// seeds. Invariant B is re-derived from it below and still holds (2 + 3 = 5
+// against a cheapest complete ask of 4), which is the point of deriving rather
+// than typing. The CEILING is deliberately left at Wave 4/5's 6 even though
+// nothing measured above 5: it is the guard, and a guard that tracks the last
+// measurement down has stopped guarding.
 const MAX_QUESTIONS_PER_RACE = 9;
-const MIN_PICKUPS_PER_RACE = 3;
+const MIN_PICKUPS_PER_RACE = 2;
 const MAX_PICKUPS_PER_RACE = 6;
 // The one outlier, kept as a JOINT observation rather than folded into the
 // maxima above: the longest race measured opened 11 boxes, and that same run
@@ -84,6 +124,62 @@ ok('FINISH_TOKENS imports from race.js (not scraped)',
 ok('TOKEN_CLUSTERS_PER_LAP imports from race.js (not scraped)',
   Number.isInteger(TOKEN_CLUSTERS_PER_LAP) && TOKEN_CLUSTERS_PER_LAP >= 1,
   `${TOKEN_CLUSTERS_PER_LAP} row(s) a lap`);
+
+// ── WAVE 6: THE ROW COUNT AND THE ROW INCOME ARE NOW SEPARATE LEVERS ─────────
+// Until Wave 6 they were the same number. A taken token came back after 26s —
+// less than a lap — so the income was `rows × laps`, and the only lever that
+// could hold a winning engaged race under the 21-token top ask was to author
+// ONE row. That bought the wallet with the whole lap: three laps offered the
+// child the same row three times and nothing else, so pickup dopamine arrived
+// once a lap, always in the same place, and D39's "a row is worth ~2 tokens"
+// was really "one row's worth of tokens, three times".
+//
+// Wave 6 splits them:
+//   • TOKEN_CLUSTERS_PER_LAP is what the child SEES  — 3 rows, spread round the lap;
+//   • TOKEN_RESPAWN_S / TOKEN_ROW_CLEAR_S are what a row PAYS — once, for the race.
+//
+// Both halves need pinning, because either one alone undoes the other:
+//   • put the count back to one row and the lap goes quiet again;
+//   • leave the count up but let rows pay per lap again and the wallet drifts up
+//     behind invariants that still happen to hold. That second one is not
+//     hypothetical: measured mid-change, per-TOKEN retirement (rows come back
+//     only as the individual octahedra the kart's line missed) still paid NINE
+//     pickups on `cloud`, because a row is 3–4 tokens laid ACROSS the road and
+//     lap 2 comes back on a slightly different line. It put a 23-token race on
+//     the board against a 21-token ask. The ROW is the unit that had to retire.
+//
+// WAVE 6 ROUND 2 — the alternative was measured and REJECTED, so nobody has to
+// guess at it again. A critic measured `token:pickup` per lap on the built game
+// (winning, fully engaged, seed 3) and found the shipped rows are all collected
+// inside the first ~35 s: oasis 4/0/0, circuit 4/1/0, cloud 4/0/0. The proposed
+// fix was to keep row-level retirement but give the row a lap-plus respawn so a
+// pickup moment lands on later laps too. Both variants were built and driven:
+//
+//   rows  respawn   pickups (oasis / circuit / cloud)   per-lap          verdict
+//     2     55 s     5 / 6 / 5                          3/0/2 3/1/2 2/0/3  ceiling
+//     3     55 s     7 / 13 / 8                         4/0/3 4/4/5 4/0/4  wallet 25
+//
+// PICKUP_CEIL is 6 (see the flow gate: it is whatever is left under the 21-token
+// top ask once the richest quiz and the best finish are paid), so the 3-row
+// variant puts a 25-token race on the board — the exact failure D39/D51 exist to
+// prevent — and the 2-row variant lands circuit ON the ceiling while dropping the
+// lap from the brief's three visible clusters to two. Lap times are 45–56 s, so a
+// respawn short enough to pay on EVERY lap pays three times per row and is richer
+// still. Within the income the top ask leaves, ~4 row-passes a race is the whole
+// budget: it buys either three rows once (shipped) or two rows twice, and no
+// arrangement of it puts a moment on all three laps. Logged in GAPS instead.
+ok('the lap shows a child three or more pickup rows, not one',
+  TOKEN_CLUSTERS_PER_LAP >= 3, `${TOKEN_CLUSTERS_PER_LAP} rows a lap`);
+ok('…and a row that has been collected never comes back this race',
+  TOKEN_RESPAWN_S === Infinity, `respawn ${TOKEN_RESPAWN_S}s`);
+ok('…and the ROW retires, not just the one token the kart touched',
+  /rowClearing\.set\(it\.row, TOKEN_ROW_CLEAR_S\)/.test(raceSrc)
+  && TOKEN_ROW_CLEAR_S > 0 && TOKEN_ROW_CLEAR_S <= 3,
+  `leftovers clear ${TOKEN_ROW_CLEAR_S}s after the pass`);
+// …and not instantly, because a token that vanishes from IN FRONT of a child is
+// the game taking something back. At racing speed this is ~30m of road behind.
+ok('…a beat later, so nothing is snatched from in front of the child',
+  TOKEN_ROW_CLEAR_S >= 0.8, `${TOKEN_ROW_CLEAR_S}s ≈ ${(TOKEN_ROW_CLEAR_S * 25).toFixed(0)}m at racing speed`);
 // The thinning keeps WHOLE authored rows. A fraction of the spot list (D17's
 // TOKEN_KEEP) cut across them, so the same setting paid 3 pickups on race 1 and
 // 9 on race 2 — the percentage-versus-absolute trap D33 hit with its pace floor.
@@ -147,27 +243,170 @@ ok('C: the garage rebate stays below the spend that earns it',
   `guided ≤ ${bestGuided}, expert ≤ ${bestExpert}, against a ${MAX_COST}-token top ask`);
 ok('…and expert still pays meaningfully more than guided',
   bestExpert > bestGuided, `${bestExpert} vs ${bestGuided}`);
-// The wallet carries across visits, so the number that has to clear the ask is
-// not one race but "what a strong player arrives at visit 2 with": spend the
-// lot at visit 1, take the rebate, race again. Typical rather than extreme
-// (a mid-table finish, a good-but-not-perfect prompt) because the extreme of
-// every term at once is not a player — it is printed above, and it is the thing
-// that would need a further cut if playtesting ever produces it.
-const typicalRace = 7 * maxReward + 5 + FINISH_TOKENS[1];      // measured mean: 16
-ok('C: a strong player still arrives at garage visit 2 below the top ask',
-  typicalRace + tokenReward(85, false) < MAX_COST,
-  `${typicalRace} from the race + ${tokenReward(85, false)} rebate`
-  + ` = ${typicalRace + tokenReward(85, false)} vs ${MAX_COST}`);
-// Stated rather than asserted, because it is the one case source-level tuning
-// cannot close: the richest race measured (18) plus the largest guided rebate
-// arrives at visit 2 able to buy the top ask. Closing it needs either a race
-// that pays less than a complete ask, or a cap on the garage's view of the
-// wallet — and D17 rejected the second because it makes the HUD counter, the
-// results screen and the garage budget contradict each other in front of a
-// child. Recorded in GAPS.md; watch it in playtest.
-console.log(`  \x1b[2m  residual: richest measured race 18 + best guided rebate`
-  + ` ${tokenReward(100, false)} = ${18 + tokenReward(100, false)} at visit 2, i.e. the carryover extreme`
-  + ` can still reach the ${MAX_COST}-token ask\x1b[0m`);
+// The rebate must be below the spend AT EVERY POINT ON THE CURVE, not only at
+// the top. A cap alone says nothing about the cheap end, and the cheap end is
+// where a rebate turns into a profit: the child who buys the least precise
+// complete ask is the one who could farm it.
+{
+  // (budget, best score it buys, that ask's cost) — from the real price list.
+  const CURVE = [[4, 8, 4], [6, 23, 6], [8, 32, 8], [11, 51, 11],
+    [13, 63, 13], [15, 69, 15], [17, 84, 17], [21, 100, 21]];
+  const bad = CURVE.filter(([, score, cost]) => tokenReward(score, false) >= cost);
+  ok('C: the rebate is below the spend at every point on the price curve',
+    bad.length === 0,
+    CURVE.map(([, s, c]) => `${c}→${tokenReward(s, false)}`).join(' '));
+}
+// ── C2 — the rebate REWARDS QUALITY, which is the whole reason it was the lever
+// Wave 5 chose over the quiz reward. Nothing asserted this, and a rebate that
+// paid a flat 3 for a one-word ask and a perfect 100 alike passed every check in
+// this file — while destroying the justification for the change.
+{
+  const curve = Array.from({ length: 101 }, (_, s) => tokenReward(s, false));
+  const monotonic = curve.every((v, i) => i === 0 || v >= curve[i - 1]);
+  ok('C2: the rebate never decreases as the prompt gets better',
+    monotonic, `0→${curve[0]}, 50→${curve[50]}, 100→${curve[100]}`);
+  ok('C2: …and it is not flat — a better prompt really is worth more',
+    new Set(curve).size >= 5, `${new Set(curve).size} distinct payouts across 0–100`);
+  // The gap between the vaguest complete ask the game will accept (score 8) and
+  // the best one (100) has to be worth noticing, or "engagement pays" is a
+  // slogan. Half the ceiling is the bar.
+  const vague = tokenReward(8, false), strong = tokenReward(100, false);
+  ok('C2: …and the gap between a vague ask and a strong one is at least half the cap',
+    strong - vague >= REBATE_CAP / 2,
+    `vague ${vague} → strong ${strong}, gap ${strong - vague} vs half of ${REBATE_CAP}`);
+  // Each tier of the garage's own ladder must pay strictly more than the one
+  // below, so the rebate tracks the thing the child watched happen to the part.
+  const byTier = [8, 41, 63, 100].map(s => tokenReward(s, false));
+  ok('C2: …and every garage tier refunds strictly more than the tier below',
+    byTier.every((v, i) => i === 0 || v > byTier[i - 1]), byTier.join(' < '));
+}
+
+// ── C3 — the ceiling cannot DRIFT. Invariant C only says "< half the top ask",
+// which left 29% of headroom for a cap to grow into without a gate noticing —
+// D39's rot mode verbatim ("at 8 it had quietly become half a race's income").
+// So the derivation itself is pinned, not just its consequence.
+ok('C3: the guided ceiling IS a third of the top ask, exactly',
+  REBATE_CAP === Math.floor(MAX_COST / 3) && tokenReward(100, false) === REBATE_CAP,
+  `cap ${REBATE_CAP}, ⌊${MAX_COST}/3⌋ = ${Math.floor(MAX_COST / 3)}, best payout ${tokenReward(100, false)}`);
+ok('C3: …and expert is exactly one token above it, not a free multiplier',
+  REBATE_CAP_EXPERT === REBATE_CAP + 1 && tokenReward(100, true) === REBATE_CAP_EXPERT,
+  `expert cap ${REBATE_CAP_EXPERT} vs guided ${REBATE_CAP}`);
+
+// ── C4 — THE REBATE MAY NEVER EXCEED THE SPEND IT REBATES ────────────────────
+// D17's rule, stated properly at last. It was true on the guided price curve by
+// arithmetic coincidence and FALSE in expert mode, where garage.js charges only
+// for the part row (`spent() = costOf(st.sel)`, and expert's `st.sel` carries
+// nothing else): typing the game's own placeholder example scores 92 and used to
+// refund 8 against a spend of 4 — tokens conjured out of nothing, every visit,
+// and a route around `prompt-80`'s "needs a wallet of 17" as well.
+{
+  const spends = [0, 1, 2, 3, 4, 6, 8, 11, 13, 17, 21];
+  const overpaid = [];
+  for (const spend of spends)
+    for (const score of [0, 8, 32, 51, 63, 84, 92, 100])
+      for (const expert of [false, true])
+        if (tokenReward(score, expert, spend) > spend) overpaid.push(`${score}${expert ? 'x' : ''}@${spend}`);
+  ok('C4: the rebate never exceeds the spend, at any score, in either mode',
+    overpaid.length === 0, overpaid.length ? overpaid.slice(0, 5).join(' ') : `${spends.length} spends × 8 scores × 2 modes`);
+  // The expert exploit, named and pinned as the specific case.
+  ok('C4: …so the expert placeholder prompt no longer profits on a 4-token spend',
+    tokenReward(92, true, PART_COST) === PART_COST && tokenReward(92, true) > PART_COST,
+    `score 92 in expert: ${tokenReward(92, true)} unclamped → ${tokenReward(92, true, PART_COST)} against a ${PART_COST}-token spend`);
+  // …and the clamp must not quietly become the ONLY thing paying out: with a
+  // real guided spend it changes nothing.
+  ok('C4: …and it does not touch a normal guided build',
+    tokenReward(63, false, 13) === tokenReward(63, false),
+    `score 63 on a 13-token ask: ${tokenReward(63, false, 13)}`);
+}
+
+ok('C: the rebate ceiling stays under half the most expensive ask',
+  bestGuided < MAX_COST / 2 && bestExpert < MAX_COST / 2,
+  `guided ≤ ${bestGuided}, expert ≤ ${bestExpert}, half of ${MAX_COST} is ${MAX_COST / 2}`);
+
+// ── INVARIANT D — the top tier is REACHABLE, but only by saving (Wave 5) ─────
+// The garage's top ask cost 21 and nothing in the game could pay for it: a race
+// banks at most 17, and a child who bought the best ask they could afford at the
+// first garage arrived at the second with 16–19. The only route to 21 was to buy
+// the cheapest possible thing at the first garage — the game paid you for NOT
+// engaging with its own teaching screen. What moved was the garage rebate, which
+// is not race income and so cannot touch invariant A.
+//
+// Modelled here the way it really works in scenes.js:
+//   wallet at the second garage = race1 − spend + rebate(score) + race2
+const walletAtSecondGarage = (race, spend, score) =>
+  race - spend + tokenReward(score, false) + race;
+{
+  // THE TARGET, stated on the POOREST measured engaged run (13 a race, both
+  // races) rather than the median, because the median already cleared it before
+  // Wave 5 — marginally, on the good seeds only, which is what "the wallet peaks
+  // at 22" meant. The child buys something REAL at the first garage: 8 tokens is
+  // twice the cheapest complete ask, a specific goal with a limit behind it. So
+  // this is "buy something real and save", not "buy nothing and hoard" — and it
+  // is the assertion that goes red if the rebate is put back where Wave 4 had it.
+  const engagedFloor = walletAtSecondGarage(13, 8, 32);
+  ok('D: an engaged child who spends at the first garage can afford the top ask at the second',
+    engagedFloor >= MAX_COST,
+    `13 − 8 + ${tokenReward(32, false)} + 13 = ${engagedFloor} vs the ${MAX_COST} top ask`);
+  // THE SAME TARGET UNDER THE POLICY A CHILD ACTUALLY FOLLOWS: spend the wallet
+  // on the best thing you can afford, every visit. Nobody plays a garage by
+  // solving for the optimal reserve. On the MEDIAN engaged run (15 then 16) the
+  // best affordable ask at the first garage costs 15 and scores 69, and the top
+  // tier is still in reach at the second. This is the assertion that was
+  // demoted to a console.log in round 1 and is restored, because it pins the
+  // realistic policy rather than the existence of a clever one.
+  const medianIntuitive = 15 - 15 + tokenReward(69, false) + 16;
+  ok('D: …and the child who just buys the best they can afford still gets there (median run)',
+    medianIntuitive >= MAX_COST,
+    `15 − 15 + ${tokenReward(69, false)} + 16 = ${medianIntuitive} vs ${MAX_COST}`);
+  // On the POOREST engaged run (13 then 13) that same policy lands at 18 and the
+  // child must hold something back. Printed with its real margin rather than
+  // asserted away: it is the honest edge of the target, and tools/flowtest.mjs
+  // measures it on the built game every run.
+  console.log(`  \x1b[2m  poorest engaged run, same policy: 13 − 13 + ${tokenReward(63, false)} + 13 = `
+    + `${13 - 13 + tokenReward(63, false) + 13} — ${MAX_COST - (tokenReward(63, false) + 13)} short of the top ask\x1b[0m`);
+  ok('D: …but NOT if they also max out the first garage (the choice still bites)',
+    walletAtSecondGarage(13, 13, 63) < MAX_COST,
+    `13 − 13 + ${tokenReward(63, false)} + 13 = ${walletAtSecondGarage(13, 13, 63)} vs ${MAX_COST}`);
+  // …and the child who ignores every question box cannot, however they spend.
+  // Measured ceiling for that player is 10 a race, and the most generous thing
+  // they can do is buy the cheapest complete ask (4) and bank the rest.
+  const idle = walletAtSecondGarage(10, MIN_COMPLETE_COST, 8);
+  ok('D: a child who ignores every question box still cannot, however they save',
+    idle < MAX_COST,
+    `10 − ${MIN_COMPLETE_COST} + ${tokenReward(8, false)} + 10 = ${idle} vs ${MAX_COST}`);
+  // The shape of the whole thing in one line: one top-tier ask a championship,
+  // never two. Two would need a race that pays for one on its own — invariant A.
+  ok('D: …and no ONE race ever pays for a top-tier ask, so never two of them',
+    bestCase < MAX_COST, `richest possible race ${bestCase} vs ${MAX_COST}`);
+}
+// ── `prompt-80`, the badge that goes unreachable FIRST ───────────────────────
+// GAPS' standing instruction after any economy change is to check this one
+// before the token thresholds. It is not a token threshold at all: it needs a
+// garage SCORE of 80, and in real play the garage budget is the wallet
+// (scenes.js), so what really gates it is "can the child afford an ask that
+// scores 84". Enumerated against the real price list, a wallet of 13 buys at
+// most 63, 15 buys 69, 16 buys 75, and it takes exactly 17 to reach 84 — D40's
+// derivation, re-run here rather than quoted.
+const PROMPT80_WALLET = 17;
+{
+  // Same median run and same intuitive policy as invariant D, so the two cannot
+  // drift apart: buy the best affordable ask (15 tokens, score 69) and race on.
+  const engagedAtSecond = 15 - 15 + tokenReward(69, false, 15) + 16;
+  ok('prompt-80: the engaged child reaches the wallet that can score 84',
+    engagedAtSecond >= PROMPT80_WALLET,
+    `${engagedAtSecond} at the second garage vs the ${PROMPT80_WALLET} it takes to buy an 84`);
+  // …and it is not a participation prize. A child who answers nothing banks at
+  // most pickups + a mid finish, so the first garage cannot buy them an 84 —
+  // the badge for writing a good prompt still costs some engagement first.
+  const idleRaceCeiling = MAX_PICKUPS_PER_RACE + FINISH_TOKENS[1];
+  ok('prompt-80: …and a child who answers nothing cannot buy an 84 at the first garage',
+    idleRaceCeiling < PROMPT80_WALLET,
+    `${idleRaceCeiling} banked with no quiz income vs the ${PROMPT80_WALLET} it takes`);
+}
+console.log(`  \x1b[2m  wallet at the second garage (measured income, real prices):`
+  + ` engaged spender ${walletAtSecondGarage(13, 11, 51)}–${walletAtSecondGarage(16, 11, 51)},`
+  + ` ignores every box ${walletAtSecondGarage(8, 4, 8)}–${walletAtSecondGarage(10, 4, 8)}`
+  + `  ·  top ask ${MAX_COST}\x1b[0m`);
 
 console.log('  ' + '─'.repeat(74));
 console.log(failed ? `  \x1b[31m${failed} failed\x1b[0m\n` : '  \x1b[32mall passed\x1b[0m\n');

@@ -65,6 +65,70 @@ const AI_ENGINE_LEVEL = 0.075; // per-AI-kart voice at closest range
 // "inaudible on the grid". See EngineVoice._levelFor.
 const IDLE_FLOOR = 0.46;
 
+// ── what may be heard on a MENU (Wave 5) ─────────────────────────────────────
+// Every sound is registered with a GROUP, and the groups below are the world:
+// they exist to narrate a race a child is driving. A menu screen is not that,
+// even when a live race is running behind it — the title, results and garage
+// screens each render a real raceScene as their backdrop, and that simulation
+// overtakes, laps and finishes exactly like a race, because it IS one.
+//
+// So this is a categorical gate, not a list of sound ids or of event names: on a
+// menu screen a gameplay group cannot reach the destination at all. A sound
+// invented next wave inherits the rule from the group it is registered in, and
+// an EVENT invented next wave inherits it too, because the gate is downstream of
+// the whole wiring table (see play() and the world-voice guards).
+//
+// IT IS AN ALLOWLIST, AND THAT IS THE WHOLE POINT. The first version of this was
+// the same idea written the other way round — a set of the five gameplay groups,
+// with everything else audible by default — and it was measured fail-open: ids
+// invented in groups `crowd`, `weather`, `world`, `ambience` and `hazard` all
+// played on the title screen at ~0.040 rms / 0.453 peak. A crowd system already
+// exists in src/gfx/props.js, so the next world group is not hypothetical, and
+// under a denylist it arrives audible behind the logo with nothing to catch it.
+// Written as an allowlist, a group nobody has thought of yet is gated by default
+// and the only way to make a sound menu-safe is to say so here, deliberately.
+//
+// Menu-safe means "this is the SCREEN answering the child", not "this is quiet":
+//   ui      — the click, hover and back blip of the thing they just pressed
+//   garage  — the build/reveal sequence, and the badge-unlock cue badges.js
+//             rides on it, both of which are answers to a button on those screens
+//   screen  — screen-level flourishes that belong to a results/podium SCREEN
+//             rather than to a running race (see `podium.sting`)
+//   music   — the bed; it follows the scene by design
+const MENU_SAFE_GROUPS = new Set(['ui', 'garage', 'screen', 'music']);
+
+// ── the quiz sting's place in the mix (Wave 5) ───────────────────────────────
+// GAPS recorded the quiz sting at peak **0.52**, "the loudest thing in the game",
+// against race music at 0.44. Re-measured on the built game with one sweep on one
+// long meter (D34), that number turned out to be a COMPOUND event, and the
+// difference matters more than the trim does:
+//
+//   quiz.correct on its own            peak 0.272  rms 0.0171
+//   quiz.correct + garage.reveal       peak 0.524  rms 0.0427   ← the 0.52
+//
+// The first correct answer of a save unlocks the `quiz-first` badge, and
+// badges.js announces every unlock through `audio:play` with `garage.reveal`
+// (peak 0.488 on its own — in family with the game's other one-off flourishes:
+// music circuit 0.596, race.fanfare 0.517, results.sting 0.492, countdown.go
+// 0.489). So what Wave 4 measured was the sting stacked with the badge cue,
+// which happens ONCE per save, and not the 7–10-a-race event the complaint is
+// about. The cue's own level belongs to the garage and is not retuned here.
+//
+// The sting is still the most present recurring event over a bed that never
+// rests, so it comes down — by ONE scale factor rather than nine retuned
+// numbers, because its SHAPE (bright triangle arpeggio, octave sparkle, one
+// hand-drum tap) is right and only its level was loud. 0.78 lands it at peak
+// 0.216 / rms 0.0136: about half the music's peak, well under a wall hit, and
+// still clearly brighter and fuller than `quiz.wrong`, which is the only
+// contrast the sound has to carry. The gate pins BOTH that ratio and an
+// absolute ceiling, so it cannot be satisfied by turning the music up.
+//
+// `quiz.wrong` is deliberately NOT scaled. It measures peak 0.167 / rms 0.0086 —
+// already under the music bed, which is the whole point of it (a wrong answer
+// carries no penalty and must not scold). Scaling the pair together would have
+// pushed it toward inaudible to fix a problem it never had.
+const QUIZ_STING_GAIN = 0.78;
+
 // Modal ducking. The engine and the world go to TRUE zero (a linear ramp, so it
 // is a fade and not a click); music only steps back.
 const MODAL_DUCK_RAMP = 0.12;  // seconds — fast enough to feel instant, slow
@@ -571,6 +635,10 @@ class AudioSystem {
     this.vol = { master: readSavedVolume(), music: 0.85, sfx: 1.0, engine: ENGINE_BUS };
     this._ducked = false;         // soft duck (pause menu, legacy duck() calls)
     this._modalDucked = false;    // hard duck — ANY modal owns the screen
+    // 'race' | 'menu' | null. null = nobody has said (module previews, offline
+    // renders, the audition rig) and everything is allowed, which is what keeps
+    // preview()/tools/preview.mjs able to audition every sound in isolation.
+    this._screen = null;
     this.sounds = new Map();
     this._pending = [];           // {end} — deterministic voice accounting
     this._nodes = new Set();      // live source nodes, for dispose()
@@ -598,6 +666,42 @@ class AudioSystem {
     if (this._offModal) return;
     this._offModal = onModalChange(any => this.setModalDuck(any));
   }
+
+  // ── which KIND of screen owns the game ─────────────────────────────────────
+  /**
+   * setScreenKind('race' | 'menu' | null) — driven from the bus wiring below
+   * (`scene:entered` / `race:begin`); nothing needs to call it by hand.
+   *
+   * On a 'menu' screen the gameplay GROUPS are inaudible: not turned down, not
+   * muted one id at a time — they never reach the graph. That is deliberately
+   * one categorical decision rather than a table of ids or event names, because
+   * the failure this fixes was exactly a table with holes in it: the title
+   * screen's backdrop is a real race and it was firing overtake, lap, best-lap,
+   * final-lap and podium sounds behind the logo. A hardcoded list would have
+   * covered those five and missed the sixth.
+   */
+  setScreenKind(kind) {
+    const k = kind === 'race' || kind === 'menu' ? kind : null;
+    if (k === this._screen) return k;
+    this._screen = k;
+    // Anything persistent that is already running must stop on the way in — a
+    // scene change with the engine mid-idle would otherwise keep it alive.
+    if (k === 'menu' && this.ok) {
+      this.stopEngine();
+      try { this.drift.stop(this.now, 0.1); } catch { /* */ }
+      this.setAiEngines([]);
+    }
+    return k;
+  }
+  /** True while world/gameplay audio is allowed at all. */
+  get worldAudible() { return this._screen !== 'menu'; }
+  /**
+   * The one predicate every sound passes through. Group in, allowed out.
+   * Note the direction: on a menu, a group must be on the MENU_SAFE_GROUPS
+   * allowlist to be heard. An unrecognised group — the one a future world system
+   * registers — is gated, because the default has to be the safe one.
+   */
+  _audibleHere(group) { return this.worldAudible || MENU_SAFE_GROUPS.has(group); }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
   /**
@@ -698,8 +802,13 @@ class AudioSystem {
     const go = () => { this.unlock(true); };
     this._unlockBound = go;
     this._visBound = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'visible' && this.ok
-        && this.ctx && this.ctx.state === 'suspended' && this._gestured) this.unlock();
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+      // If the host parked us (engine.js's `audio:suspend`), coming back visible
+      // is the same event as `audio:resume` — route it through the one path that
+      // knows whether there was anything running to come back to, rather than
+      // through unlock(), which that path deliberately blocks while suspended.
+      if (this._hostSuspended) { this.resume(); return; }
+      if (this.ok && this.ctx && this.ctx.state === 'suspended' && this._gestured) this.unlock();
     };
     for (const ev of UNLOCK_EVENTS) {
       for (const tgt of [window, document]) {
@@ -728,6 +837,10 @@ class AudioSystem {
    */
   unlock(fromGesture = false) {
     if (this.broken) return false;
+    // A hidden tab stays parked. Otherwise any stray gesture — or `_applyMute`,
+    // which calls unlock() on every unmute — would restart the audio thread
+    // behind a page nobody is looking at.
+    if (this._hostSuspended) return false;
     if (!this.ok) this.init();
     if (!this.ok) return false;
     if (fromGesture) this._gestured = true;
@@ -755,6 +868,67 @@ class AudioSystem {
     }
     return true;
   }
+
+  // ── the document went away (Wave 5, item 7) ────────────────────────────────
+  // engine.js owns the visibility detection and emits `audio:suspend` /
+  // `audio:resume`; this is the audio side of it.
+  //
+  // This is a REAL `AudioContext.suspend()`, not a ramp to zero. A ramp leaves
+  // the audio thread rendering every oscillator, filter and grain loop in the
+  // graph for a tab nobody is looking at — which is the "runs hot in the
+  // background" symptom — and suspend is the only thing that actually stops it.
+  // It is also, conveniently, true silence by construction: `currentTime` stops
+  // advancing, so no sample is produced at all.
+  //
+  // COMPOSING WITH THE REST OF THE MIX IS FREE, and deliberately so: suspend()
+  // writes NO gain and touches NO state. Mute, master volume, the soft duck and
+  // D34's modal duck all live in gain values and flags that are simply frozen
+  // along with everything else, so coming back cannot disagree with them — there
+  // is no fourth writer of the buses to keep in step with `_applyBuses`, because
+  // there is no writer at all. The same freeze is what keeps the music from
+  // restarting: the scheduler's clock is the context clock, `_pump` schedules
+  // relative to `A.now`, and both resume exactly where they stopped.
+  /**
+   * suspend() — stop the audio thread. A no-op if the graph was never built, if
+   * the context is not running, or IF WE ARE ALREADY PARKED.
+   *
+   * That last clause is not defensive tidiness, it is the bug this method had:
+   * `_wasRunning` (the record of whether there was anything to come back to) was
+   * recomputed on every call, so a second `audio:suspend` while already parked
+   * read the state of the parked context and wrote `false`. The following
+   * `audio:resume` then cleared `_hostSuspended`, declined to resume — nothing
+   * was running, said the record — and the game stayed silent for the rest of
+   * the session with no way back. `audio:suspend` is a public bus event and
+   * engine.setHidden is public precisely so a gate can drive it, so "the
+   * transition guard upstream only fires once" is not a guarantee this method
+   * gets to rely on. tests/audio.test.mjs drives the double-suspend directly.
+   * @returns {boolean} true if THIS call parked a running context.
+   */
+  suspend() {
+    if (this._hostSuspended) return false;      // already parked: keep `_wasRunning`
+    if (!this.ready) return false;
+    // Remember whether there was anything to come back to: a context that was
+    // never unlocked must NOT be resumed by a visibility change, or the autoplay
+    // policy would be bypassed by tabbing away and back.
+    this._wasRunning = this.ctx.state === 'running';
+    this._hostSuspended = true;
+    if (!this._wasRunning) return false;
+    try { this.ctx.suspend()?.catch?.(() => { /* */ }); } catch { /* */ }
+    return true;
+  }
+  /**
+   * resume() — the page is visible again. Undoes suspend() and nothing else: it
+   * never unlocks a context that no gesture ever unlocked.
+   */
+  resume() {
+    const was = this._hostSuspended;
+    this._hostSuspended = false;
+    if (!was || !this.ready || !this._wasRunning) return false;
+    try { this.ctx.resume()?.catch?.(() => { /* */ }); } catch { /* */ }
+    return true;
+  }
+  /** True while the host has parked the audio thread. */
+  get suspended() { return !!this._hostSuspended; }
 
   get ready() { return this.ok && !this.broken && this.ctx && this.ctx.state !== 'closed'; }
   get now() { return this.ready ? this.ctx.currentTime : 0; }
@@ -1003,6 +1177,10 @@ class AudioSystem {
     if (!this.ok) { this.init(); if (!this.ok) return false; }
     const s = this.sounds.get(name);
     if (!s) return false;
+    // A menu screen is gameplay-silent, whatever the backdrop behind it is
+    // doing. One check, by GROUP, downstream of the entire wiring table — so an
+    // event name this file has never heard of is silent here too.
+    if (!this._audibleHere(s.group)) return false;
     const at = Math.max(opts.at ?? this.now, 0) + (opts.at != null ? 0 : 0.004);
     if (!this._reserve(at, s.dur, s.priority ? 8 : 0)) return false;
     try { s.fn.call(this, at, opts); this.stats.played++; return true; } catch (e) {
@@ -1016,10 +1194,29 @@ class AudioSystem {
     this.sounds.set(name, { group, dur, label, fn, priority });
   }
 
+  /**
+   * _retrigger(key, gap) — true when `key` fired less than `gap` seconds ago,
+   * i.e. "swallow this one". For cues whose EVENT can legitimately arrive twice
+   * in the same instant (two ghosted beacons on consecutive frames), where the
+   * second copy would only phase against the first and turn a soft nudge into a
+   * buzz. Deliberately NOT a general policy: the token pickup wants its
+   * back-to-back combo ladder, and impacts want every hit.
+   * One Map, allocated once, keyed by sound id — nothing per frame.
+   */
+  _retrigger(key, gap) {
+    if (!this.ready) return false;              // no clock yet: never swallow
+    if (!this._lastAt) this._lastAt = new Map();
+    const tN = this.now, last = this._lastAt.get(key);
+    if (last != null && tN - last < gap) return true;
+    this._lastAt.set(key, tN);
+    return false;
+  }
+
   // ── engine control ─────────────────────────────────────────────────────────
   /** setEngineState({rpm01, load, boosting, surface}) — call every frame; cheap. */
   setEngineState(s = {}) {
     if (this.muted || this.broken) return;
+    if (!this.worldAudible) return;           // menu screen: the backdrop is mute
     if (!this.ok) return;                     // no context yet: silently ignore
     const tN = this.now;
     if (tN - this._lastEngineWrite < 0.033) return;   // throttle to ~30Hz
@@ -1034,7 +1231,9 @@ class AudioSystem {
   setAiEngines(list = []) {
     if (!this.ok || this.muted) return;
     const tN = this.now;
-    const n = Math.min(3, list.length);
+    // Menu screen: the request is honoured as "no karts", so voices already
+    // running are disabled rather than merely left where they were.
+    const n = this.worldAudible ? Math.min(3, list.length) : 0;
     while (this._ai.length < n) {
       const i = this._ai.length;
       this._ai.push(new EngineVoice(this, { level: AI_ENGINE_LEVEL, detune: [-72, 58, 121][i], player: false }));
@@ -1052,8 +1251,11 @@ class AudioSystem {
   }
 
   /** setDrift(charge) / driftStart() / driftEnd() */
-  driftStart() { if (!this.ok || this.muted) return; this.drift.start(this.now); this.play('drift.start'); }
-  setDrift(charge) { if (this.ok && !this.muted) this.drift.setAt(this.now, charge, 0.07); }
+  driftStart() {
+    if (!this.ok || this.muted || !this.worldAudible) return;
+    this.drift.start(this.now); this.play('drift.start');
+  }
+  setDrift(charge) { if (this.ok && !this.muted && this.worldAudible) this.drift.setAt(this.now, charge, 0.07); }
   driftEnd(released) { if (!this.ok) return; this.drift.stop(this.now); if (released) this.play('boost.release'); }
 
   // ── music control ──────────────────────────────────────────────────────────
@@ -1168,7 +1370,20 @@ class AudioSystem {
     S('position.down', 'race', 0.45, 'Position lost', function (t) {
       [77, 73, 68].forEach((m, i) => this._blip(t + i * 0.06, m, { peak: 0.11, dur: 0.16, type: 'triangle', filter: 2200 }));
     });
-    S('results.sting', 'race', 2.60, 'Results / podium sting', function (t) {
+    // The same flourish, registered TWICE, in two groups — and the duplication is
+    // the point rather than an oversight. It has two jobs:
+    //   `results.sting` (group 'race')   — the race's own flourish as the flag
+    //                                      drops, raised by `race:finish` while
+    //                                      the child is still in the race scene;
+    //   `podium.sting`  (group 'screen') — the RESULTS/PODIUM SCREEN's flourish,
+    //                                      raised by that screen when it opens.
+    // A podium screen is a menu (buttons, a live backdrop behind it), so a sound
+    // in a gameplay group cannot sound there — which meant `podium:show` was
+    // wired to something that could never be heard, and would have failed
+    // silently for whoever wires the podium screen up next. Rather than punch a
+    // hole in the categorical gate for one id, the screen gets its own cue in a
+    // menu-safe group. One voice function, so the two can never drift apart.
+    const resultsFlourish = function (t) {
       const root = 57;                                    // A
       const chords = [[0, 4, 7, 11], [2, 5, 9, 12], [-3, 4, 7, 12], [0, 7, 12, 16]];
       chords.forEach((ch, i) => {
@@ -1182,7 +1397,9 @@ class AudioSystem {
       });
       this._noise(t + 1.6, { type: 'highpass', f: 3000, f2: 12000, dur: 0.8, peak: 0.045, attack: 0.15 });
       [84, 88, 91, 96].forEach((m, i) => this._blip(t + 1.75 + i * 0.07, m, { peak: 0.08, dur: 0.5, type: 'sine' }));
-    }, true);
+    };
+    S('results.sting', 'race', 2.60, 'Results sting (end of race)', resultsFlourish, true);
+    S('podium.sting', 'screen', 2.60, 'Podium sting (results screen)', resultsFlourish, true);
 
     // ---- tokens ------------------------------------------------------------
     // Rising with combo through a pentatonic ladder so a run is musical.
@@ -1331,16 +1548,19 @@ class AudioSystem {
     // didn't". No buzzer, no minor second, no downward octave drop.
     S('quiz.correct', 'quiz', 1.10, 'Quiz: correct', function (t) {
       const root = 72;                                   // C5, bright and childlike
+      // g = QUIZ_STING_GAIN on every layer — the shape is unchanged, the level
+      // is not. See QUIZ_STING_GAIN for the measurements behind its value.
+      const g = QUIZ_STING_GAIN;
       [0, 4, 7, 12].forEach((iv, i) => {
         this._tone(t + i * 0.055, {
-          type: 'triangle', f: mtof(root + iv), dur: 0.5, peak: 0.13 - i * 0.012,
+          type: 'triangle', f: mtof(root + iv), dur: 0.5, peak: (0.13 - i * 0.012) * g,
           attack: 0.003, filter: 7000,
         });
-        this._tone(t + i * 0.055, { type: 'sine', f: mtof(root + iv + 12), dur: 0.3, peak: 0.05, attack: 0.003 });
+        this._tone(t + i * 0.055, { type: 'sine', f: mtof(root + iv + 12), dur: 0.3, peak: 0.05 * g, attack: 0.003 });
       });
-      this._tone(t + 0.24, { type: 'sine', f: mtof(root + 19), dur: 0.75, peak: 0.09, attack: 0.006, hold: 0.05 });
-      this._noise(t + 0.06, { type: 'highpass', f: 6000, f2: 13000, dur: 0.45, peak: 0.03, attack: 0.05 });
-      this._hand(t, true, 0.45);                         // one light hand-drum tap
+      this._tone(t + 0.24, { type: 'sine', f: mtof(root + 19), dur: 0.75, peak: 0.09 * g, attack: 0.006, hold: 0.05 });
+      this._noise(t + 0.06, { type: 'highpass', f: 6000, f2: 13000, dur: 0.45, peak: 0.03 * g, attack: 0.05 });
+      this._hand(t, true, 0.45 * g);                     // one light hand-drum tap
     });
     S('quiz.wrong', 'quiz', 0.85, 'Quiz: not that one', function (t) {
       // A gentle major-2nd fall onto a warm perfect 4th — the shape of "hmm,
@@ -1349,6 +1569,47 @@ class AudioSystem {
       this._tone(t + 0.16, { type: 'triangle', f: mtof(65), dur: 0.5, peak: 0.095, attack: 0.025, filter: 2000 });
       this._tone(t + 0.16, { type: 'sine', f: mtof(53), dur: 0.55, peak: 0.055, attack: 0.03 });
       this._noise(t, { type: 'lowpass', f: 900, dur: 0.18, peak: 0.025, attack: 0.03 });
+    });
+    // ---- the question boxes themselves (Wave 5.1) --------------------------
+    // Two moments the redesigned pickup rules created, both previously silent.
+    //
+    // `quiz.soft` — the child drove through a box that was still RECHARGING. It
+    // gives no question and no token; it shaves 1.2s off every box's recharge
+    // and spawns a sparkle. Until this cue existed the moment re-emitted
+    // `token:pickup` and borrowed that sound, which promised a currency that was
+    // not paid. So the voicing is deliberately the opposite of `token.pickup` on
+    // every axis that carries meaning:
+    //   token.pickup — 3-note major arpeggio, rises with the combo, filter 8 kHz
+    //                  plus an octave sine and a highpassed sparkle: BRIGHT and
+    //                  ascending, i.e. "you got something".
+    //   quiz.soft    — TWO notes, a small rising 4th, no combo, no sparkle, and
+    //                  everything under a ~1.8 kHz lowpass: dark, round, and
+    //                  about a third of the token's level. It reads as a nudge.
+    // It is also not a failure sound: nothing falls, nothing is dissonant, the
+    // attacks are 8–10 ms (no percussive click) and it resolves upward.
+    // Short and low-emphasis on purpose — it fires 2–5 times a race, and the
+    // wiring below rate-limits it so two beacons in the same instant cannot
+    // stack into a buzz.
+    S('quiz.soft', 'quiz', 0.28, 'Quiz: box still charging', function (t) {
+      this._tone(t, { type: 'sine', f: mtof(74), dur: 0.13, peak: 0.055, attack: 0.008, filter: 1600 });
+      this._tone(t + 0.055, { type: 'triangle', f: mtof(79), dur: 0.16, peak: 0.045, attack: 0.010, filter: 1800, q: 0.7 });
+      // a breath of body under it, no top end at all
+      this._noise(t, { type: 'lowpass', f: 900, dur: 0.06, peak: 0.012, attack: 0.006 });
+    });
+    // `quiz.recharged` — the cooldown ran out and EVERY box on the track pops
+    // back to life. This is an invitation, so it rises (a clean open 5th, E5→B5)
+    // and it is bright — but it is a signpost, not a reward: two notes against
+    // the correct sting's four, no hand-drum tap, and a peak under it, so a
+    // child never mistakes "the boxes are live" for "you answered right".
+    S('quiz.recharged', 'quiz', 0.55, 'Quiz: boxes recharged', function (t) {
+      [76, 83].forEach((m, i) => {
+        this._tone(t + i * 0.075, {
+          type: 'triangle', f: mtof(m), dur: 0.30 - i * 0.04, peak: 0.075 - i * 0.012,
+          attack: 0.004, filter: 6000,
+        });
+        this._tone(t + i * 0.075, { type: 'sine', f: mtof(m + 12), dur: 0.16, peak: 0.026, attack: 0.004 });
+      });
+      this._noise(t + 0.06, { type: 'highpass', f: 6000, f2: 11000, dur: 0.22, peak: 0.018, attack: 0.03 });
     });
     S('quiz.timeout', 'quiz', 0.95, 'Quiz: time up', function (t) {
       // A soft three-note wind-down. Still no alarm: running out of time is
@@ -1418,6 +1679,9 @@ class AudioSystem {
 
     on('audio:play', p => { if (p && p.name) this.play(p.name, p); });
     on('audio:unlock', () => this.unlock());
+    // Document visibility, owned by engine.js (Wave 5 item 7). See suspend().
+    on('audio:suspend', () => this.suspend());
+    on('audio:resume', () => this.resume());
     on('audio:mute', m => this.setMuted(typeof m === 'boolean' ? m : (m && m.muted)));
     on('audio:toggleMute', () => this.toggleMute());
     on('audio:volume', p => this.setVolume(p || {}));
@@ -1479,6 +1743,10 @@ class AudioSystem {
     // for the race — remember it so the race music starts in that track's mood
     // (oasis / circuit / cloud) instead of always defaulting to oasis.
     on('race:begin', p => {
+      // race.js emits this ONLY for a race a child is driving (a backdrop race
+      // emits nothing at all now), and it arrives before scene:entered — so it
+      // is the earliest honest "gameplay is live" signal there is.
+      this.setScreenKind('race');
       const id = typeof p === 'string' ? p : (p && (p.track || p.trackId));
       this._raceTheme = THEMES[id] ? id : null;
       if (this.ready && this.music && this.music.track === 'race') this.playMusic('race', { theme: this._raceTheme || undefined });
@@ -1502,8 +1770,10 @@ class AudioSystem {
       const d = typeof p === 'number' ? p : (p && (p.delta ?? (p.from - p.to)));
       if (d > 0) this.play('position.up'); else if (d < 0) this.play('position.down');
     });
-    simple(['race:finish', 'race:results'], 'results.sting');
-    simple('podium:show', 'results.sting');
+    simple('race:finish', 'results.sting');
+    // The screen's own cue, in a menu-safe group, so a podium/results SCREEN that
+    // announces itself is actually heard (see podium.sting's registration).
+    simple(['podium:show', 'race:results'], 'podium.sting');
 
     // UI — includes the names menus.js actually emits (menu:racer / menu:start /
     // menu:goto) and the pause-menu round trip.
@@ -1524,6 +1794,18 @@ class AudioSystem {
     simple(['quiz:wrong', 'quiz:incorrect'], 'quiz.wrong');
     simple(['quiz:timeout', 'quiz:timeUp'], 'quiz.timeout');
     on('quiz:answer', p => this.play(p && (p.correct === true || p.ok === true) ? 'quiz.correct' : 'quiz.wrong'));
+    // The question BOXES (Wave 5.1). Both are rate-limited rather than played
+    // raw: `quiz:softToken` can arrive twice in the same instant (two ghosted
+    // beacons in a row), and `quiz:recharged` is emitted by drainCooldown, which
+    // both the clock and a soft touch can drive — a second copy inside the first
+    // one's tail is a phasing buzz, not a louder cue. The gap is under the
+    // physical minimum between two beacons, so no real event is ever lost.
+    for (const e of ['quiz:softToken', 'quiz:soft', 'quiz:softtoken']) {
+      on(e, () => { if (!this._retrigger('quiz.soft', 0.12)) this.play('quiz.soft'); });
+    }
+    for (const e of ['quiz:recharged', 'quiz:recharge']) {
+      on(e, () => { if (!this._retrigger('quiz.recharged', 0.35)) this.play('quiz.recharged'); });
+    }
 
     // garage
     simple(['garage:build', 'garage:assemble'], 'garage.build');
@@ -1532,6 +1814,20 @@ class AudioSystem {
 
     // music follows scenes unless a scene asks for something specific
     on('scene:entered', name => {
+      // FIRST, and outside the `ready` guard: which kind of screen this is
+      // decides what may be heard at all, and that must be true before the
+      // graph exists, not only after it. Exactly one scene is gameplay; every
+      // other screen in the game is a menu with a live race behind it.
+      //
+      // 'preview' is NEITHER, and leaving it out of this line was a trap I set
+      // and a critic walked into: core/harness.js `bootPreview()` boots every
+      // module preview as the scene `preview`, so auditioning race.js, quiz.js
+      // or the kart through tools/preview.mjs classified them as a menu and
+      // muted exactly the sounds the audition exists to judge. A critic then
+      // measures silence and reports a bug that is not in the module. Previews
+      // are un-gated (`null`), which is also what an offline render and a bare
+      // `audio.play()` in a test rig get.
+      this.setScreenKind(name === 'race' ? 'race' : name === 'preview' ? null : 'menu');
       if (!this.ready) return;
       if (name === 'menu' || name === 'title' || name === 'select') this.playMusic('menu');
       else if (name === 'garage') this.playMusic('garage');
@@ -1791,6 +2087,7 @@ registerStrings({
     'audio.group.garage': 'מוסך',
     'audio.group.engine': 'מנוע',
     'audio.group.quiz': 'חידון',
+    'audio.group.screen': 'מסכי סיום',
     'audio.group.music': 'מוזיקה',
     'audio.state': 'מצב הקשר',
     'audio.voices': 'קולות פעילים',
@@ -1807,12 +2104,15 @@ registerStrings({
     'audio.s.lap.final': 'הקפה אחרונה',
     'audio.s.position.up': 'עלייה במיקום',
     'audio.s.position.down': 'ירידה במיקום',
-    'audio.s.results.sting': 'תוצאות ופודיום',
+    'audio.s.results.sting': 'סיום מרוץ',
+    'audio.s.podium.sting': 'מסך התוצאות',
     'audio.s.token.pickup': 'איסוף טוקן (קומבו)',
     'audio.s.lap.best': 'הקפה הכי מהירה',
     'audio.s.quiz.correct': 'תשובה נכונה',
     'audio.s.quiz.wrong': 'לא הפעם',
     'audio.s.quiz.timeout': 'נגמר הזמן',
+    'audio.s.quiz.soft': 'תיבה עדיין נטענת',
+    'audio.s.quiz.recharged': 'התיבות חזרו לפעולה',
     'audio.s.drift.tier': 'דריפט — עלייה בדרגה',
     'audio.s.drift.start': 'תחילת דריפט',
     'audio.s.drift.sustain': 'דריפט — טעינה',
@@ -1855,6 +2155,7 @@ registerStrings({
     'audio.group.garage': 'Garage',
     'audio.group.engine': 'Engine',
     'audio.group.quiz': 'Quiz',
+    'audio.group.screen': 'Result screens',
     'audio.group.music': 'Music',
     // The three race themes by TRACK NAME, not by theme id. Without these the
     // English preview falls back to the registry label ("Music: race — circuit"),
@@ -1866,7 +2167,7 @@ registerStrings({
   },
 });
 
-const GROUP_ORDER = ['engine', 'drive', 'race', 'impact', 'garage', 'quiz', 'ui', 'music'];
+const GROUP_ORDER = ['engine', 'drive', 'race', 'impact', 'garage', 'quiz', 'screen', 'ui', 'music'];
 const GROUP_COLOUR = {
   engine: '#ffc247', drive: '#7ee081', race: '#ff9f6b', impact: '#ff6b6b',
   garage: '#c9b8ff', quiz: '#7ee0d0', ui: '#6fc3ff', music: '#ffd66b',
@@ -1898,6 +2199,12 @@ export function preview(engine) {
   audio.init();
   audio.unlock();
   if (audio.muted) audio.setMuted(false, false);
+  // The audition rig is not a menu, whatever the harness calls the scene it is
+  // booted into: every sound here is auditioned on purpose, by hand. Re-asserted
+  // on scene:entered because that event lands AFTER this factory runs, and the
+  // wiring would otherwise classify 'preview' as a menu and mute half the panel.
+  audio.setScreenKind(null);
+  const offScreenKind = bus.on('scene:entered', () => audio.setScreenKind(null));
 
   // analyser tap on the master output
   let analyser = null, timeBuf = null, freqBuf = null;
@@ -2085,6 +2392,7 @@ export function preview(engine) {
       if (canvas.width !== cw) canvas.width = cw;
     },
     dispose() {
+      offScreenKind();
       try { audio.stopEngine(); audio.stopMusic(0.1); } catch { /* */ }
       if (analyser) { try { audio.master.disconnect(analyser); } catch { /* */ } }
       glow.geometry.dispose(); glow.material.dispose();
