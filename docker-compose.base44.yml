@@ -1,0 +1,11 @@
+services:
+  web:
+    image: node:22
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: sh -c "npm install --no-audit --no-fund && node tools/devserve.mjs"
+    environment:
+      - PORT=3000
+    ports:
+      - "3000:3000"
